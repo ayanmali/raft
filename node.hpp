@@ -45,7 +45,8 @@ struct Node {
     void loop();
 
     private:
-    std::vector<std::string_view> peers(std::move(init_peers)); // nodes discover each other via a "gossip"-like protocol
+    std::unordered_map<std::string_view, int> peers;
+    //std::vector<std::string_view> peers(std::move(init_peers)); // nodes discover each other via a "gossip"-like protocol
     std::vector<LogEntry> log;
     std::vector<int> next_index; // one for each server
     std::vector<int> match_index; // one for each server
@@ -59,7 +60,7 @@ struct Node {
     int client_snapshot_fd; // for sending InstallSnapshot RPCs
     int setup_socket(int& sock_fd, int port) { 
         sock_fd = socket("AF_INET", SOCK_STREAM, 0);
-        if (sock_fd == -1) {
+        if (sock_fd < 0) {
             return -1;
         }
         struct sockaddr_in sock_addr;
@@ -68,15 +69,28 @@ struct Node {
         sock_addr.sin_addr.s_addr = htonl(INADDR_ANY);
         std::memset(&(sock_addr.sin_zero), '\0', 8); // zero the rest of the struct
         
-        int sock_bind = bind(
+        int ok = bind(
             sock_fd, 
             (struct sockaddr*)&sock_addr,
             sizeof(sockaddr)
         );
-        if (sock_bind == -1) {
+        if (ok != 0) {
             return -1;
         }
         return 0;
+    }
+
+    int connect_socket(std::string_view ip_addr, int port, int sock_fd) {
+        struct sockaddr_in dest_addr;
+        dest_addr.sin_family = AF_INET;
+        dest_addr.sin_addr.s_addr = inet_addr(ip_addr);
+        dest_addr.sin_port = htons(port);
+        std::memset(&(dest_addr.sin_zero), '\0', 8);
+
+        int ok = connect(sock_fd, (struct sockaddr*)&dest_addr,sizeof(struct sockaddr));
+        if (ok < 0) {
+            return -1;
+        }
     }
 
     int current_term;
@@ -86,6 +100,7 @@ struct Node {
 };
 
 inline Node::Node() {
+
     // initialize timeout
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -113,6 +128,14 @@ inline Node::Node() {
     if (err != 0) {
         // handle error
     }
+
+    // reserve map space
+    // peers.reserve(MAX_POOL_SIZE);
+    // populate the map
+    for (const auto& addr : init_peers) {
+        peers[addr] = 0;
+    }
+    // ...
 
 };
 
