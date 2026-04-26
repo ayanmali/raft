@@ -13,10 +13,13 @@ volatile (leaders) (reinitialized after election):
 */
 #include "./rpc/rpc.hpp"
 #include "./config.hpp"
+#include "./rpc/conn_pool.hpp"
 #include <chrono>
+#include <netdb.h>
 #include <random>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 struct LogEntry {
     std::vector<std::byte> data;
@@ -26,6 +29,7 @@ struct LogEntry {
 struct Node {
     public:
     Node();
+    ~Node();
 
     void increment_current_term();
     void set_voted_for(int voted_for);
@@ -34,6 +38,23 @@ struct Node {
     void send_heartbeats(); // send AE RPCs w/ no log entries
     void start_election(); // enter candidate mode
     void compact_log();
+
+    // Calling `socket()`
+    void setup_sockets();
+    /* do not inline */
+    void handle_setup_errs(std::initializer_list<int> sock_fds);
+
+    // Client
+    void client_connect(int& sock_fd, std::string_view ip_addr, int port);
+    void client_send(const char* msg, int len, int flags);
+    void client_recv(int len, int flags);
+    int client_close();
+
+    // Server
+    void server_bind();
+    void server_listen();
+    void server_accept();
+    void server_reply();
 
     // returns term, success
     std::pair<int, bool> send_append_entries_rpc(const AppendEntriesPayload& payload);
@@ -45,53 +66,23 @@ struct Node {
     void loop();
 
     private:
-    std::unordered_map<std::string_view, int> peers;
+    ConnectionPool connections;
     //std::vector<std::string_view> peers(std::move(init_peers)); // nodes discover each other via a "gossip"-like protocol
+    char sock_buf[MAX_BUFFER_SIZE];
+    struct addrinfo* res = nullptr; // used for client connections; freed in the destructor to avoid extra latency in the hotpath
+
     std::vector<LogEntry> log;
-    std::vector<int> next_index; // one for each server
-    std::vector<int> match_index; // one for each server
+    std::vector<int> next_index; // one for each peer
+    std::vector<int> match_index; // one for each peer
 
     std::chrono::milliseconds timeout; // randomly chosen from 150-300 ms
 
     // sockets
     int server_fd; // for receiving AE and RV RPCs
-    int server_snapshot_fd; // for receiving InstallSnapshot RPCs
+    // int server_snapshot_fd; // for receiving InstallSnapshot RPCs
     int client_fd; // for sending AE and RV RPCs
-    int client_snapshot_fd; // for sending InstallSnapshot RPCs
-    int setup_socket(int& sock_fd, int port) { 
-        sock_fd = socket("AF_INET", SOCK_STREAM, 0);
-        if (sock_fd < 0) {
-            return -1;
-        }
-        struct sockaddr_in sock_addr;
-        sock_addr.sin_family = AF_INET;
-        sock_addr.sin_port = htons(port);
-        sock_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        std::memset(&(sock_addr.sin_zero), '\0', 8); // zero the rest of the struct
-        
-        int ok = bind(
-            sock_fd, 
-            (struct sockaddr*)&sock_addr,
-            sizeof(sockaddr)
-        );
-        if (ok != 0) {
-            return -1;
-        }
-        return 0;
-    }
-
-    int connect_socket(std::string_view ip_addr, int port, int sock_fd) {
-        struct sockaddr_in dest_addr;
-        dest_addr.sin_family = AF_INET;
-        dest_addr.sin_addr.s_addr = inet_addr(ip_addr);
-        dest_addr.sin_port = htons(port);
-        std::memset(&(dest_addr.sin_zero), '\0', 8);
-
-        int ok = connect(sock_fd, (struct sockaddr*)&dest_addr,sizeof(struct sockaddr));
-        if (ok < 0) {
-            return -1;
-        }
-    }
+    // int client_snapshot_fd; // for sending InstallSnapshot RPCs
+    bool leader;
 
     int current_term;
     int voted_for;
@@ -99,7 +90,7 @@ struct Node {
     int last_applied;
 };
 
-inline Node::Node() {
+inline Node::Node() : connections(MAX_POOL_SIZE) {
 
     // initialize timeout
     std::random_device rd;
@@ -107,37 +98,21 @@ inline Node::Node() {
     std::uniform_int_distribution<> distrib(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
     timeout = std::chrono::milliseconds(distrib(gen));
 
-    // set up sockets
-    int err;
-    err = setup_socket(server_fd, SERVER_PORT);
-    if (err != 0) {
-        // handle error
-    }
+    // calling `socket()`
+    setup_sockets();
 
-    err = setup_socket(server_snapshot_fd, SERVER_SNAPSHOT_PORT);
-    if (err != 0) {
-        // handle error
-    }
-
-    err = setup_socket(client_fd, CLIENT_PORT);
-    if (err != 0) {
-        // handle error
-    }
-
-    err = setup_socket(client_snapshot_fd, CLIENT_SNAPSHOT_PORT);
-    if (err != 0) {
-        // handle error
-    }
-
-    // reserve map space
-    // peers.reserve(MAX_POOL_SIZE);
-    // populate the map
-    for (const auto& addr : init_peers) {
-        peers[addr] = 0;
-    }
     // ...
 
 };
+
+inline Node::~Node() {
+    freeaddrinfo(res);
+    res = nullptr;
+
+    close(client_fd);
+    close(server_fd);
+    connections.~ConnectionPool();
+}
 
 inline void Node::start_election() {
     increment_current_term();
@@ -151,6 +126,6 @@ inline void Node::loop() {
         // if an RPC is received, no election
         return;
     }
-    // after timeout, trigger an election
+    // timeout exceeded; trigger an election
     start_election();
 }

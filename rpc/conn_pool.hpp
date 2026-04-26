@@ -1,4 +1,3 @@
-#include <array>
 #include <string_view>
 #include <unordered_map>
 #include "../config.hpp"
@@ -14,6 +13,13 @@ LRU:
 adding an element - when cache is full, remove the element at the tail of the list
 accesses - any access moves the item to the head of the list
 */
+enum class Side { Client, Server };
+
+struct SocketFDs {
+    int client_sock_fd;
+    int server_sock_fd;
+};
+
 template <typename K, typename V>
 struct TemplateLRUNode {
     K key;
@@ -22,7 +28,14 @@ struct TemplateLRUNode {
     TemplateLRUNode* next;
 };
 
-using LRUNode = TemplateLRUNode<std::string_view, int>;
+using LRUNode = TemplateLRUNode<std::string_view, SocketFDs>;
+
+// Returns a reference to the fd field corresponding to S, chosen at compile time.
+template <Side S>
+constexpr int& socket_field(SocketFDs& fds) {
+    if constexpr (S == Side::Client) return fds.client_sock_fd;
+    else                             return fds.server_sock_fd;
+}
 
 struct ConnectionPool {
     // keys are stored in the map as well as in the node struct
@@ -32,23 +45,30 @@ struct ConnectionPool {
     int size; // total # of connections currently maintained
     int capacity; // total # of peers that can be connected to
 
-    ConnectionPool(int cap);
-    ~ConnectionPool();
-    int get(std::string_view ip_addr);
+    explicit ConnectionPool(int cap);
+    virtual ~ConnectionPool();
+
+    SocketFDs get(std::string_view ip_addr);
+
+    // Sets only the fd for side S; the other fd is left untouched (or initialised to -1 for new entries).
+    template <Side S>
     void set(std::string_view ip_addr, int sock_fd);
+
+    // Clears the fd for side S. The node is evicted only when both fds reach -1.
+    template <Side S>
     void remove(std::string_view ip_addr);
 };
 
 inline ConnectionPool::ConnectionPool(int cap) : size{0}, capacity{cap} {
-    map.reserve(MAX_POOL_SIZE);
+    map.reserve(capacity);
 
     // placement new to reduce the # of syscalls
-    buffer = new char[sizeof(LRUNode) * MAX_POOL_SIZE];
+    buffer = new char[sizeof(LRUNode) * capacity];
     head = new(buffer) LRUNode;
     head->key = nullptr;
     head->prev = nullptr;
     auto curr = head;
-    for (int i = 1; i < MAX_POOL_SIZE; ++i) {
+    for (int i = 1; i < capacity; ++i) {
         auto prev = curr->prev;
         curr->next = new(buffer + (sizeof(LRUNode) * i)) LRUNode;
         curr->next->key = nullptr;
@@ -74,10 +94,10 @@ inline ConnectionPool::~ConnectionPool() {
     buffer = nullptr; 
 }
 
-inline int ConnectionPool::get(std::string_view ip_addr) {
+inline SocketFDs ConnectionPool::get(std::string_view ip_addr) {
     auto it = map.find(ip_addr);
     if (it == map.end()) {
-        return -1;
+        return SocketFDs{-1, -1};
     }
     // move this node to the head of the list
     auto curr = it->second;
@@ -92,12 +112,13 @@ inline int ConnectionPool::get(std::string_view ip_addr) {
     return curr->value;
 };
 
+template <Side S>
 inline void ConnectionPool::set(std::string_view ip_addr, int sock_fd) {
     // if key exists already
     auto it = map.find(ip_addr);
     if (it != map.end()) {
         auto curr = it->second;
-        curr->value = sock_fd;
+        socket_field<S>(curr->value) = sock_fd;
 
         // move the node to the head of the list
         auto prev = curr->prev;
@@ -116,17 +137,16 @@ inline void ConnectionPool::set(std::string_view ip_addr, int sock_fd) {
     if (size == capacity) {
         // get the tail node of the list
         auto curr = head;
-        while (curr->next) {
-            curr = curr->next;
-        }
+        while (curr->next) curr = curr->next;
         // update the KV pair in the map
         map.erase(curr->key);
         map[ip_addr] = curr;
 
-        curr->key = ip_addr;
-        curr->value = sock_fd;
-        
+        curr->key   = ip_addr;
+        curr->value = SocketFDs{-1, -1};
         // move it to the head of the list
+        socket_field<S>(curr->value) = sock_fd;
+
         auto prev = curr->prev;
         auto next = curr->next;
         prev->next = next;
@@ -144,9 +164,9 @@ inline void ConnectionPool::set(std::string_view ip_addr, int sock_fd) {
         if (curr->key == nullptr) break;
         curr = curr->next;
     }
-    // set the nodes key, value
-    curr->key = ip_addr;
-    curr->value = sock_fd;
+    curr->key   = ip_addr;
+    curr->value = SocketFDs{-1, -1};
+    socket_field<S>(curr->value) = sock_fd;
 
     // move this node to the head of the list
     auto prev = curr->prev;
@@ -161,15 +181,20 @@ inline void ConnectionPool::set(std::string_view ip_addr, int sock_fd) {
     // add the KV pair to `map`
     map[ip_addr] = curr;
     ++size;
+}
 
-};
-
+template <Side S>
 inline void ConnectionPool::remove(std::string_view ip_addr) {
     auto it = map.find(ip_addr);
     if (it == map.end()) return;
     auto curr = it->second;
-    curr->key = nullptr;
-    curr->value = -1;
-    map.erase(it->first);
-    --size;
+
+    socket_field<S>(curr->value) = -1;
+
+    // Only fully evict once both fds have been closed.
+    if (curr->value.client_sock_fd == -1 && curr->value.server_sock_fd == -1) {
+        curr->key = nullptr;
+        map.erase(it);
+        --size;
+    }
 }
