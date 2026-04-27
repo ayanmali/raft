@@ -22,10 +22,10 @@ struct SocketFDs {
 
 template <typename K, typename V>
 struct TemplateLRUNode {
-    K key;
-    V value;
-    TemplateLRUNode* prev;
-    TemplateLRUNode* next;
+    K key = K();
+    V value = V();
+    TemplateLRUNode* prev = nullptr;
+    TemplateLRUNode* next = nullptr;
 };
 
 using LRUNode = TemplateLRUNode<std::string_view, SocketFDs>;

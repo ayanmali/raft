@@ -11,19 +11,21 @@ Re-establish the connection to their IP address, then store that mapping in the 
 #include <unistd.h>
 #include <netdb.h>
 
+/*
+When catching an exception from this function, the client fd must be closed and the fd must be recreated.
+*/
 void Node::client_connect(std::string_view ip_addr, std::string_view port) {
     struct addrinfo hints, *p;
     std::memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET; // IPv4
+    hints.ai_family = AF_INET; // IPv4/v6
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_NUMERICHOST;
 
-    int err = getaddrinfo(ip_addr, port, &hints, &res);
-    if (err != 0) {
+    if (getaddrinfo(ip_addr, port, &hints, &res_client) != 0) {
         throw std::runtime_error("Error calling getaddrinfo()");
     }
 
-    for (p = res; p != NULL; p = p->ai_next) {
+    for (p = res_client; p != NULL; p = p->ai_next) {
         if (connect(client_fd, p->ai_addr, p->ai_addrlen) == 0) {
             break; // success
         }
@@ -31,7 +33,7 @@ void Node::client_connect(std::string_view ip_addr, std::string_view port) {
     }
 
     if (p == NULL) {
-        throw std::runtime_error("struct addrinfo `p` is NULL");
+        throw std::runtime_error("struct addrinfo* `p` is NULL");
     }
 
     return 0;
@@ -69,10 +71,3 @@ void Node::client_recv(int len, int flags) {
         throw std::runtime_error("Error receiving from client socket");
     }
 }
-
-// auto s = socket(AF_INET, );
-// connect();
-// send();
-// recv();
-// close();
-

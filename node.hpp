@@ -51,9 +51,8 @@ struct Node {
     int client_close();
 
     // Server
-    void server_bind();
-    void server_listen();
-    void server_accept();
+    // Binds, listens, and accepts
+    void server_expose(std::string_view port);
     void server_reply();
 
     // returns term, success
@@ -69,7 +68,8 @@ struct Node {
     ConnectionPool connections;
     //std::vector<std::string_view> peers(std::move(init_peers)); // nodes discover each other via a "gossip"-like protocol
     char sock_buf[MAX_BUFFER_SIZE];
-    struct addrinfo* res = nullptr; // used for client connections; freed in the destructor to avoid extra latency in the hotpath
+    struct addrinfo* res_client = nullptr; // used for client connections; freed in the destructor to avoid extra latency in the hotpath
+    struct addrinfo* res_server = nullptr; // used for server connections; freed in the destructor to avoid extra latency in the hotpath
 
     std::vector<LogEntry> log;
     std::vector<int> next_index; // one for each peer
@@ -106,8 +106,10 @@ inline Node::Node() : connections(MAX_POOL_SIZE) {
 };
 
 inline Node::~Node() {
-    freeaddrinfo(res);
-    res = nullptr;
+    freeaddrinfo(res_client);
+    res_client = nullptr;
+    freeaddrinfo(res_server);
+    res_server = nullptr;
 
     close(client_fd);
     close(server_fd);
