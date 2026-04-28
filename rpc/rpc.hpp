@@ -3,7 +3,6 @@
 
 */
 #include "../node.hpp"
-#include "./client.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <cstring>

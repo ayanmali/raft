@@ -15,7 +15,6 @@
 #include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
-#include <vector>
 
 #include "../config.hpp"
 #include "../thread_pool/threadpool.hpp"

@@ -8,8 +8,6 @@
 #include <netdb.h>
 #include <signal.h>
 #include <stdexcept>
-#include <string>
-#include <string_view>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -32,6 +30,7 @@ inline void bind_and_listen(int server_fd, const char* port) {
 
     int yes = 1;
     ::setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    ::setsockopt(server_fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
     addrinfo* p = nullptr;
     for (p = res; p != nullptr; p = p->ai_next) {

@@ -3,7 +3,6 @@
 #include <string_view>
 #include <unordered_map>
 #include <unistd.h>
-#include "../config.hpp"
 
 /*
 Fixed-capacity LRU mapping from peer IP (std::string_view) to a cached
