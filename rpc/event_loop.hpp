@@ -5,8 +5,8 @@
 #include <cstdint>
 #include <cstring>
 #include <fcntl.h>
-#include <memory>
 #include <netinet/in.h>
+#include <new>
 #include <stdexcept>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -17,7 +17,9 @@
 #include <unordered_set>
 #include <vector>
 
+#include "../config.hpp"
 #include "../thread_pool/threadpool.hpp"
+#include "./conns.hpp"
 
 /*
 Length-prefixed framing on the wire: [uint32_t len][len bytes payload].
@@ -36,28 +38,17 @@ Lifetime:
 - Each accepted connection gets a monotonically increasing conn_id. Tasks
   and Completions reference conn_id (not fd), so a closed-and-reused fd
   cannot mis-deliver a stale completion.
+- Connection objects are slab-allocated up front (ConnSlab). The conns map
+  holds non-owning pointers; the slab owns the underlying storage.
 - pending_tasks acts as a refcount. Connections with closing=true linger in
-  conns_ until all in-flight worker tasks return and their completions are
-  drained (and their bytes freed). Then they're dropped.
+  conns until all in-flight worker tasks return and their completions are
+  drained (and their bytes freed). Then they're released back to the slab.
 */
 
 inline constexpr size_t FRAME_HEADER_SIZE = sizeof(uint32_t);
-inline constexpr size_t RECV_CHUNK = 4096;
-inline constexpr int    EPOLL_BATCH = 64;
+inline constexpr size_t RECV_CHUNK        = 4096;
+inline constexpr int    EPOLL_BATCH       = 64;
 
-struct Connection {
-    int      fd;
-    uint64_t id;
-
-    std::vector<std::byte> rbuf;
-    std::vector<std::byte> wbuf;
-    size_t   wbuf_offset = 0;
-
-    int      pending_tasks = 0;
-    bool     closing = false;
-    uint32_t epoll_events = 0;
-    uint32_t next_seq = 0;
-};
 
 inline void set_nonblocking(int fd) {
     int flags = ::fcntl(fd, F_GETFL, 0);
@@ -68,8 +59,8 @@ inline void set_nonblocking(int fd) {
 }
 
 // EventLoop is templated on the concrete ThreadPool type so the calls into
-// the pool stay direct (no virtual dispatch). The pool only exposes
-// Submit() and DrainCompletions(); both are non-virtual and inlinable.
+// the pool stay direct (no virtual dispatch). The pool exposes its tasks
+// (SPMCQueue) and DrainCompletions; both are non-virtual and inlinable.
 template <typename Pool>
 struct EventLoop {
     int  epoll_fd  = -1;
@@ -77,9 +68,10 @@ struct EventLoop {
     int  event_fd  = -1;
     std::atomic<bool> stopped{false};
 
-    std::unordered_map<uint64_t, std::unique_ptr<Connection>> conns;
-    std::unordered_map<int, uint64_t>                         fd_to_id;
-    std::unordered_set<uint64_t>                              stalled; // backpressured
+    ConnSlab                                slab;
+    std::unordered_map<uint64_t, Connection*> conns;
+    std::unordered_map<int, uint64_t>       fd_to_id;
+    std::unordered_set<uint64_t>            stalled; // backpressured
 
     uint64_t next_conn_id = 1;
     Pool*    pool         = nullptr;
@@ -169,7 +161,13 @@ private:
                 if (errno == EINTR) continue;
                 return; // transient errors: drop and try again on next epoll wake
             }
-            auto c = std::make_unique<Connection>();
+
+            Connection* c = slab.Acquire();
+            if (!c) {
+                // Hard cap: refuse new connections rather than allocate.
+                ::close(fd);
+                continue;
+            }
             c->fd = fd;
             c->id = next_conn_id++;
             c->epoll_events = EPOLLIN | EPOLLRDHUP;
@@ -179,10 +177,11 @@ private:
             ev.data.fd = fd;
             if (::epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
                 ::close(fd);
+                slab.Release(c);
                 continue;
             }
             fd_to_id[fd] = c->id;
-            conns.emplace(c->id, std::move(c));
+            conns.emplace(c->id, c);
         }
     }
 
@@ -203,8 +202,8 @@ private:
         TryDispatch(c);
     }
 
-    // Attempts to extract one framed request and submit it as a Task.
-    // Returns true if a task was submitted.
+    // Attempts to extract one framed request and submit it as a Task by
+    // writing directly into the SPMC queue's slot. Returns true on success.
     bool TryDispatch(Connection& c) {
         if (c.closing || c.pending_tasks > 0) return false;
         if (c.rbuf.size() < FRAME_HEADER_SIZE) return false;
@@ -213,18 +212,25 @@ private:
         std::memcpy(&len, c.rbuf.data(), FRAME_HEADER_SIZE);
         if (c.rbuf.size() < FRAME_HEADER_SIZE + len) return false;
 
-        auto* data = new std::byte[len];
-        std::memcpy(data, c.rbuf.data() + FRAME_HEADER_SIZE, len);
-
-        Task t{c.id, c.next_seq, len, data};
-        if (!pool->Submit(t)) {
-            // Task queue full. Buffer stays put; we'll retry once completions
-            // drain. Disable EPOLLIN to apply network backpressure.
-            delete[] data;
+        Task* slot = pool->tasks.AcquireWriteSlot();
+        if (!slot) {
             stalled.insert(c.id);
             modify_interest(c, c.epoll_events & ~EPOLLIN);
             return false;
         }
+
+        slot->conn_id = c.id;
+        slot->seq     = c.next_seq;
+        slot->len     = len;
+        const std::byte* src = c.rbuf.data() + FRAME_HEADER_SIZE;
+        if (len <= INLINE_PAYLOAD_BYTES) {
+            slot->heap_data = nullptr;
+            std::memcpy(slot->inline_data, src, len);
+        } else {
+            slot->heap_data = new std::byte[len];
+            std::memcpy(slot->heap_data, src, len);
+        }
+        pool->tasks.CommitWrite();
 
         ++c.next_seq;
         c.rbuf.erase(c.rbuf.begin(), c.rbuf.begin() + FRAME_HEADER_SIZE + len);
@@ -244,7 +250,6 @@ private:
             CloseConn(c);
             return;
         }
-        // Buffer drained.
         c.wbuf.clear();
         c.wbuf_offset = 0;
         modify_interest(c, c.epoll_events & ~EPOLLOUT);
@@ -258,41 +263,38 @@ private:
             if (n == sizeof(counter)) break;
             if (n < 0 && errno == EINTR) continue;
             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
-            // Anything else is fatal-ish; just stop trying this round.
             break;
         }
 
         // Drain *all* sub-queues regardless of counter — workers may have
         // pushed without bumping the counter (or coalesced multiple wakes).
         pool->DrainCompletions([this](Completion& comp) {
+            const std::byte* data = payload(comp);
             auto cit = conns.find(comp.conn_id);
+
             if (cit == conns.end()) {
-                // Connection already reaped. Drop the response.
-                delete[] comp.data;
+                if (comp.heap_data) delete[] comp.heap_data;
                 return;
             }
             Connection& c = *cit->second;
 
             if (c.closing) {
-                // Peer hung up; don't bother sending. Just decrement the
-                // refcount and drop bytes.
-                delete[] comp.data;
+                if (comp.heap_data) delete[] comp.heap_data;
                 --c.pending_tasks;
                 if (c.pending_tasks == 0 && c.wbuf.empty()) ReapClosed(c);
                 return;
             }
 
-            c.wbuf.insert(c.wbuf.end(), comp.data, comp.data + comp.len);
-            delete[] comp.data;
+            c.wbuf.insert(c.wbuf.end(), data, data + comp.len);
+            if (comp.heap_data) delete[] comp.heap_data;
             --c.pending_tasks;
 
             modify_interest(c, c.epoll_events | EPOLLOUT);
         });
 
-        // Slots may have freed up in the task queue. Retry stalled
-        // connections; if dispatch succeeds, re-arm EPOLLIN. Snapshot ids
-        // first to avoid iterator invalidation if TryDispatch ends up
-        // closing a connection.
+        // Slots may have freed up. Retry stalled connections; if dispatch
+        // succeeds, re-arm EPOLLIN. Snapshot first to avoid iterator
+        // invalidation if TryDispatch closes a connection.
         std::vector<uint64_t> retry(stalled.begin(), stalled.end());
         for (uint64_t id : retry) {
             auto cit = conns.find(id);
@@ -302,8 +304,8 @@ private:
             if (TryDispatch(c)) stalled.erase(id);
         }
 
-        // Also try to dispatch the next request for any connection whose
-        // pending count just dropped to zero and still has buffered bytes.
+        // Dispatch the next request for any connection whose pending count
+        // just dropped to zero and still has buffered bytes.
         std::vector<uint64_t> dispatchable;
         dispatchable.reserve(conns.size());
         for (auto& [id, cptr] : conns) {
@@ -330,11 +332,12 @@ private:
         stalled.erase(c.id);
 
         if (c.pending_tasks == 0) ReapClosed(c);
-        // Otherwise zombie-keep until all in-flight completions return.
     }
 
     void ReapClosed(Connection& c) {
         const uint64_t id = c.id;
+        Connection* ptr   = &c;
         conns.erase(id);
+        slab.Release(ptr);
     }
 };

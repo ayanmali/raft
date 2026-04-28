@@ -1,3 +1,4 @@
+#pragma once
 /*
 On disk:
 - currentTerm
@@ -11,15 +12,26 @@ volatile (leaders) (reinitialized after election):
 - nextIndex[]
 - matchIndex[]
 */
-#include "./rpc/rpc.hpp"
 #include "./config.hpp"
 #include "./rpc/conn_pool.hpp"
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <initializer_list>
 #include <netdb.h>
 #include <random>
+#include <string_view>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <utility>
+#include <vector>
+
+// Forward-declared here; full definitions live in rpc/rpc.hpp. This avoids
+// the include cycle node.hpp <-> rpc/rpc.hpp.
+struct AppendEntriesPayload;
+struct RequestVotePayload;
+struct InstallSnapshotPayload;
 
 struct LogEntry {
     std::vector<std::byte> data;
@@ -45,30 +57,34 @@ struct Node {
     void handle_setup_errs(std::initializer_list<int> sock_fds);
 
     // Client
-    void client_connect(int& sock_fd, std::string_view ip_addr, int port);
-    void client_send(const char* msg, int len, int flags);
-    void client_recv(int len, int flags);
-    int client_close();
+    // Sends a length-prefixed request to ip:port and reads the
+    // length-prefixed reply into out[0..out_cap). Returns the reply length
+    // on success. Routes through the LRU connection pool: hit -> reuse fd,
+    // miss -> connect + cache. On dead-connection errors, closes the fd,
+    // drops the cache entry, reconnects, and retries exactly once.
+    uint32_t client_request(std::string_view ip,
+                            std::string_view port,
+                            const std::byte* msg, uint32_t len,
+                            std::byte* out, uint32_t out_cap);
 
     // Server
     // Binds, listens, and accepts
-    void server_expose(std::string_view port);
+    void server_expose(const char* port);
 
     // returns term, success
-    std::pair<int, bool> send_append_entries_rpc(const AppendEntriesPayload& payload);
+    std::pair<int, bool> send_append_entries_rpc(std::string_view peer_ip,
+                                                 const AppendEntriesPayload& payload);
     // returns term, vote_granted
-    std::pair<int, bool> send_request_vote_rpc(const RequestVotePayload& payload);
+    std::pair<int, bool> send_request_vote_rpc(std::string_view peer_ip,
+                                               const RequestVotePayload& payload);
     // returns current term #, for leader to update
-    int send_install_snapshot_rpc(const InstallSnapshotPayload& payload);
+    int send_install_snapshot_rpc(std::string_view peer_ip,
+                                  const InstallSnapshotPayload& payload);
 
     void loop();
 
     private:
     ConnectionPool connections;
-    //std::vector<std::string_view> peers(std::move(init_peers)); // nodes discover each other via a "gossip"-like protocol
-    char sock_buf[MAX_BUFFER_SIZE];
-    struct addrinfo* res_client = nullptr; // used for client connections; freed in the destructor to avoid extra latency in the hotpath
-    struct addrinfo* res_server = nullptr; // used for server connections; freed in the destructor to avoid extra latency in the hotpath
 
     std::vector<LogEntry> log;
     std::vector<int> next_index; // one for each peer
@@ -76,11 +92,10 @@ struct Node {
 
     std::chrono::milliseconds timeout; // randomly chosen from 150-300 ms
 
-    // sockets
-    int server_fd; // for receiving AE and RV RPCs
-    // int server_snapshot_fd; // for receiving InstallSnapshot RPCs
-    int client_fd; // for sending AE and RV RPCs
-    // int client_snapshot_fd; // for sending InstallSnapshot RPCs
+    // Per-peer client fds live in `connections`. The server fd below is the
+    // listening socket; per-connection fds for inbound RPCs are owned by
+    // the event loop's ConnSlab.
+    int  server_fd;
     bool leader;
 
     int current_term;
@@ -105,14 +120,8 @@ inline Node::Node() : connections(MAX_POOL_SIZE) {
 };
 
 inline Node::~Node() {
-    freeaddrinfo(res_client);
-    res_client = nullptr;
-    freeaddrinfo(res_server);
-    res_server = nullptr;
-
-    close(client_fd);
-    close(server_fd);
-    connections.~ConnectionPool();
+    connections.close_all();
+    if (server_fd >= 0) close(server_fd);
 }
 
 inline void Node::start_election() {

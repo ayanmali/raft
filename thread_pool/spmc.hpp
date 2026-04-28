@@ -37,6 +37,18 @@ struct SPMCQueue {
         return true;
     }
 
+    // Slot-claim API: single producer reserves the next slot, writes into
+    // it directly, then publishes via CommitWrite. Returns nullptr if full.
+    T* AcquireWriteSlot() {
+        const uint64_t write = write_idx.load(std::memory_order_relaxed);
+        const uint64_t read  = read_idx.load(std::memory_order_acquire);
+        if (write - read >= N) return nullptr;
+        return &buffer[write & (N - 1)];
+    }
+    void CommitWrite() {
+        write_idx.fetch_add(1, std::memory_order_release);
+    }
+
     bool PushMany(std::span<const T> data) {
         //if (data.size() > N) return false;  // message does not fit at all
         const uint64_t write = write_idx.load(std::memory_order_relaxed);

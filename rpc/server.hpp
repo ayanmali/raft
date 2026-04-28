@@ -65,11 +65,14 @@ inline void Node::server_expose(const char* port) {
 
     // The handler is stored by its real type inside ThreadPool, so the worker
     // call site is a direct call (no std::function indirection, no heap).
-    // Capture-free lambda here; capture-by-value works the same way.
-    auto handler = [](const std::byte* req, uint32_t len) -> OwnedBytes {
-        auto* out = new std::byte[len];
-        std::memcpy(out, req, len);
-        return OwnedBytes{out, len};
+    // The handler writes its response into the caller-provided buffer and
+    // returns the response length. A return > out_cap signals "buffer too
+    // small" and the caller will retry with a heap-allocated buffer.
+    auto handler = [](const std::byte* req, uint32_t req_len,
+                      std::byte* out, uint32_t out_cap) -> uint32_t {
+        if (req_len > out_cap) return req_len;          // size probe
+        std::memcpy(out, req, req_len);
+        return req_len;
     };
     using Pool = ThreadPool<decltype(handler)>;
 

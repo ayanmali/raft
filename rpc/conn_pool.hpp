@@ -1,200 +1,194 @@
+#pragma once
+#include <cstddef>
 #include <string_view>
 #include <unordered_map>
+#include <unistd.h>
 #include "../config.hpp"
 
 /*
-stores a fixed capacity of mappings between ip addresses (std::string_view) and socket FDs (int).
+Fixed-capacity LRU mapping from peer IP (std::string_view) to a cached
+client-side socket fd (int).
 
-Connections are evicted lazily. If a message is being sent to an IP address
-that doesn't exist in the map and the map is full, then the least recently/frequently
-used mapping is evicted to make room for the new one.
+Keys are non-owning std::string_view. The caller is responsible for keeping
+the underlying string storage alive for the lifetime of the entry. The
+static peer list in config.hpp satisfies this. If peers ever become
+dynamic, switch the key type to std::string.
 
-LRU:
-adding an element - when cache is full, remove the element at the tail of the list
-accesses - any access moves the item to the head of the list
+Memory: nodes are placement-new'd into one pre-allocated buffer in the
+ctor; nothing allocates or frees per-operation. Two pointer chains are
+maintained:
+  - The doubly-linked LRU list (head=MRU, tail=LRU). Used only for ordering
+    and tail-eviction.
+  - An intrusive singly-linked freelist (next_free), used for O(1)
+    acquire/release of vacant slots. Mirrors the ConnSlab pattern in
+    rpc/conns.hpp.
+
+Operations:
+  - get(ip)        : O(1) map lookup; on hit, promote to head and return fd.
+  - set(ip, fd)    : O(1). If key exists, update + promote. If new and
+                     freelist is non-empty, pop a slot. If new and the pool
+                     is full, evict tail and reuse it.
+  - remove(ip)     : O(1). Unlink from LRU list, push slot onto freelist,
+                     and erase from map. Caller closes the fd.
 */
-enum class Side { Client, Server };
 
-struct SocketFDs {
-    int client_sock_fd;
-    int server_sock_fd;
+struct LRUNode {
+    std::string_view key{};
+    int              value     = -1;
+    LRUNode*         prev      = nullptr;   // LRU order
+    LRUNode*         next      = nullptr;   // LRU order
+    LRUNode*         next_free = nullptr;   // freelist (only valid when free)
 };
-
-template <typename K, typename V>
-struct TemplateLRUNode {
-    K key = K();
-    V value = V();
-    TemplateLRUNode* prev = nullptr;
-    TemplateLRUNode* next = nullptr;
-};
-
-using LRUNode = TemplateLRUNode<std::string_view, SocketFDs>;
-
-// Returns a reference to the fd field corresponding to S, chosen at compile time.
-template <Side S>
-constexpr int& socket_field(SocketFDs& fds) {
-    if constexpr (S == Side::Client) return fds.client_sock_fd;
-    else                             return fds.server_sock_fd;
-}
 
 struct ConnectionPool {
-    // keys are stored in the map as well as in the node struct
-    char* buffer;
+    char*       buffer    = nullptr;
+    LRUNode*    head      = nullptr;        // MRU
+    LRUNode*    tail      = nullptr;        // LRU
+    LRUNode*    free_head = nullptr;        // top of freelist
+    int         size      = 0;              // # of entries in the LRU list
+    int         capacity  = 0;
     std::unordered_map<std::string_view, LRUNode*> map;
-    LRUNode* head;
-    int size; // total # of connections currently maintained
-    int capacity; // total # of peers that can be connected to
 
     explicit ConnectionPool(int cap);
-    virtual ~ConnectionPool();
+    ~ConnectionPool();
 
-    SocketFDs get(std::string_view ip_addr);
+    ConnectionPool(const ConnectionPool&)            = delete;
+    ConnectionPool& operator=(const ConnectionPool&) = delete;
 
-    // Sets only the fd for side S; the other fd is left untouched (or initialised to -1 for new entries).
-    template <Side S>
-    void set(std::string_view ip_addr, int sock_fd);
+    // Returns the cached fd for ip_addr, or -1 on miss. On hit the entry is
+    // promoted to MRU.
+    int  get(std::string_view ip_addr);
 
-    // Clears the fd for side S. The node is evicted only when both fds reach -1.
-    template <Side S>
-    void remove(std::string_view ip_addr);
-};
+    // Inserts or updates the cached fd for ip_addr and promotes it to MRU.
+    // If the pool is at capacity for a new key, the LRU tail entry is
+    // evicted and the caller is given back the evicted fd via *evicted_fd
+    // (so the caller can close() it). Pass nullptr to ignore.
+    void set(std::string_view ip_addr, int fd, int* evicted_fd = nullptr);
 
-inline ConnectionPool::ConnectionPool(int cap) : size{0}, capacity{cap} {
-    map.reserve(capacity);
+    // Drops the entry for ip_addr from the pool. Returns the fd that was
+    // cached (caller must close), or -1 if there was no entry.
+    int  remove(std::string_view ip_addr);
 
-    // placement new to reduce the # of syscalls
-    buffer = new char[sizeof(LRUNode) * capacity];
-    head = new(buffer) LRUNode;
-    head->key = nullptr;
-    head->prev = nullptr;
-    auto curr = head;
-    for (int i = 1; i < capacity; ++i) {
-        auto prev = curr->prev;
-        curr->next = new(buffer + (sizeof(LRUNode) * i)) LRUNode;
-        curr->next->key = nullptr;
-        auto old = curr;
-        curr = curr->next;
-        curr->prev = old;
-        prev = old;
+    // Closes every cached fd and clears the pool. Used at shutdown.
+    void close_all();
+
+private:
+    void unlink(LRUNode* n) {
+        if (n->prev) n->prev->next = n->next; else head = n->next;
+        if (n->next) n->next->prev = n->prev; else tail = n->prev;
+        n->prev = n->next = nullptr;
+    }
+    void push_front(LRUNode* n) {
+        n->prev = nullptr;
+        n->next = head;
+        if (head) head->prev = n;
+        else      tail = n;
+        head = n;
+    }
+    LRUNode* acquire_free() {
+        if (!free_head) return nullptr;
+        LRUNode* n = free_head;
+        free_head = n->next_free;
+        n->next_free = nullptr;
+        return n;
+    }
+    void release_free(LRUNode* n) {
+        n->key       = {};
+        n->value     = -1;
+        n->next_free = free_head;
+        free_head    = n;
     }
 };
+
+inline ConnectionPool::ConnectionPool(int cap) : capacity{cap} {
+    map.reserve(static_cast<size_t>(capacity));
+
+    buffer = new char[sizeof(LRUNode) * static_cast<size_t>(capacity)];
+    for (int i = 0; i < capacity; ++i) {
+        auto* n = ::new (buffer + i * sizeof(LRUNode)) LRUNode();
+        n->next_free = free_head;
+        free_head = n;
+    }
+}
 
 inline ConnectionPool::~ConnectionPool() {
-    int offset = 0;
-    // deallocate each LRUNode
-    auto ptr = head;
-    while (ptr) {
-        auto idk = ptr;
-        auto next = ptr->next;
-        ptr = next;
-        idk->~LRUNode();
+    // Walk by buffer index — pointer chains may be split between the LRU
+    // list and the freelist by this point.
+    for (int i = 0; i < capacity; ++i) {
+        reinterpret_cast<LRUNode*>(buffer + i * sizeof(LRUNode))->~LRUNode();
     }
-    // deallocate the buffer
     delete[] buffer;
-    buffer = nullptr; 
+    buffer = nullptr;
 }
 
-inline SocketFDs ConnectionPool::get(std::string_view ip_addr) {
+inline int ConnectionPool::get(std::string_view ip_addr) {
     auto it = map.find(ip_addr);
-    if (it == map.end()) {
-        return SocketFDs{-1, -1};
-    }
-    // move this node to the head of the list
-    auto curr = it->second;
-    auto prev = curr->prev;
-    auto next = curr->next;
-    prev->next = next;
-    next->prev = prev;
-    curr->prev = nullptr;
-    curr->next = head;
-    head->prev = curr;
-    head = curr;
-    return curr->value;
-};
+    if (it == map.end()) return -1;
+    LRUNode* n = it->second;
+    unlink(n);
+    push_front(n);
+    return n->value;
+}
 
-template <Side S>
-inline void ConnectionPool::set(std::string_view ip_addr, int sock_fd) {
-    // if key exists already
-    auto it = map.find(ip_addr);
-    if (it != map.end()) {
-        auto curr = it->second;
-        socket_field<S>(curr->value) = sock_fd;
+inline void ConnectionPool::set(std::string_view ip_addr, int fd, int* evicted_fd) {
+    if (evicted_fd) *evicted_fd = -1;
 
-        // move the node to the head of the list
-        auto prev = curr->prev;
-        auto next = curr->next;
-        prev->next = next;
-        next->prev = prev;
-        curr->prev = nullptr;
-        curr->next = head;
-        head->prev = curr;
-        head = curr;
-        return;
-    }
-    // adding a new node
-    
-    // change the tail node's data and move it to the head
-    if (size == capacity) {
-        // get the tail node of the list
-        auto curr = head;
-        while (curr->next) curr = curr->next;
-        // update the KV pair in the map
-        map.erase(curr->key);
-        map[ip_addr] = curr;
-
-        curr->key   = ip_addr;
-        curr->value = SocketFDs{-1, -1};
-        // move it to the head of the list
-        socket_field<S>(curr->value) = sock_fd;
-
-        auto prev = curr->prev;
-        auto next = curr->next;
-        prev->next = next;
-        next->prev = prev;
-        curr->prev = nullptr;
-        curr->next = head;
-        head->prev = curr;
-        head = curr;
+    if (auto it = map.find(ip_addr); it != map.end()) {
+        LRUNode* n = it->second;
+        n->value = fd;
+        unlink(n);
+        push_front(n);
         return;
     }
 
-    // find the first vacant node in the buffer
-    auto curr = head;
-    while (curr->next) {
-        if (curr->key == nullptr) break;
-        curr = curr->next;
+    if (LRUNode* n = acquire_free()) {
+        n->key   = ip_addr;
+        n->value = fd;
+        push_front(n);
+        map.emplace(ip_addr, n);
+        ++size;
+        return;
     }
-    curr->key   = ip_addr;
-    curr->value = SocketFDs{-1, -1};
-    socket_field<S>(curr->value) = sock_fd;
 
-    // move this node to the head of the list
-    auto prev = curr->prev;
-    auto next = curr->next;
-    prev->next = next;
-    next->prev = prev;
-    curr->prev = nullptr;
-    curr->next = head;
-    head->prev = curr;
-    head = curr;
-
-    // add the KV pair to `map`
-    map[ip_addr] = curr;
-    ++size;
+    // Pool full: evict LRU tail and reuse its slot for the new key.
+    LRUNode* n = tail;
+    if (evicted_fd) *evicted_fd = n->value;
+    map.erase(n->key);
+    unlink(n);
+    n->key   = ip_addr;
+    n->value = fd;
+    push_front(n);
+    map.emplace(ip_addr, n);
 }
 
-template <Side S>
-inline void ConnectionPool::remove(std::string_view ip_addr) {
+inline int ConnectionPool::remove(std::string_view ip_addr) {
     auto it = map.find(ip_addr);
-    if (it == map.end()) return;
-    auto curr = it->second;
+    if (it == map.end()) return -1;
+    LRUNode* n = it->second;
+    int fd = n->value;
+    map.erase(it);
+    unlink(n);
+    release_free(n);
+    --size;
+    return fd;
+}
 
-    socket_field<S>(curr->value) = -1;
-
-    // Only fully evict once both fds have been closed.
-    if (curr->value.client_sock_fd == -1 && curr->value.server_sock_fd == -1) {
-        curr->key = nullptr;
-        map.erase(it);
-        --size;
+inline void ConnectionPool::close_all() {
+    for (auto& [k, n] : map) {
+        if (n->value >= 0) ::close(n->value);
     }
+    map.clear();
+    // Reset both lists to "all free".
+    head = tail = nullptr;
+    free_head = nullptr;
+    for (int i = 0; i < capacity; ++i) {
+        auto* n = reinterpret_cast<LRUNode*>(buffer + i * sizeof(LRUNode));
+        n->key       = {};
+        n->value     = -1;
+        n->prev      = nullptr;
+        n->next      = nullptr;
+        n->next_free = free_head;
+        free_head    = n;
+    }
+    size = 0;
 }

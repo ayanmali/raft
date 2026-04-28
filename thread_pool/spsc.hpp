@@ -39,6 +39,19 @@ struct SPSCQueue {
         return true;
     }
 
+    // Slot-claim API: producer reserves the next slot, writes into it
+    // directly (avoiding the local-then-memcpy overhead of PushOne), then
+    // publishes via CommitWrite. Returns nullptr if the queue is full.
+    T* AcquireWriteSlot() {
+        const size_t write = write_idx.load(std::memory_order_relaxed);
+        const size_t read  = read_idx.load(std::memory_order_acquire);
+        if (write - read >= N) return nullptr;
+        return &buffer[write & (N - 1)];
+    }
+    void CommitWrite() {
+        write_idx.fetch_add(1, std::memory_order_release);
+    }
+
     bool PushMany(std::span<const T> data) {
         //if (data.size() > N) return false;  // message does not fit at all
         const size_t write = write_idx.load(std::memory_order_relaxed);
