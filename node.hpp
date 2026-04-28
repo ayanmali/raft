@@ -53,7 +53,6 @@ struct Node {
     // Server
     // Binds, listens, and accepts
     void server_expose(std::string_view port);
-    void server_reply();
 
     // returns term, success
     std::pair<int, bool> send_append_entries_rpc(const AppendEntriesPayload& payload);
