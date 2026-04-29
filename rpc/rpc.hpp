@@ -11,12 +11,15 @@
 #include <vector>
 
 struct AppendEntriesPayload {
-    const std::vector<std::byte>& entries;
+    std::vector<std::byte>& entries;
     int term;
     int leader_id;
     int prev_log_idx;
     int prev_log_term;
     int leader_commit;
+
+    /* serializes struct into caller-provided buffer of bytes */
+    ssize_t serialize_and_send(int sock_fd);
 };
 
 struct RequestVotePayload {
@@ -24,16 +27,22 @@ struct RequestVotePayload {
     int candidate_id;
     int last_log_idx;
     int last_log_term;
+
+    /* serializes struct into caller-provided buffer of bytes */
+    ssize_t serialize_and_send(int sock_fd);
 };
 
 struct InstallSnapshotPayload {
-    const std::vector<std::byte>& data;
+    std::vector<std::byte>& snapshot;
     int term;
     int leader_id;
     int last_included_idx;
     int last_included_term;
     int offset;
     bool done; // true if this is the last chunk
+
+    /* serializes struct into caller-provided buffer of bytes */
+    ssize_t serialize_and_send(int sock_fd);
 };
 
 

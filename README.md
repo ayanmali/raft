@@ -1,7 +1,8 @@
 TODO
 
+- serialization/deserialization across the network; scatter/gather with writev
 - TCP client and server
-  - enable TCP_NODELAY, TCP_QUICKACK, TCP_CORK
+  - enable TCP_QUICKACK, TCP_CORK
 - Replace std vectors with stack-allocated arrays or memory pools
 
 Done
