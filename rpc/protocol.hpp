@@ -265,19 +265,44 @@ inline InstallSnapshotPayload deserialize_is(int sock_fd) {
     return out;
 }
 
-// Read the 1-byte RPC id, then dispatch to the matching deserialize_xx and
-// hand the result to `v`. The visitor must be callable with each of the
-// three payload types (a generic lambda + `if constexpr` works well).
+template<typename Visitor>
+using Entry = void(*)(Visitor&&);
+
+template <typename Visitor>
+constexpr auto make_table() {
+    return std::array<Entry<Visitor>, 3>{
+        [](int sock_fd, Visitor&& v) { v(deserialize_ae(sock_fd)); },
+        [](int sock_fd, Visitor&& v) { v(deserialize_rv(sock_fd)); },
+        [](int sock_fd, Visitor&& v) { v(deserialize_is(sock_fd)); },
+    };
+}
+
+template <typename Visitor>
+void deserialize_dispatch(int i, int sock_fd, Visitor&& v) {
+    static constexpr auto table = make_table<Visitor>();
+    table[i](sock_fd, std::forward<Visitor>(v));
+}
+
+// Read the 1-byte RPC id, then dispatch to the matching deserialize_xx and pass the result to `v`.
 template <class Visitor>
 inline void deserialize_and_receive(int sock_fd, Visitor&& v) {
     uint8_t id;
     iovec iov{ &id, sizeof(id) };
     detail::read_full(sock_fd, &iov, 1);
 
-    switch (id) {
-        case AE_RPC_ID: std::forward<Visitor>(v)(deserialize_ae(sock_fd)); break;
-        case RV_RPC_ID: std::forward<Visitor>(v)(deserialize_rv(sock_fd)); break;
-        case IS_RPC_ID: std::forward<Visitor>(v)(deserialize_is(sock_fd)); break;
-        default: throw std::runtime_error("unknown RPC id");
-    }
+    /* Call example
+
+    Consuming value (no return): 
+    deserialize_dispatch(0, sock_fd, [](auto&& x) {
+    std::cout << x << "\n";
+    });
+    
+    */
+
+    // switch (id) {
+    //     case AE_RPC_ID: std::forward<Visitor>(v)(deserialize_ae(sock_fd)); break;
+    //     case RV_RPC_ID: std::forward<Visitor>(v)(deserialize_rv(sock_fd)); break;
+    //     case IS_RPC_ID: std::forward<Visitor>(v)(deserialize_is(sock_fd)); break;
+    //     default: throw std::runtime_error("unknown RPC id");
+    // }
 }
