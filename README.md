@@ -1,12 +1,16 @@
 TODO
 
-- serialization/deserialization across the network; scatter/gather with writev
+- serialization/deserialization across the network
+  - reply-side logic
 - TCP client and server
   - enable TCP_QUICKACK, TCP_CORK
 - Replace std vectors with stack-allocated arrays or memory pools
+- separate sockets for IS RPCs 
 
 Done
 
+- TCP client and server
+  - enable tcp no delay
 - connection pooling to limit the # of active client sockets at once
   - when creating a socket to reach out to another node, if the pool is full, then prune the least recently used connection
   - LRU cache

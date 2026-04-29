@@ -1,163 +1,283 @@
-/* 
+#pragma once
+/*
 Binary serialization/deserialization
 
-Every RPC comes with a header and payload.
-Header includes:
--  an ID to indicate what kind
-of RPC the network payload is
+Every RPC frame is:
+  uint8_t id          (RPC type tag)
+  fixed-size fields   (network byte order, uint32_t each unless noted)
+  optional length-prefixed trailer (uint32_t length, then `length` opaque bytes)
 
-deserialization is unique for each RPC type.
+Receive side dispatches on `id` and calls a generic visitor with the
+strongly-typed payload.
 */
 
 #include "rpc.hpp"
+#include <arpa/inet.h>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
+#include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/uio.h>
+#include <utility>
+#include <vector>
 
+static constexpr uint32_t MAX_VECTOR_SIZE_SANITY = 8192;
 static constexpr uint8_t AE_RPC_ID = 1;
 static constexpr uint8_t RV_RPC_ID = 2;
 static constexpr uint8_t IS_RPC_ID = 3;
 
-static constexpr uint32_t AE_WRITEV_BUFS = 8;
-static constexpr uint32_t RV_WRITEV_BUFS = 5;
-static constexpr uint32_t IS_WRITEV_BUFS = 9;
+namespace detail {
+
+// Drain `iov` of length `iovcnt` from `fd` using readv, looping over partial
+// reads and advancing the iov front as bytes arrive. Throws on peer close or
+// hard error.
+inline ssize_t read_full(int fd, iovec* iov, int iovcnt) {
+    ssize_t total = 0;
+    while (iovcnt > 0) {
+        ssize_t n = ::readv(fd, iov, iovcnt);
+        if (n == 0) throw std::runtime_error("peer closed connection during read");
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            throw std::runtime_error("readv failed");
+        }
+        total += n;
+        while (iovcnt > 0 && static_cast<size_t>(n) >= iov->iov_len) {
+            n -= static_cast<ssize_t>(iov->iov_len);
+            ++iov;
+            --iovcnt;
+        }
+        if (iovcnt > 0 && n > 0) {
+            iov->iov_base = static_cast<char*>(iov->iov_base) + n;
+            iov->iov_len  -= static_cast<size_t>(n);
+        }
+    }
+    return total;
+}
+
+// Mirror of read_full for writev.
+inline ssize_t write_full(int fd, iovec* iov, int iovcnt) {
+    ssize_t total = 0;
+    while (iovcnt > 0) {
+        ssize_t n = ::writev(fd, iov, iovcnt);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            throw std::runtime_error("writev failed");
+        }
+        total += n;
+        while (iovcnt > 0 && static_cast<size_t>(n) >= iov->iov_len) {
+            n -= static_cast<ssize_t>(iov->iov_len);
+            ++iov;
+            --iovcnt;
+        }
+        if (iovcnt > 0 && n > 0) {
+            iov->iov_base = static_cast<char*>(iov->iov_base) + n;
+            iov->iov_len  -= static_cast<size_t>(n);
+        }
+    }
+    return total;
+}
+
+} // namespace detail
 
 /*
-Raw form:
-RPC ID
-Entries vector length
-Entries vector data
-Term #
-Leader ID
-Previous log index
-Previous log term
-Leader commit index
+AppendEntries wire layout:
+  id (u8) | term | leader_id | prev_log_idx | prev_log_term | leader_commit
+  | entries_len | entries_data...
 */
-inline ssize_t AppendEntriesPayload::serialize_and_send(int sock_fd) {
-    // Convert fields into safe format
-    auto net_id = htonl(AE_RPC_ID);
-    auto net_entries_len = htonl(entries.size());
-    auto net_term = htonl(term);
-    auto net_leader_id = htonl(leader_id);
-    auto net_prev_log_idx = htonl(prev_log_idx);
-    auto net_prev_log_term = htonl(prev_log_term);
-    auto net_leader_commit = htonl(leader_commit);
+inline ssize_t serialize_and_send(const AppendEntriesPayload& payload, int sock_fd) {
+    uint8_t  net_id            = AE_RPC_ID;
+    uint32_t net_term          = htonl(payload.term);
+    uint32_t net_leader_id     = htonl(payload.leader_id);
+    uint32_t net_prev_log_idx  = htonl(payload.prev_log_idx);
+    uint32_t net_prev_log_term = htonl(payload.prev_log_term);
+    uint32_t net_leader_commit = htonl(payload.leader_commit);
+    uint32_t net_entries_len   = htonl(static_cast<uint32_t>(payload.entries.size()));
 
-    // Sending on the socket
-    iovec iov[AE_WRITEV_BUFS];
+    iovec iov[8];
+    iov[0].iov_base = &net_id;            iov[0].iov_len = sizeof(net_id);
+    iov[1].iov_base = &net_term;          iov[1].iov_len = sizeof(net_term);
+    iov[2].iov_base = &net_leader_id;     iov[2].iov_len = sizeof(net_leader_id);
+    iov[3].iov_base = &net_prev_log_idx;  iov[3].iov_len = sizeof(net_prev_log_idx);
+    iov[4].iov_base = &net_prev_log_term; iov[4].iov_len = sizeof(net_prev_log_term);
+    iov[5].iov_base = &net_leader_commit; iov[5].iov_len = sizeof(net_leader_commit);
+    iov[6].iov_base = &net_entries_len;   iov[6].iov_len = sizeof(net_entries_len);
+    iov[7].iov_base = const_cast<std::byte*>(payload.entries.data());
+    iov[7].iov_len  = payload.entries.size();
 
-    // Header
-    iov[0].iov_base = &net_id;
-    iov[0].iov_len = sizeof(net_id);
-
-    // Payload data
-
-    // vector stored as length, followed by data
-    iov[1].iov_base = &net_entries_len;
-    iov[1].iov_len = sizeof(net_entries_len);
-
-    iov[2].iov_base = entries.data();
-    iov[2].iov_len = net_entries_len;
-
-    iov[3].iov_base = &net_term;
-    iov[3].iov_len = sizeof(net_term);
-
-    iov[4].iov_base = &net_leader_id;
-    iov[4].iov_len = sizeof(net_leader_id);
-
-    iov[5].iov_base = &net_prev_log_idx;
-    iov[5].iov_len = sizeof(net_prev_log_idx);
-
-    iov[6].iov_base = &net_prev_log_term;
-    iov[6].iov_len = sizeof(net_prev_log_term);
-
-    iov[7].iov_base = &net_leader_commit;
-    iov[7].iov_len = sizeof(net_leader_commit);
-
-    auto bytes_sent = writev(sock_fd, iov, AE_WRITEV_BUFS);
-    return bytes_sent;
-
+    return detail::write_full(sock_fd, iov, 8);
 }
 
-inline ssize_t RequestVotePayload::serialize_and_send(int sock_fd) {
-    // Convert fields into safe format
-    auto net_id = htonl(RV_RPC_ID);
-    auto net_term = htonl(term);
-    auto net_candidate_id = htonl(candidate_id);
-    auto net_last_log_idx = htonl(last_log_idx);
-    auto net_last_log_term = htonl(last_log_term);
+/*
+RequestVote wire layout:
+  id (u8) | term | candidate_id | last_log_idx | last_log_term
+*/
+inline ssize_t serialize_and_send(const RequestVotePayload& payload, int sock_fd) {
+    uint8_t  net_id            = RV_RPC_ID;
+    uint32_t net_term          = htonl(payload.term);
+    uint32_t net_candidate_id  = htonl(payload.candidate_id);
+    uint32_t net_last_log_idx  = htonl(payload.last_log_idx);
+    uint32_t net_last_log_term = htonl(payload.last_log_term);
 
-    // Sending on the socket
-    iovec iov[RV_WRITEV_BUFS];
+    iovec iov[5];
+    iov[0].iov_base = &net_id;            iov[0].iov_len = sizeof(net_id);
+    iov[1].iov_base = &net_term;          iov[1].iov_len = sizeof(net_term);
+    iov[2].iov_base = &net_candidate_id;  iov[2].iov_len = sizeof(net_candidate_id);
+    iov[3].iov_base = &net_last_log_idx;  iov[3].iov_len = sizeof(net_last_log_idx);
+    iov[4].iov_base = &net_last_log_term; iov[4].iov_len = sizeof(net_last_log_term);
 
-    // Header
-    iov[0].iov_base = &net_id;
-    iov[0].iov_len = sizeof(net_id);
-
-    // Payload data
-    iov[1].iov_base = &net_term;
-    iov[1].iov_len = sizeof(net_term);
-
-    iov[2].iov_base = &net_candidate_id;
-    iov[2].iov_len = sizeof(net_candidate_id);
-
-    iov[3].iov_base = &net_last_log_idx;
-    iov[3].iov_len = sizeof(net_last_log_idx);
-
-    iov[4].iov_base = &net_last_log_term;
-    iov[4].iov_len = sizeof(net_last_log_term);
-
-    auto bytes_sent = writev(sock_fd, iov, RV_WRITEV_BUFS);
-    return bytes_sent;
-
+    return detail::write_full(sock_fd, iov, 5);
 }
 
-inline ssize_t InstallSnapshotPayload::serialize_and_send(int sock_fd) {
-    // Convert fields into safe format
-    auto net_id = htonl(AE_RPC_ID);
-    auto net_snapshot_len = htonl(snapshot.size());
-    auto net_term = htonl(term);
-    auto net_leader_id = htonl(leader_id);
-    auto net_last_included_idx = htonl(last_included_idx);
-    auto net_last_included_term = htonl(last_included_term);
-    auto net_offset = htonl(offset);
-    auto net_done = htonl(done);
+/*
+InstallSnapshot wire layout:
+  id (u8) | term | leader_id | last_included_idx | last_included_term
+  | offset | done (u8) | snapshot_len | snapshot_data...
+*/
+inline ssize_t serialize_and_send(const InstallSnapshotPayload& payload, int sock_fd) {
+    uint8_t  net_id                 = IS_RPC_ID;
+    uint32_t net_term               = htonl(payload.term);
+    uint32_t net_leader_id          = htonl(payload.leader_id);
+    uint32_t net_last_included_idx  = htonl(payload.last_included_idx);
+    uint32_t net_last_included_term = htonl(payload.last_included_term);
+    uint32_t net_offset             = htonl(payload.offset);
+    uint8_t  net_done               = payload.done;
+    uint32_t net_snapshot_len       = htonl(static_cast<uint32_t>(payload.snapshot.size()));
 
-    // Sending on the socket
-    iovec iov[IS_WRITEV_BUFS];
+    iovec iov[9];
+    iov[0].iov_base = &net_id;                 iov[0].iov_len = sizeof(net_id);
+    iov[1].iov_base = &net_term;               iov[1].iov_len = sizeof(net_term);
+    iov[2].iov_base = &net_leader_id;          iov[2].iov_len = sizeof(net_leader_id);
+    iov[3].iov_base = &net_last_included_idx;  iov[3].iov_len = sizeof(net_last_included_idx);
+    iov[4].iov_base = &net_last_included_term; iov[4].iov_len = sizeof(net_last_included_term);
+    iov[5].iov_base = &net_offset;             iov[5].iov_len = sizeof(net_offset);
+    iov[6].iov_base = &net_done;               iov[6].iov_len = sizeof(net_done);
+    iov[7].iov_base = &net_snapshot_len;       iov[7].iov_len = sizeof(net_snapshot_len);
+    iov[8].iov_base = const_cast<std::byte*>(payload.snapshot.data());
+    iov[8].iov_len  = payload.snapshot.size();
 
-    // Header
-    iov[0].iov_base = &net_id;
-    iov[0].iov_len = sizeof(net_id);
+    return detail::write_full(sock_fd, iov, 9);
+}
 
-    // Payload data
+// Each deserialize_xx() reads everything *after* the 1-byte RPC id, which
+// the dispatcher has already consumed.
 
-    // vector stored as length, followed by data
-    iov[1].iov_base = &net_snapshot_len;
-    iov[1].iov_len = sizeof(net_snapshot_len);
+inline AppendEntriesPayload deserialize_ae(int sock_fd) {
+    uint32_t net_term;
+    uint32_t net_leader_id;
+    uint32_t net_prev_log_idx;
+    uint32_t net_prev_log_term;
+    uint32_t net_leader_commit;
+    uint32_t net_entries_len;
 
-    iov[2].iov_base = snapshot.data();
-    iov[2].iov_len = net_snapshot_len;
+    iovec hdr[6];
+    hdr[0].iov_base = &net_term;          hdr[0].iov_len = sizeof(net_term);
+    hdr[1].iov_base = &net_leader_id;     hdr[1].iov_len = sizeof(net_leader_id);
+    hdr[2].iov_base = &net_prev_log_idx;  hdr[2].iov_len = sizeof(net_prev_log_idx);
+    hdr[3].iov_base = &net_prev_log_term; hdr[3].iov_len = sizeof(net_prev_log_term);
+    hdr[4].iov_base = &net_leader_commit; hdr[4].iov_len = sizeof(net_leader_commit);
+    hdr[5].iov_base = &net_entries_len;   hdr[5].iov_len = sizeof(net_entries_len);
+    detail::read_full(sock_fd, hdr, 6);
 
-    iov[3].iov_base = &net_term;
-    iov[3].iov_len = sizeof(net_term);
+    uint32_t entries_len = ntohl(net_entries_len);
+    if (entries_len > MAX_VECTOR_SIZE_SANITY) {
+        throw std::runtime_error("AppendEntries entries vector exceeds sanity limit; dropping message");
+    }
 
-    iov[4].iov_base = &net_leader_id;
-    iov[4].iov_len = sizeof(net_leader_id);
+    std::vector<std::byte> entries(entries_len);
+    if (entries_len > 0) {
+        iovec trailer{ entries.data(), entries_len };
+        detail::read_full(sock_fd, &trailer, 1);
+    }
 
-    iov[5].iov_base = &net_last_included_idx;
-    iov[5].iov_len = sizeof(net_last_included_idx);
+    AppendEntriesPayload out{
+        std::move(entries),
+        ntohl(net_term),
+        ntohl(net_leader_id),
+        ntohl(net_prev_log_idx),
+        ntohl(net_prev_log_term),
+        ntohl(net_leader_commit),
+    };
+    return out;
+}
 
-    iov[6].iov_base = &net_last_included_term;
-    iov[6].iov_len = sizeof(net_last_included_term);
+inline RequestVotePayload deserialize_rv(int sock_fd) {
+    uint32_t net_term;
+    uint32_t net_candidate_id;
+    uint32_t net_last_log_idx;
+    uint32_t net_last_log_term;
 
-    iov[7].iov_base = &net_offset;
-    iov[7].iov_len = sizeof(net_offset);
+    iovec iov[4];
+    iov[0].iov_base = &net_term;          iov[0].iov_len = sizeof(net_term);
+    iov[1].iov_base = &net_candidate_id;  iov[1].iov_len = sizeof(net_candidate_id);
+    iov[2].iov_base = &net_last_log_idx;  iov[2].iov_len = sizeof(net_last_log_idx);
+    iov[3].iov_base = &net_last_log_term; iov[3].iov_len = sizeof(net_last_log_term);
+    detail::read_full(sock_fd, iov, 4);
 
-    iov[8].iov_base = &net_done;
-    iov[8].iov_len = sizeof(net_done);
+    return RequestVotePayload{
+        ntohl(net_term),
+        ntohl(net_candidate_id),
+        ntohl(net_last_log_idx),
+        ntohl(net_last_log_term),
+    };
+}
 
-    auto bytes_sent = writev(sock_fd, iov, IS_WRITEV_BUFS);
-    return bytes_sent;
+inline InstallSnapshotPayload deserialize_is(int sock_fd) {
+    uint32_t net_term;
+    uint32_t net_leader_id;
+    uint32_t net_last_included_idx;
+    uint32_t net_last_included_term;
+    uint32_t net_offset;
+    uint8_t  net_done;
+    uint32_t net_snapshot_len;
 
+    iovec hdr[7];
+    hdr[0].iov_base = &net_term;               hdr[0].iov_len = sizeof(net_term);
+    hdr[1].iov_base = &net_leader_id;          hdr[1].iov_len = sizeof(net_leader_id);
+    hdr[2].iov_base = &net_last_included_idx;  hdr[2].iov_len = sizeof(net_last_included_idx);
+    hdr[3].iov_base = &net_last_included_term; hdr[3].iov_len = sizeof(net_last_included_term);
+    hdr[4].iov_base = &net_offset;             hdr[4].iov_len = sizeof(net_offset);
+    hdr[5].iov_base = &net_done;               hdr[5].iov_len = sizeof(net_done);
+    hdr[6].iov_base = &net_snapshot_len;       hdr[6].iov_len = sizeof(net_snapshot_len);
+    detail::read_full(sock_fd, hdr, 7);
+
+    uint32_t snapshot_len = ntohl(net_snapshot_len);
+    if (snapshot_len > MAX_VECTOR_SIZE_SANITY) {
+        throw std::runtime_error("InstallSnapshot snapshot vector exceeds sanity limit; dropping message");
+    }
+
+    std::vector<std::byte> snapshot(snapshot_len);
+    if (snapshot_len > 0) {
+        iovec trailer{ snapshot.data(), snapshot_len };
+        detail::read_full(sock_fd, &trailer, 1);
+    }
+
+    InstallSnapshotPayload out{
+        std::move(snapshot),
+        ntohl(net_term),
+        ntohl(net_leader_id),
+        ntohl(net_last_included_idx),
+        ntohl(net_last_included_term),
+        ntohl(net_offset),
+        net_done,
+    };
+    return out;
+}
+
+// Read the 1-byte RPC id, then dispatch to the matching deserialize_xx and
+// hand the result to `v`. The visitor must be callable with each of the
+// three payload types (a generic lambda + `if constexpr` works well).
+template <class Visitor>
+inline void deserialize_and_receive(int sock_fd, Visitor&& v) {
+    uint8_t id;
+    iovec iov{ &id, sizeof(id) };
+    detail::read_full(sock_fd, &iov, 1);
+
+    switch (id) {
+        case AE_RPC_ID: std::forward<Visitor>(v)(deserialize_ae(sock_fd)); break;
+        case RV_RPC_ID: std::forward<Visitor>(v)(deserialize_rv(sock_fd)); break;
+        case IS_RPC_ID: std::forward<Visitor>(v)(deserialize_is(sock_fd)); break;
+        default: throw std::runtime_error("unknown RPC id");
+    }
 }

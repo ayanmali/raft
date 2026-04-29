@@ -11,40 +11,30 @@
 #include <vector>
 
 struct AppendEntriesPayload {
-    std::vector<std::byte>& entries;
-    int term;
-    int leader_id;
-    int prev_log_idx;
-    int prev_log_term;
-    int leader_commit;
-
-    /* serializes struct into caller-provided buffer of bytes */
-    ssize_t serialize_and_send(int sock_fd);
+    std::vector<std::byte> entries;
+    uint32_t term;
+    uint32_t leader_id; // 0 is null value
+    uint32_t prev_log_idx;
+    uint32_t prev_log_term;
+    uint32_t leader_commit;
 };
 
 struct RequestVotePayload {
-    int term;
-    int candidate_id;
-    int last_log_idx;
-    int last_log_term;
-
-    /* serializes struct into caller-provided buffer of bytes */
-    ssize_t serialize_and_send(int sock_fd);
+    uint32_t term;
+    uint32_t candidate_id;
+    uint32_t last_log_idx;
+    uint32_t last_log_term;
 };
 
 struct InstallSnapshotPayload {
-    std::vector<std::byte>& snapshot;
-    int term;
-    int leader_id;
-    int last_included_idx;
-    int last_included_term;
-    int offset;
-    bool done; // true if this is the last chunk
-
-    /* serializes struct into caller-provided buffer of bytes */
-    ssize_t serialize_and_send(int sock_fd);
+    std::vector<std::byte> snapshot;
+    uint32_t term;
+    uint32_t leader_id; // 0 is null value
+    uint32_t last_included_idx;
+    uint32_t last_included_term;
+    uint32_t offset;
+    uint8_t done; // non-zero if this is the last chunk
 };
-
 
 inline void Node::setup_sockets() {
     // Only the listening socket is created here. Per-peer client sockets are
@@ -67,20 +57,7 @@ inline void Node::handle_setup_errs(std::initializer_list<int> sock_fds) {
 // trailing payload sections.
 
 // Helper: pack fields with memcpy into a tightly-packed byte buffer.
-namespace detail {
-template <class T>
-inline std::byte* pack(std::byte* p, const T& v) {
-    static_assert(std::is_trivially_copyable_v<T>);
-    std::memcpy(p, &v, sizeof(T));
-    return p + sizeof(T);
-}
-template <class T>
-inline const std::byte* unpack(const std::byte* p, T* v) {
-    static_assert(std::is_trivially_copyable_v<T>);
-    std::memcpy(v, p, sizeof(T));
-    return p + sizeof(T);
-}
-} // namespace detail
+// ...
 
 // returns term, success
 inline std::pair<int, bool> Node::send_append_entries_rpc(std::string_view peer_ip,

@@ -20,6 +20,7 @@ volatile (leaders) (reinitialized after election):
 #include <initializer_list>
 #include <netdb.h>
 #include <random>
+#include <span>
 #include <string_view>
 #include <sys/socket.h>
 #include <sys/types.h>
