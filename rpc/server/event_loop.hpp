@@ -16,8 +16,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "../config.hpp"
-#include "../thread_pool/threadpool.hpp"
+#include "../../config.hpp"
+#include "../../thread_pool/threadpool.hpp"
 #include "./conns.hpp"
 
 /*

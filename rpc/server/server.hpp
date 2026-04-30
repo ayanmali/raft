@@ -1,5 +1,5 @@
 #pragma once
-#include "../node.hpp"
+#include "../../node.hpp"
 #include "./event_loop.hpp"
 #include "../thread_pool/threadpool.hpp"
 #include <cerrno>
@@ -13,9 +13,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-namespace detail {
-
-inline void bind_and_listen(int server_fd, const char* port) {
+inline void Node::bind_and_listen(const char* port) {
     addrinfo hints{};
     hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -43,8 +41,6 @@ inline void bind_and_listen(int server_fd, const char* port) {
     }
 }
 
-} // namespace detail
-
 inline void Node::server_expose(const char* port) {
     // SIGPIPE would otherwise kill the process if a peer disappears mid-send.
     // MSG_NOSIGNAL is also passed on every send() call as belt-and-suspenders.
@@ -57,7 +53,7 @@ inline void Node::server_expose(const char* port) {
     }();
     (void)sigpipe_ignored;
 
-    detail::bind_and_listen(server_fd, port);
+    bind_and_listen(port);
 
     int evfd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (evfd < 0) throw std::runtime_error("eventfd failed");

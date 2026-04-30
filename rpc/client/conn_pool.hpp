@@ -4,6 +4,8 @@
 #include <unordered_map>
 #include <unistd.h>
 
+#include "../slab.hpp"
+
 /*
 Fixed-capacity LRU mapping from peer IP (std::string_view) to a cached
 client-side socket fd (int).
@@ -13,21 +15,17 @@ the underlying string storage alive for the lifetime of the entry. The
 static peer list in config.hpp satisfies this. If peers ever become
 dynamic, switch the key type to std::string.
 
-Memory: nodes are placement-new'd into one pre-allocated buffer in the
-ctor; nothing allocates or frees per-operation. Two pointer chains are
-maintained:
-  - The doubly-linked LRU list (head=MRU, tail=LRU). Used only for ordering
-    and tail-eviction.
-  - An intrusive singly-linked freelist (next_free), used for O(1)
-    acquire/release of vacant slots. Mirrors the ConnSlab pattern in
-    rpc/conns.hpp.
+Storage: nodes are slab-allocated via Slab<LRUNode> (see rpc/slab.hpp).
+The slab handles raw allocation and the intrusive `next_free` freelist;
+this struct layers an LRU doubly-linked list (head=MRU, tail=LRU) and a
+hash-map index on top.
 
 Operations:
   - get(ip)        : O(1) map lookup; on hit, promote to head and return fd.
   - set(ip, fd)    : O(1). If key exists, update + promote. If new and
-                     freelist is non-empty, pop a slot. If new and the pool
-                     is full, evict tail and reuse it.
-  - remove(ip)     : O(1). Unlink from LRU list, push slot onto freelist,
+                     the slab has a free slot, acquire it. If new and the
+                     pool is full, evict tail in place and reuse it.
+  - remove(ip)     : O(1). Unlink from LRU list, release slot to the slab,
                      and erase from map. Caller closes the fd.
 */
 
@@ -40,16 +38,14 @@ struct LRUNode {
 };
 
 struct ConnectionPool {
-    char*       buffer    = nullptr;
-    LRUNode*    head      = nullptr;        // MRU
-    LRUNode*    tail      = nullptr;        // LRU
-    LRUNode*    free_head = nullptr;        // top of freelist
-    int         size      = 0;              // # of entries in the LRU list
-    int         capacity  = 0;
+    Slab<LRUNode> slab;
+    LRUNode*      head      = nullptr;        // MRU
+    LRUNode*      tail      = nullptr;        // LRU
+    int           size      = 0;              // # of entries in the LRU list
+    int           capacity  = 0;
     std::unordered_map<std::string_view, LRUNode*> map;
 
     explicit ConnectionPool(int cap);
-    ~ConnectionPool();
 
     ConnectionPool(const ConnectionPool&)            = delete;
     ConnectionPool& operator=(const ConnectionPool&) = delete;
@@ -84,40 +80,11 @@ private:
         else      tail = n;
         head = n;
     }
-    LRUNode* acquire_free() {
-        if (!free_head) return nullptr;
-        LRUNode* n = free_head;
-        free_head = n->next_free;
-        n->next_free = nullptr;
-        return n;
-    }
-    void release_free(LRUNode* n) {
-        n->key       = {};
-        n->value     = -1;
-        n->next_free = free_head;
-        free_head    = n;
-    }
 };
 
-inline ConnectionPool::ConnectionPool(int cap) : capacity{cap} {
+inline ConnectionPool::ConnectionPool(int cap)
+    : slab(static_cast<size_t>(cap)), capacity{cap} {
     map.reserve(static_cast<size_t>(capacity));
-
-    buffer = new char[sizeof(LRUNode) * static_cast<size_t>(capacity)];
-    for (int i = 0; i < capacity; ++i) {
-        auto* n = ::new (buffer + i * sizeof(LRUNode)) LRUNode();
-        n->next_free = free_head;
-        free_head = n;
-    }
-}
-
-inline ConnectionPool::~ConnectionPool() {
-    // Walk by buffer index — pointer chains may be split between the LRU
-    // list and the freelist by this point.
-    for (int i = 0; i < capacity; ++i) {
-        reinterpret_cast<LRUNode*>(buffer + i * sizeof(LRUNode))->~LRUNode();
-    }
-    delete[] buffer;
-    buffer = nullptr;
 }
 
 inline int ConnectionPool::get(std::string_view ip_addr) {
@@ -140,7 +107,7 @@ inline void ConnectionPool::set(std::string_view ip_addr, int fd, int* evicted_f
         return;
     }
 
-    if (LRUNode* n = acquire_free()) {
+    if (LRUNode* n = slab.Acquire()) {
         n->key   = ip_addr;
         n->value = fd;
         push_front(n);
@@ -149,7 +116,9 @@ inline void ConnectionPool::set(std::string_view ip_addr, int fd, int* evicted_f
         return;
     }
 
-    // Pool full: evict LRU tail and reuse its slot for the new key.
+    // Pool full: evict LRU tail and reuse its slot in place. The slot
+    // never returns to the slab's freelist here — it stays "in use" with
+    // a new key/fd.
     LRUNode* n = tail;
     if (evicted_fd) *evicted_fd = n->value;
     map.erase(n->key);
@@ -167,27 +136,24 @@ inline int ConnectionPool::remove(std::string_view ip_addr) {
     int fd = n->value;
     map.erase(it);
     unlink(n);
-    release_free(n);
+    n->key   = {};
+    n->value = -1;
+    slab.Release(n);
     --size;
     return fd;
 }
 
 inline void ConnectionPool::close_all() {
+    // Slots not in `map` are already on the slab's freelist; only the
+    // in-use ones need to be closed and released.
     for (auto& [k, n] : map) {
         if (n->value >= 0) ::close(n->value);
+        n->key   = {};
+        n->value = -1;
+        unlink(n);
+        slab.Release(n);
     }
     map.clear();
-    // Reset both lists to "all free".
-    head = tail = nullptr;
-    free_head = nullptr;
-    for (int i = 0; i < capacity; ++i) {
-        auto* n = reinterpret_cast<LRUNode*>(buffer + i * sizeof(LRUNode));
-        n->key       = {};
-        n->value     = -1;
-        n->prev      = nullptr;
-        n->next      = nullptr;
-        n->next_free = free_head;
-        free_head    = n;
-    }
     size = 0;
+    // head/tail are nullptr after the unlinks above.
 }

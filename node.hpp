@@ -14,6 +14,7 @@ volatile (leaders) (reinitialized after election):
 */
 #include "./config.hpp"
 #include "./rpc/conn_pool.hpp"
+#include "rpc/client/conn_pool.hpp"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -88,10 +89,8 @@ struct Node {
     void loop();
 
     private:
-    // Resolves a writable fd for `peer_ip`: hits the connection pool, or
-    // connects on miss and caches (closing any LRU-evicted fd).
-    int peer_fd(std::string_view peer_ip);
-
+    // client connections
+    // server connections are maintained by the event loop struct
     ConnectionPool connections;
 
     std::vector<LogEntry> log;
@@ -111,13 +110,15 @@ struct Node {
     int commit_index;
     int last_applied;
 
-    // AppendEntriesRespPayload get_append_entries_reply();
-    // RequestVoteRespPayload get_request_vote_reply();
-    // InstallSnapshotRespPayload get_install_snapshot_reply();
-
+    // Resolves a writable fd for `peer_ip`: hits the connection pool, or
+    // connects on miss and caches (closing any LRU-evicted fd).
+    int peer_fd(std::string_view peer_ip);
+    
+    // Used in server_expose()
+    void bind_and_listen(const char* port);
 };
 
-inline Node::Node() : connections(MAX_POOL_SIZE) {
+inline Node::Node() : connections(MAX_CLIENT_CONNS) {
 
     // initialize timeout
     std::random_device rd;
