@@ -20,19 +20,20 @@ volatile (leaders) (reinitialized after election):
 #include <initializer_list>
 #include <netdb.h>
 #include <random>
-#include <span>
 #include <string_view>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <utility>
 #include <vector>
 
-// Forward-declared here; full definitions live in rpc/rpc.hpp. This avoids
-// the include cycle node.hpp <-> rpc/rpc.hpp.
-struct AppendEntriesPayload;
-struct RequestVotePayload;
-struct InstallSnapshotPayload;
+// Forward-declared here; full definitions live in rpc/rpc.hpp.
+// This avoids the include cycle node.hpp <-> rpc/rpc.hpp.
+struct AppendEntriesReqPayload;
+struct RequestVoteReqPayload;
+struct InstallSnapshotReqPayload;
+struct AppendEntriesRespPayload;
+struct RequestVoteRespPayload;
+struct InstallSnapshotRespPayload;
 
 struct LogEntry {
     std::vector<std::byte> data;
@@ -73,18 +74,24 @@ struct Node {
     void server_expose(const char* port);
 
     // returns term, success
-    std::pair<int, bool> send_append_entries_rpc(std::string_view peer_ip,
-                                                 const AppendEntriesPayload& payload);
+    AppendEntriesRespPayload send_append_entries_rpc(std::string_view peer_ip,
+                                                     const AppendEntriesReqPayload& payload);
+
     // returns term, vote_granted
-    std::pair<int, bool> send_request_vote_rpc(std::string_view peer_ip,
-                                               const RequestVotePayload& payload);
+    RequestVoteRespPayload send_request_vote_rpc(std::string_view peer_ip,
+                                                 const RequestVoteReqPayload& payload);
+
     // returns current term #, for leader to update
-    int send_install_snapshot_rpc(std::string_view peer_ip,
-                                  const InstallSnapshotPayload& payload);
+    InstallSnapshotRespPayload send_install_snapshot_rpc(std::string_view peer_ip,
+                                                         const InstallSnapshotReqPayload& payload);
 
     void loop();
 
     private:
+    // Resolves a writable fd for `peer_ip`: hits the connection pool, or
+    // connects on miss and caches (closing any LRU-evicted fd).
+    int peer_fd(std::string_view peer_ip);
+
     ConnectionPool connections;
 
     std::vector<LogEntry> log;
@@ -103,6 +110,11 @@ struct Node {
     int voted_for;
     int commit_index;
     int last_applied;
+
+    // AppendEntriesRespPayload get_append_entries_reply();
+    // RequestVoteRespPayload get_request_vote_reply();
+    // InstallSnapshotRespPayload get_install_snapshot_reply();
+
 };
 
 inline Node::Node() : connections(MAX_POOL_SIZE) {

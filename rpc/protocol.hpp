@@ -11,7 +11,7 @@ Receive side dispatches on `id` and calls a generic visitor with the
 strongly-typed payload.
 */
 
-#include "rpc.hpp"
+#include "./payloads.hpp"
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstddef>
@@ -86,7 +86,7 @@ AppendEntries wire layout:
   id (u8) | term | leader_id | prev_log_idx | prev_log_term | leader_commit
   | entries_len | entries_data...
 */
-inline ssize_t serialize_and_send(const AppendEntriesPayload& payload, int sock_fd) {
+inline ssize_t serialize_and_send(const AppendEntriesReqPayload& payload, int sock_fd) {
     uint8_t  net_id            = AE_RPC_ID;
     uint32_t net_term          = htonl(payload.term);
     uint32_t net_leader_id     = htonl(payload.leader_id);
@@ -113,7 +113,7 @@ inline ssize_t serialize_and_send(const AppendEntriesPayload& payload, int sock_
 RequestVote wire layout:
   id (u8) | term | candidate_id | last_log_idx | last_log_term
 */
-inline ssize_t serialize_and_send(const RequestVotePayload& payload, int sock_fd) {
+inline ssize_t serialize_and_send(const RequestVoteReqPayload& payload, int sock_fd) {
     uint8_t  net_id            = RV_RPC_ID;
     uint32_t net_term          = htonl(payload.term);
     uint32_t net_candidate_id  = htonl(payload.candidate_id);
@@ -135,7 +135,7 @@ InstallSnapshot wire layout:
   id (u8) | term | leader_id | last_included_idx | last_included_term
   | offset | done (u8) | snapshot_len | snapshot_data...
 */
-inline ssize_t serialize_and_send(const InstallSnapshotPayload& payload, int sock_fd) {
+inline ssize_t serialize_and_send(const InstallSnapshotReqPayload& payload, int sock_fd) {
     uint8_t  net_id                 = IS_RPC_ID;
     uint32_t net_term               = htonl(payload.term);
     uint32_t net_leader_id          = htonl(payload.leader_id);
@@ -160,10 +160,43 @@ inline ssize_t serialize_and_send(const InstallSnapshotPayload& payload, int soc
     return detail::write_full(sock_fd, iov, 9);
 }
 
+/*
+Reply wire layouts (no id tag — the client knows which RPC it issued):
+  AppendEntries reply:    term | success (u8)
+  RequestVote reply:      term | vote_granted (u8)
+  InstallSnapshot reply:  term
+*/
+inline ssize_t serialize_and_send(const AppendEntriesRespPayload& payload, int sock_fd) {
+    uint32_t net_term    = htonl(payload.term);
+    uint8_t  net_success = payload.success;
+
+    iovec iov[2];
+    iov[0].iov_base = &net_term;    iov[0].iov_len = sizeof(net_term);
+    iov[1].iov_base = &net_success; iov[1].iov_len = sizeof(net_success);
+    return detail::write_full(sock_fd, iov, 2);
+}
+
+inline ssize_t serialize_and_send(const RequestVoteRespPayload& payload, int sock_fd) {
+    uint32_t net_term         = htonl(payload.term);
+    uint8_t  net_vote_granted = payload.vote_granted;
+
+    iovec iov[2];
+    iov[0].iov_base = &net_term;         iov[0].iov_len = sizeof(net_term);
+    iov[1].iov_base = &net_vote_granted; iov[1].iov_len = sizeof(net_vote_granted);
+    return detail::write_full(sock_fd, iov, 2);
+}
+
+inline ssize_t serialize_and_send(const InstallSnapshotRespPayload& payload, int sock_fd) {
+    uint32_t net_term = htonl(payload.term);
+
+    iovec iov{ &net_term, sizeof(net_term) };
+    return detail::write_full(sock_fd, &iov, 1);
+}
+
 // Each deserialize_xx() reads everything *after* the 1-byte RPC id, which
 // the dispatcher has already consumed.
 
-inline AppendEntriesPayload deserialize_ae(int sock_fd) {
+inline AppendEntriesReqPayload deserialize_ae(int sock_fd) {
     uint32_t net_term;
     uint32_t net_leader_id;
     uint32_t net_prev_log_idx;
@@ -191,7 +224,7 @@ inline AppendEntriesPayload deserialize_ae(int sock_fd) {
         detail::read_full(sock_fd, &trailer, 1);
     }
 
-    AppendEntriesPayload out{
+    AppendEntriesReqPayload out{
         std::move(entries),
         ntohl(net_term),
         ntohl(net_leader_id),
@@ -202,7 +235,7 @@ inline AppendEntriesPayload deserialize_ae(int sock_fd) {
     return out;
 }
 
-inline RequestVotePayload deserialize_rv(int sock_fd) {
+inline RequestVoteReqPayload deserialize_rv(int sock_fd) {
     uint32_t net_term;
     uint32_t net_candidate_id;
     uint32_t net_last_log_idx;
@@ -215,7 +248,7 @@ inline RequestVotePayload deserialize_rv(int sock_fd) {
     iov[3].iov_base = &net_last_log_term; iov[3].iov_len = sizeof(net_last_log_term);
     detail::read_full(sock_fd, iov, 4);
 
-    return RequestVotePayload{
+    return RequestVoteReqPayload{
         ntohl(net_term),
         ntohl(net_candidate_id),
         ntohl(net_last_log_idx),
@@ -223,7 +256,7 @@ inline RequestVotePayload deserialize_rv(int sock_fd) {
     };
 }
 
-inline InstallSnapshotPayload deserialize_is(int sock_fd) {
+inline InstallSnapshotReqPayload deserialize_is(int sock_fd) {
     uint32_t net_term;
     uint32_t net_leader_id;
     uint32_t net_last_included_idx;
@@ -253,7 +286,7 @@ inline InstallSnapshotPayload deserialize_is(int sock_fd) {
         detail::read_full(sock_fd, &trailer, 1);
     }
 
-    InstallSnapshotPayload out{
+    InstallSnapshotReqPayload out{
         std::move(snapshot),
         ntohl(net_term),
         ntohl(net_leader_id),
@@ -263,6 +296,42 @@ inline InstallSnapshotPayload deserialize_is(int sock_fd) {
         net_done,
     };
     return out;
+}
+
+// Reply deserializers. No id byte to consume — replies are matched to the
+// in-flight request by the caller, not by an on-wire tag.
+
+inline AppendEntriesRespPayload deserialize_ae_resp(int sock_fd) {
+    uint32_t net_term;
+    uint8_t  net_success;
+
+    iovec iov[2];
+    iov[0].iov_base = &net_term;    iov[0].iov_len = sizeof(net_term);
+    iov[1].iov_base = &net_success; iov[1].iov_len = sizeof(net_success);
+    detail::read_full(sock_fd, iov, 2);
+
+    return AppendEntriesRespPayload{ ntohl(net_term), net_success };
+}
+
+inline RequestVoteRespPayload deserialize_rv_resp(int sock_fd) {
+    uint32_t net_term;
+    uint8_t  net_vote_granted;
+
+    iovec iov[2];
+    iov[0].iov_base = &net_term;         iov[0].iov_len = sizeof(net_term);
+    iov[1].iov_base = &net_vote_granted; iov[1].iov_len = sizeof(net_vote_granted);
+    detail::read_full(sock_fd, iov, 2);
+
+    return RequestVoteRespPayload{ ntohl(net_term), net_vote_granted };
+}
+
+inline InstallSnapshotRespPayload deserialize_is_resp(int sock_fd) {
+    uint32_t net_term;
+
+    iovec iov{ &net_term, sizeof(net_term) };
+    detail::read_full(sock_fd, &iov, 1);
+
+    return InstallSnapshotRespPayload{ ntohl(net_term) };
 }
 
 template<typename Visitor>
@@ -299,10 +368,11 @@ inline void deserialize_and_receive(int sock_fd, Visitor&& v) {
     
     */
 
-    // switch (id) {
-    //     case AE_RPC_ID: std::forward<Visitor>(v)(deserialize_ae(sock_fd)); break;
-    //     case RV_RPC_ID: std::forward<Visitor>(v)(deserialize_rv(sock_fd)); break;
-    //     case IS_RPC_ID: std::forward<Visitor>(v)(deserialize_is(sock_fd)); break;
-    //     default: throw std::runtime_error("unknown RPC id");
-    // }
+    // Calling `v` and passing the corresponding helper's deserialized payload into it
+    switch (id) {
+        case AE_RPC_ID: std::forward<Visitor>(v)(deserialize_ae(sock_fd)); break;
+        case RV_RPC_ID: std::forward<Visitor>(v)(deserialize_rv(sock_fd)); break;
+        case IS_RPC_ID: std::forward<Visitor>(v)(deserialize_is(sock_fd)); break;
+        default: throw std::runtime_error("unknown RPC id");
+    }
 }
