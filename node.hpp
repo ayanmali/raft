@@ -13,7 +13,6 @@ volatile (leaders) (reinitialized after election):
 - matchIndex[]
 */
 #include "./config.hpp"
-#include "./rpc/conn_pool.hpp"
 #include "rpc/client/conn_pool.hpp"
 #include <chrono>
 #include <cstddef>
@@ -21,7 +20,6 @@ volatile (leaders) (reinitialized after election):
 #include <initializer_list>
 #include <netdb.h>
 #include <random>
-#include <string_view>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -65,8 +63,8 @@ struct Node {
     // on success. Routes through the LRU connection pool: hit -> reuse fd,
     // miss -> connect + cache. On dead-connection errors, closes the fd,
     // drops the cache entry, reconnects, and retries exactly once.
-    uint32_t client_request(std::string_view ip,
-                            std::string_view port,
+    uint32_t client_request(const char* ip,
+                            const char* port,
                             const std::byte* msg, uint32_t len,
                             std::byte* out, uint32_t out_cap);
 
@@ -75,13 +73,13 @@ struct Node {
     void server_expose(const char* port);
 
     // returns term, success
-    AppendEntriesRespPayload send_append_entries_rpc(std::string_view peer_ip);
+    AppendEntriesRespPayload send_append_entries_rpc(const char* peer_ip);
 
     // returns term, vote_granted
-    RequestVoteRespPayload send_request_vote_rpc(std::string_view peer_ip);
+    RequestVoteRespPayload send_request_vote_rpc(const char* peer_ip);
 
     // returns current term #, for leader to update
-    InstallSnapshotRespPayload send_install_snapshot_rpc(std::string_view peer_ip);
+    InstallSnapshotRespPayload send_install_snapshot_rpc(const char* peer_ip);
 
     void loop();
 
@@ -109,7 +107,7 @@ struct Node {
 
     // Resolves a writable fd for `peer_ip`: hits the connection pool, or
     // connects on miss and caches (closing any LRU-evicted fd).
-    int peer_fd(std::string_view peer_ip);
+    int peer_fd(const char* peer_ip);
     
     // Used in server_expose()
     void bind_and_listen(const char* port);

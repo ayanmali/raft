@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "../protocol.hpp"
 
 /*
 Client-side RPC dispatch.
@@ -120,6 +121,49 @@ inline bool recv_exact(int fd, std::byte* buf, size_t n, bool* dead) {
 }
 
 } // namespace detail
+
+inline int Node::peer_fd(const char* peer_ip) {
+    int fd = client_conns.get(peer_ip);
+    if (fd < 0) {
+        fd = detail::connect_new(peer_ip, SERVER_PORT);
+        int evicted = -1;
+        client_conns.set(peer_ip, fd, &evicted);
+        if (evicted >= 0) ::close(evicted);
+    }
+    return fd;
+}
+
+/*
+Client-side `send_*_rpc` entry points and the small Node-level setup helpers.
+
+Each `send_*_rpc` resolves a peer fd (via the LRU connection pool, with
+connect-on-miss), writev's the request via `serialize_and_send` from
+protocol.hpp, then readv's the matching reply via `deserialize_*_resp`
+and returns it.
+
+Wire formats and (de)serialization helpers live in protocol.hpp.
+Payload struct definitions live in payloads.hpp.
+*/
+inline AppendEntriesRespPayload Node::send_append_entries_rpc(const char* peer_ip) {
+    const AppendEntriesReqPayload payload = AppendEntriesReqPayload();
+    int fd = peer_fd(peer_ip);
+    serialize_and_send(payload, fd);
+    return deserialize_ae_resp(fd);
+}
+
+inline RequestVoteRespPayload Node::send_request_vote_rpc(const char* peer_ip) {
+    const RequestVoteReqPayload payload = RequestVoteReqPayload();
+    int fd = peer_fd(peer_ip);
+    serialize_and_send(payload, fd);
+    return deserialize_rv_resp(fd);
+}
+
+inline InstallSnapshotRespPayload Node::send_install_snapshot_rpc(const char* peer_ip) {
+    const InstallSnapshotReqPayload payload = InstallSnapshotReqPayload();
+    int fd = peer_fd(peer_ip);
+    serialize_and_send(payload, fd);
+    return deserialize_is_resp(fd);
+}
 
 // inline: defined in a header included by multiple TUs (rpc.hpp, server.hpp).
 inline uint32_t Node::client_request(std::string_view ip,

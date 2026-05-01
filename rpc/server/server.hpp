@@ -13,6 +13,19 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+inline void Node::setup_sockets() {
+    // Only the listening socket is created here. Per-peer client sockets are
+    // created lazily by `peer_fd()` and cached in `client_conns`.
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    handle_setup_errs({server_fd});
+}
+
+inline void Node::handle_setup_errs(std::initializer_list<int> sock_fds) {
+    for (auto fd : sock_fds) {
+        if (fd < 0) throw std::runtime_error("Error setting up socket fds");
+    }
+}
+
 inline void Node::bind_and_listen(const char* port) {
     addrinfo hints{};
     hints.ai_family   = AF_INET;
