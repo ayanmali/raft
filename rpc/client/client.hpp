@@ -129,11 +129,11 @@ inline uint32_t Node::client_request(std::string_view ip,
     // Two attempts: one with whatever the cache has (or a fresh fd on
     // miss), one with a fresh fd if the first failed mid-RPC.
     for (int attempt = 0; attempt < 2; ++attempt) {
-        int fd = connections.get(ip);
+        int fd = client_conns.get(ip);
         if (fd < 0) {
             fd = detail::connect_new(ip, port);
             int evicted = -1;
-            connections.set(ip, fd, &evicted);
+            client_conns.set(ip, fd, &evicted);
             if (evicted >= 0) ::close(evicted);
         }
 
@@ -151,7 +151,7 @@ inline uint32_t Node::client_request(std::string_view ip,
                 if (reply_len > out_cap) {
                     // Reply is larger than caller's buffer. Drop the
                     // connection (we can't recover sync) and surface.
-                    connections.remove(ip);
+                    client_conns.remove(ip);
                     ::close(fd);
                     throw std::runtime_error("reply exceeds out_cap");
                 }
@@ -165,13 +165,13 @@ inline uint32_t Node::client_request(std::string_view ip,
         if (!dead) {
             // Threw above on non-dead errors; reaching here with dead=false
             // shouldn't happen, but stay defensive.
-            connections.remove(ip);
+            client_conns.remove(ip);
             ::close(fd);
             throw std::runtime_error("rpc failed");
         }
 
         // Connection died mid-RPC. Drop it and retry once.
-        connections.remove(ip);
+        client_conns.remove(ip);
         ::close(fd);
     }
     throw std::runtime_error("peer unreachable after retry");

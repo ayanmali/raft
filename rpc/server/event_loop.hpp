@@ -67,10 +67,10 @@ struct EventLoop {
     int  event_fd  = -1;
     std::atomic<bool> stopped{false};
 
-    ConnSlab                                slab;
+    ConnSlab                                  slab;
     std::unordered_map<uint64_t, Connection*> conns;
-    std::unordered_map<int, uint64_t>       fd_to_id;
-    std::unordered_set<uint64_t>            stalled; // backpressured
+    std::unordered_map<int, uint64_t>         fd_to_id;
+    std::unordered_set<uint64_t>              stalled; // backpressured
 
     uint64_t next_conn_id = 1;
     Pool*    pool         = nullptr;

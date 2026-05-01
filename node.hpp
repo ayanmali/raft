@@ -75,23 +75,20 @@ struct Node {
     void server_expose(const char* port);
 
     // returns term, success
-    AppendEntriesRespPayload send_append_entries_rpc(std::string_view peer_ip,
-                                                     const AppendEntriesReqPayload& payload);
+    AppendEntriesRespPayload send_append_entries_rpc(std::string_view peer_ip);
 
     // returns term, vote_granted
-    RequestVoteRespPayload send_request_vote_rpc(std::string_view peer_ip,
-                                                 const RequestVoteReqPayload& payload);
+    RequestVoteRespPayload send_request_vote_rpc(std::string_view peer_ip);
 
     // returns current term #, for leader to update
-    InstallSnapshotRespPayload send_install_snapshot_rpc(std::string_view peer_ip,
-                                                         const InstallSnapshotReqPayload& payload);
+    InstallSnapshotRespPayload send_install_snapshot_rpc(std::string_view peer_ip);
 
     void loop();
 
     private:
     // client connections
     // server connections are maintained by the event loop struct
-    ConnectionPool connections;
+    ConnectionPool client_conns;
 
     std::vector<LogEntry> log;
     std::vector<int> next_index; // one for each peer
@@ -99,7 +96,7 @@ struct Node {
 
     std::chrono::milliseconds timeout; // randomly chosen from 150-300 ms
 
-    // Per-peer client fds live in `connections`. The server fd below is the
+    // Per-peer client fds live in `client_conns`. The server fd below is the
     // listening socket; per-connection fds for inbound RPCs are owned by
     // the event loop's ConnSlab.
     int  server_fd;
@@ -118,7 +115,7 @@ struct Node {
     void bind_and_listen(const char* port);
 };
 
-inline Node::Node() : connections(MAX_CLIENT_CONNS) {
+inline Node::Node() : client_conns(MAX_CLIENT_CONNS) {
 
     // initialize timeout
     std::random_device rd;
@@ -134,7 +131,7 @@ inline Node::Node() : connections(MAX_CLIENT_CONNS) {
 };
 
 inline Node::~Node() {
-    connections.close_all();
+    client_conns.close_all();
     if (server_fd >= 0) close(server_fd);
 }
 
