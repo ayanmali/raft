@@ -30,16 +30,47 @@ static constexpr uint8_t IS_RPC_ID = 3;
 
 namespace detail {
 
+// Thrown by read_full/write_full when the underlying connection is dead
+// (peer EOF, EPIPE, ECONNRESET, etc). Callers that maintain a connection
+// pool catch this to drop the cached fd and reconnect; everything else
+// still sees a std::runtime_error.
+struct DeadConnError : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+// Returns true if `err` (typically errno) indicates the underlying
+// connection is dead and the caller should reconnect rather than retry on
+// the same fd. EAGAIN/EWOULDBLOCK/EINTR are explicitly NOT dead — they
+// mean "try again on the same fd".
+inline bool is_dead_conn(int err) {
+    switch (err) {
+        case EPIPE:
+        case ECONNRESET:
+        case ECONNREFUSED:
+        case ECONNABORTED:
+        case ENOTCONN:
+        case ETIMEDOUT:
+        case EHOSTUNREACH:
+        case ENETUNREACH:
+        case ENETRESET:
+        case EBADF:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // Drain `iov` of length `iovcnt` from `fd` using readv, looping over partial
-// reads and advancing the iov front as bytes arrive. Throws on peer close or
-// hard error.
+// reads and advancing the iov front as bytes arrive. Throws DeadConnError on
+// peer close or dead-connection errno; std::runtime_error on hard error.
 inline ssize_t read_full(int fd, iovec* iov, int iovcnt) {
     ssize_t total = 0;
     while (iovcnt > 0) {
         ssize_t n = ::readv(fd, iov, iovcnt);
-        if (n == 0) throw std::runtime_error("peer closed connection during read");
+        if (n == 0) throw DeadConnError("peer closed connection during read");
         if (n < 0) {
             if (errno == EINTR) continue;
+            if (is_dead_conn(errno)) throw DeadConnError("readv: dead connection");
             throw std::runtime_error("readv failed");
         }
         total += n;
@@ -63,6 +94,7 @@ inline ssize_t write_full(int fd, iovec* iov, int iovcnt) {
         ssize_t n = ::writev(fd, iov, iovcnt);
         if (n < 0) {
             if (errno == EINTR) continue;
+            if (is_dead_conn(errno)) throw DeadConnError("writev: dead connection");
             throw std::runtime_error("writev failed");
         }
         total += n;
@@ -232,6 +264,7 @@ inline AppendEntriesReqPayload deserialize_ae(int sock_fd) {
         ntohl(net_prev_log_term),
         ntohl(net_leader_commit),
     };
+
     return out;
 }
 

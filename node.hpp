@@ -25,7 +25,7 @@ volatile (leaders) (reinitialized after election):
 #include <unistd.h>
 #include <vector>
 
-// Forward-declared here; full definitions live in rpc/rpc.hpp.
+// Forward-declared here; full definitions live in rpc/payloads.hpp.
 // This avoids the include cycle node.hpp <-> rpc/rpc.hpp.
 struct AppendEntriesReqPayload;
 struct RequestVoteReqPayload;
@@ -46,7 +46,7 @@ struct Node {
 
     void increment_current_term();
     void set_voted_for(int voted_for);
-    void append_to_log(std::string_view entry);
+    void append_to_log(LogEntry entry);
 
     void send_heartbeats(); // send AE RPCs w/ no log entries
     void start_election(); // enter candidate mode
@@ -108,7 +108,17 @@ struct Node {
     // Resolves a writable fd for `peer_ip`: hits the connection pool, or
     // connects on miss and caches (closing any LRU-evicted fd).
     int peer_fd(const char* peer_ip);
-    
+
+    // Closes `fd` and removes the cache entry for `peer_ip`. Used after a
+    // dead-connection error so the next call reconnects.
+    void drop_peer(const char* peer_ip, int fd);
+
+    // Resolve a peer fd, run send(fd) then recv(fd), and return recv's
+    // result. On detail::DeadConnError, drops the fd and retries once with
+    // a fresh connection. Other exceptions propagate.
+    template <class SendFn, class RecvFn>
+    auto with_peer_fd(const char* peer_ip, SendFn&& send, RecvFn&& recv);
+
     // Used in server_expose()
     void bind_and_listen(const char* port);
 };
@@ -121,7 +131,7 @@ inline Node::Node() : client_conns(MAX_CLIENT_CONNS) {
     std::uniform_int_distribution<> distrib(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
     timeout = std::chrono::milliseconds(distrib(gen));
 
-    // calling `socket()`
+    // calling `socket()` for the server's listening FD
     setup_sockets();
 
     // ...

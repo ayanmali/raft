@@ -32,37 +32,19 @@ Wire framing is symmetric with the server in rpc/event_loop.hpp:
 
 namespace detail {
 
-// Returns true if `err` (typically errno) indicates the underlying
-// connection is dead and the caller should reconnect rather than retry on
-// the same fd. EAGAIN/EWOULDBLOCK/EINTR are explicitly NOT dead — they
-// mean "try again on the same fd".
-inline bool is_dead_conn(int err) {
-    switch (err) {
-        case EPIPE:
-        case ECONNRESET:
-        case ECONNREFUSED:
-        case ECONNABORTED:
-        case ENOTCONN:
-        case ETIMEDOUT:
-        case EHOSTUNREACH:
-        case ENETUNREACH:
-        case ENETRESET:
-        case EBADF:
-            return true;
-        default:
-            return false;
-    }
-}
+// is_dead_conn / DeadConnError now live in rpc/protocol.hpp so that the
+// readv/writev wrappers there can throw a typed exception that the client
+// retry loop catches.
 
-inline int connect_new(std::string_view ip, std::string_view port) {
+inline int connect_new(const char* ip, const char* port) {
     // string_view is not guaranteed null-terminated; getaddrinfo wants
     // C-strings, so copy onto the stack.
-    char ip_buf[64];
-    char port_buf[16];
-    if (ip.size()   >= sizeof(ip_buf))   throw std::runtime_error("ip too long");
-    if (port.size() >= sizeof(port_buf)) throw std::runtime_error("port too long");
-    std::memcpy(ip_buf,   ip.data(),   ip.size());   ip_buf[ip.size()]     = '\0';
-    std::memcpy(port_buf, port.data(), port.size()); port_buf[port.size()] = '\0';
+    // char ip_buf[64];
+    // char port_buf[16];
+    // if (ip.size()   >= sizeof(ip_buf))   throw std::runtime_error("ip too long");
+    // if (port.size() >= sizeof(port_buf)) throw std::runtime_error("port too long");
+    // std::memcpy(ip_buf,   ip.data(),   ip.size());   ip_buf[ip.size()]     = '\0';
+    // std::memcpy(port_buf, port.data(), port.size()); port_buf[port.size()] = '\0';
 
     addrinfo hints{};
     hints.ai_family   = AF_INET;
@@ -70,7 +52,7 @@ inline int connect_new(std::string_view ip, std::string_view port) {
     hints.ai_flags    = AI_NUMERICHOST | AI_NUMERICSERV;
 
     addrinfo* res = nullptr;
-    if (::getaddrinfo(ip_buf, port_buf, &hints, &res) != 0) {
+    if (::getaddrinfo(ip, port, &hints, &res) != 0) {
         throw std::runtime_error("getaddrinfo failed");
     }
 
@@ -133,36 +115,59 @@ inline int Node::peer_fd(const char* peer_ip) {
     return fd;
 }
 
+inline void Node::drop_peer(const char* peer_ip, int fd) {
+    client_conns.remove(peer_ip);
+    ::close(fd);
+}
+
+template <class SendFn, class RecvFn>
+auto Node::with_peer_fd(const char* peer_ip, SendFn&& send, RecvFn&& recv) {
+    // Two attempts: one with whatever the cache has (or a fresh fd on
+    // miss), one with a fresh fd if the first failed mid-RPC.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        int fd = peer_fd(peer_ip);
+        try {
+            send(fd);
+            return recv(fd);
+        } catch (const detail::DeadConnError&) {
+            drop_peer(peer_ip, fd);
+            if (attempt == 1) throw;
+        }
+    }
+    throw std::runtime_error("peer unreachable after retry");
+}
+
 /*
 Client-side `send_*_rpc` entry points and the small Node-level setup helpers.
 
 Each `send_*_rpc` resolves a peer fd (via the LRU connection pool, with
 connect-on-miss), writev's the request via `serialize_and_send` from
 protocol.hpp, then readv's the matching reply via `deserialize_*_resp`
-and returns it.
+and returns it. `with_peer_fd` handles the pool lookup, dead-connection
+detection (via detail::DeadConnError), and one-shot reconnect+retry.
 
 Wire formats and (de)serialization helpers live in protocol.hpp.
 Payload struct definitions live in payloads.hpp.
 */
 inline AppendEntriesRespPayload Node::send_append_entries_rpc(const char* peer_ip) {
     const AppendEntriesReqPayload payload = AppendEntriesReqPayload();
-    int fd = peer_fd(peer_ip);
-    serialize_and_send(payload, fd);
-    return deserialize_ae_resp(fd);
+    return with_peer_fd(peer_ip,
+        [&](int fd) { serialize_and_send(payload, fd); },
+        [](int fd)  { return deserialize_ae_resp(fd); });
 }
 
 inline RequestVoteRespPayload Node::send_request_vote_rpc(const char* peer_ip) {
     const RequestVoteReqPayload payload = RequestVoteReqPayload();
-    int fd = peer_fd(peer_ip);
-    serialize_and_send(payload, fd);
-    return deserialize_rv_resp(fd);
+    return with_peer_fd(peer_ip,
+        [&](int fd) { serialize_and_send(payload, fd); },
+        [](int fd)  { return deserialize_rv_resp(fd); });
 }
 
 inline InstallSnapshotRespPayload Node::send_install_snapshot_rpc(const char* peer_ip) {
     const InstallSnapshotReqPayload payload = InstallSnapshotReqPayload();
-    int fd = peer_fd(peer_ip);
-    serialize_and_send(payload, fd);
-    return deserialize_is_resp(fd);
+    return with_peer_fd(peer_ip,
+        [&](int fd) { serialize_and_send(payload, fd); },
+        [](int fd)  { return deserialize_is_resp(fd); });
 }
 
 // inline: defined in a header included by multiple TUs (rpc.hpp, server.hpp).

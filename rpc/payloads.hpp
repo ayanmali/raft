@@ -18,7 +18,7 @@ struct AppendEntriesReqPayload {
     uint32_t prev_log_term;
     uint32_t leader_commit;
 
-    AppendEntriesReqPayload(std::vector<std::byte>& entries, uint32_t term, uint32_t leader_id, uint32_t prev_log_idx, uint32_t prev_log_term, uint32_t leader_commit) 
+    AppendEntriesReqPayload(std::vector<std::byte>&& entries, uint32_t term, uint32_t leader_id, uint32_t prev_log_idx, uint32_t prev_log_term, uint32_t leader_commit) 
     : entries(entries),
       term(term),
       leader_id(leader_id),
@@ -61,7 +61,7 @@ struct InstallSnapshotReqPayload {
     uint32_t offset;
     uint8_t done; // non-zero if this is the last chunk
 
-    InstallSnapshotReqPayload(std::vector<std::byte>& snapshot, uint32_t term, uint32_t leader_id, uint32_t last_included_idx, uint32_t last_included_term, uint32_t offset, uint8_t done) 
+    InstallSnapshotReqPayload(std::vector<std::byte>&& snapshot, uint32_t term, uint32_t leader_id, uint32_t last_included_idx, uint32_t last_included_term, uint32_t offset, uint8_t done) 
     : snapshot(snapshot),
       term(term),
       leader_id(leader_id),
