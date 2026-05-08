@@ -1,6 +1,6 @@
 #pragma once
-#include "../../config.hpp"
 #include "../slab.hpp"
+#include <vector>
 
 struct Connection {
     int      fd            = -1;
@@ -25,7 +25,7 @@ struct Connection {
 struct ConnSlab {
     Slab<Connection> slab;
 
-    ConnSlab() : slab(MAX_SERVER_CONNS) {}
+    ConnSlab(size_t max_server_conns) : slab(max_server_conns) {}
 
     ConnSlab(const ConnSlab&)            = delete;
     ConnSlab& operator=(const ConnSlab&) = delete;

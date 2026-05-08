@@ -1,160 +1,372 @@
 #pragma once
 /*
-On disk:
-- currentTerm
-- votedFor
-- log[]
+Raft node.
 
-volatile (all servers):
-- commitIndex
-- lastApplied
-volatile (leaders) (reinitialized after election):
-- nextIndex[]
-- matchIndex[]
+Concurrency model:
+  - N is the number of worker threads. Each thread owns a self-contained
+    EventLoop:
+      * its own listening socket bound to SERVER_PORT via SO_REUSEPORT
+        (the kernel hashes incoming connection 4-tuples to one queue,
+        so each thread sees a disjoint set of inbound clients);
+      * its own eventfd for cross-thread wakeups;
+      * its own epoll instance covering listen fd, eventfd, accepted
+        client fds, and the loop's slice of peer fds.
+  - Peers are sharded across loops by `peer_id % N`. Outbound RPCs to
+    peer p are always sent from loop p % N; inbound replies for that
+    peer arrive on the same loop. No cross-thread peer state.
+  - Raft state (currentTerm, votedFor, log, commitIndex, lastApplied)
+    is held on Node and protected by `state_mu_`. Inbound RPC handlers
+    and outbound reply handlers all run on event-loop threads and
+    acquire the mutex.
+
+Persistence:
+  On disk:
+    - currentTerm
+    - votedFor
+    - log[]
+  Volatile (all servers):
+    - commitIndex
+    - lastApplied
+  Volatile (leaders, reinitialized after election):
+    - nextIndex[]
+    - matchIndex[]
 */
 #include "./config.hpp"
-#include "rpc/client/conn_pool.hpp"
+#include "rpc/conns.hpp"
+#include "rpc/event_loop.hpp"
+#include "rpc/payloads.hpp"
+#include <array>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
-#include <initializer_list>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <random>
+#include <signal.h>
+#include <stdexcept>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <thread>
 #include <unistd.h>
+#include <utility>
 #include <vector>
-
-// Forward-declared here; full definitions live in rpc/payloads.hpp.
-// This avoids the include cycle node.hpp <-> rpc/rpc.hpp.
-struct AppendEntriesReqPayload;
-struct RequestVoteReqPayload;
-struct InstallSnapshotReqPayload;
-struct AppendEntriesRespPayload;
-struct RequestVoteRespPayload;
-struct InstallSnapshotRespPayload;
+#include <ranges>
 
 struct LogEntry {
     std::vector<std::byte> data;
     int term;
 };
 
+/*
+N - the number of threads running an event loop
+*/
+template <uint N>
 struct Node {
-    public:
+public:
     Node();
     ~Node();
 
-    void increment_current_term();
-    void set_voted_for(int voted_for);
-    void append_to_log(LogEntry entry);
+    Node(const Node&)            = delete;
+    Node& operator=(const Node&) = delete;
 
-    void send_heartbeats(); // send AE RPCs w/ no log entries
-    void start_election(); // enter candidate mode
-    void compact_log();
+    // Spawns N worker threads, each running an EventLoop. Returns
+    // immediately; threads run until stop() or the dtor.
+    void start();
 
-    // Calling `socket()`
-    void setup_sockets();
-    /* do not inline */
-    void handle_setup_errs(std::initializer_list<int> sock_fds);
+    // Signals every loop to exit, joins all worker threads.
+    void stop();
 
-    // Client
-    // Sends a length-prefixed request to ip:port and reads the
-    // length-prefixed reply into out[0..out_cap). Returns the reply length
-    // on success. Routes through the LRU connection pool: hit -> reuse fd,
-    // miss -> connect + cache. On dead-connection errors, closes the fd,
-    // drops the cache entry, reconnects, and retries exactly once.
-    uint32_t client_request(const char* ip,
-                            const char* port,
-                            const std::byte* msg, uint32_t len,
-                            std::byte* out, uint32_t out_cap);
+    // Outbound RPC entry points. Resolve the owning loop by
+    // peer_id % N and post the request into its inbox. The reply
+    // callback fires on that loop's thread.
+    void send_append_entries_rpc(
+        NodeID peer_id,
+        AppendEntriesReqPayload payload,
+        std::function<void(AppendEntriesRespPayload)> on_reply);
+    void send_request_vote_rpc(
+        NodeID peer_id,
+        RequestVoteReqPayload payload,
+        std::function<void(RequestVoteRespPayload)> on_reply);
+    void send_install_snapshot_rpc(
+        NodeID peer_id,
+        InstallSnapshotReqPayload payload,
+        std::function<void(InstallSnapshotRespPayload)> on_reply);
 
-    // Server
-    // Binds, listens, and accepts
-    void server_expose(const char* port);
+    // Inbound handlers. Locked under state_mu_; called by event loops
+    // when they finish parsing one full request frame from a client.
+    AppendEntriesRespPayload     handle_append_entries(const AppendEntriesReqPayload&);
+    RequestVoteRespPayload       handle_request_vote(const RequestVoteReqPayload&);
+    InstallSnapshotRespPayload   handle_install_snapshot(const InstallSnapshotReqPayload&);
 
-    // returns term, success
-    AppendEntriesRespPayload send_append_entries_rpc(const char* peer_ip);
+private:
+    // ---- transport ----
+    std::array<FD, N>                          listen_fds_{};
+    std::array<std::unique_ptr<EventLoop>, N>  loops_;
+    std::array<std::thread, N>                 threads_;
+    bool                                       running_ = false;
 
-    // returns term, vote_granted
-    RequestVoteRespPayload send_request_vote_rpc(const char* peer_ip);
+    // ---- raft state ----
+    std::mutex                state_mu_;              // since multiple event loop threads could modify state concurrently
+    int                       current_term  = 0;
+    int                       voted_for     = -1;
+    std::vector<LogEntry>     log;
+    int                       commit_index  = 0;
+    int                       last_applied  = 0;
+    std::vector<int>          next_index;             // leader-only, per peer
+    std::vector<int>          match_index;            // leader-only, per peer
+    bool                      leader        = false;
 
-    // returns current term #, for leader to update
-    InstallSnapshotRespPayload send_install_snapshot_rpc(const char* peer_ip);
+    // Election timeout, randomized at construction.
+    std::chrono::milliseconds timeout_;
 
-    void loop();
+    std::vector<PeerInfo> peers_;
 
-    private:
-    // client connections
-    // server connections are maintained by the event loop struct
-    ConnectionPool client_conns;
+    // ---- setup helpers ----
 
-    std::vector<LogEntry> log;
-    std::vector<int> next_index; // one for each peer
-    std::vector<int> match_index; // one for each peer
+    // Creates N listening sockets, all bound to SERVER_PORT via
+    // SO_REUSEPORT. Sockets are non-blocking, CLOEXEC, TCP_NODELAY.
+    void setup_listen_sockets();
 
-    std::chrono::milliseconds timeout; // randomly chosen from 150-300 ms
+    // Builds the peer subset for thread `i` (peers where peer_id % N == i).
+    auto peer_subset_for(uint i) const;
 
-    // Per-peer client fds live in `client_conns`. The server fd below is the
-    // listening socket; per-connection fds for inbound RPCs are owned by
-    // the event loop's ConnSlab.
-    int  server_fd;
-    bool leader;
-
-    int current_term;
-    int voted_for;
-    int commit_index;
-    int last_applied;
-
-    // Resolves a writable fd for `peer_ip`: hits the connection pool, or
-    // connects on miss and caches (closing any LRU-evicted fd).
-    int peer_fd(const char* peer_ip);
-
-    // Closes `fd` and removes the cache entry for `peer_ip`. Used after a
-    // dead-connection error so the next call reconnects.
-    void drop_peer(const char* peer_ip, int fd);
-
-    // Resolve a peer fd, run send(fd) then recv(fd), and return recv's
-    // result. On detail::DeadConnError, drops the fd and retries once with
-    // a fresh connection. Other exceptions propagate.
-    template <class SendFn, class RecvFn>
-    auto with_peer_fd(const char* peer_ip, SendFn&& send, RecvFn&& recv);
-
-    // Used in server_expose()
-    void bind_and_listen(const char* port);
+    // Constructs the RpcHandlers struct (member-fn lambdas) the loops
+    // dispatch to on inbound requests.
+    RpcHandlers make_handlers();
 };
 
-inline Node::Node() : client_conns(MAX_CLIENT_CONNS) {
+// =============================================================================
+// Implementation
+// =============================================================================
 
-    // initialize timeout
+template <uint N>
+inline Node<N>::Node() {
+    static_assert(N > 0);
+
+    // SIGPIPE would otherwise kill the process if a peer disappears
+    // mid-send. send/recv calls also pass MSG_NOSIGNAL belt-and-
+    // suspenders.
+    static const auto sigpipe_ignored = [] {
+        struct sigaction sa{};
+        sa.sa_handler = SIG_IGN;
+        sigemptyset(&sa.sa_mask);
+        ::sigaction(SIGPIPE, &sa, nullptr);
+        return true;
+    }();
+    (void)sigpipe_ignored;
+
+    // Build peer table. setup_peers() returns null-terminated string
+    // literals (constexpr static storage), so .data() pointers stay
+    // valid for the lifetime of the process.
+    auto init_peers = setup_peers();
+    peers_.reserve(init_peers.size());
+    NodeID id = 0;
+    for (const auto& ip_sv : init_peers) {
+        peers_.push_back(PeerInfo{id, ip_sv.data(), SERVER_PORT});
+        ++id;
+    }
+    next_index.assign(peers_.size(), 0);
+    match_index.assign(peers_.size(), 0);
+
+    // Randomized election timeout per Raft spec.
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> distrib(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
-    timeout = std::chrono::milliseconds(distrib(gen));
+    timeout_ = std::chrono::milliseconds(distrib(gen));
 
-    // calling `socket()` for the server's listening FD
-    setup_sockets();
-
-    // ...
-
-};
-
-inline Node::~Node() {
-    client_conns.close_all();
-    if (server_fd >= 0) close(server_fd);
+    for (uint i = 0; i < N; ++i) listen_fds_[i] = -1;
+    setup_listen_sockets();
 }
 
-inline void Node::start_election() {
-    increment_current_term();
-};
-
-inline void Node::loop() {
-    auto start = std::chrono::high_resolution_clock::now();
-    auto end = start + timeout;
-    while (std::chrono::high_resolution_clock::now() < end) {
-        // spin
-        // if an RPC is received, no election
-        return;
+template <uint N>
+inline Node<N>::~Node() {
+    stop();
+    for (auto& fd : listen_fds_) {
+        if (fd >= 0) { ::close(fd); fd = -1; }
     }
-    // timeout exceeded; trigger an election
-    start_election();
+}
+
+template <uint N>
+inline void Node<N>::setup_listen_sockets() {
+    addrinfo hints{};
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags    = AI_PASSIVE;
+
+    addrinfo* res = nullptr;
+    if (::getaddrinfo(nullptr, SERVER_PORT, &hints, &res) != 0 || res == nullptr) {
+        throw std::runtime_error("getaddrinfo failed");
+    }
+    std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> guard(res, &::freeaddrinfo);
+
+    for (uint i = 0; i < N; ++i) {
+        FD fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if (fd < 0) throw std::runtime_error("socket failed");
+
+        int yes = 1;
+        // SO_REUSEPORT must be set BEFORE bind() so that all N sockets
+        // bound to the same port are members of the same SO_REUSEPORT
+        // group; the kernel then load-balances incoming connections
+        // across them.
+        ::setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+        ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+
+        addrinfo* p = nullptr;
+        for (p = res; p; p = p->ai_next) {
+            if (::bind(fd, p->ai_addr, p->ai_addrlen) == 0) break;
+        }
+        if (!p) { ::close(fd); throw std::runtime_error("bind failed"); }
+        if (::listen(fd, SERVER_BACKLOG) != 0) {
+            ::close(fd);
+            throw std::runtime_error("listen failed");
+        }
+        listen_fds_[i] = fd;
+    }
+}
+
+template <uint N>
+inline auto Node<N>::peer_subset_for(uint i) const {
+    auto subset = peers_ | std::views::filter([i](PeerInfo& pi) { return pi.id % N == i; });
+    return subset;
+}
+
+template <uint N>
+inline RpcHandlers Node<N>::make_handlers() {
+    RpcHandlers h;
+    h.on_ae_req = [this](const AppendEntriesReqPayload& p) {
+        return handle_append_entries(p);
+    };
+    h.on_rv_req = [this](const RequestVoteReqPayload& p) {
+        return handle_request_vote(p);
+    };
+    h.on_is_req = [this](const InstallSnapshotReqPayload& p) {
+        return handle_install_snapshot(p);
+    };
+    return h;
+}
+
+template <uint N>
+inline void Node<N>::start() {
+    if (running_) return;
+    running_ = true;
+
+    for (uint i = 0; i < N; ++i) {
+        loops_[i] = std::make_unique<EventLoop>(
+            listen_fds_[i],
+            peer_subset_for(i),
+            make_handlers(),
+            MAX_SERVER_CONNS);
+    }
+    for (uint i = 0; i < N; ++i) {
+        threads_[i] = std::thread([this, i] { loops_[i]->Run(); });
+    }
+}
+
+template <uint N>
+inline void Node<N>::stop() {
+    if (!running_) return;
+    running_ = false;
+    for (uint i = 0; i < N; ++i) {
+        if (loops_[i]) loops_[i]->Stop();
+    }
+    for (uint i = 0; i < N; ++i) {
+        if (threads_[i].joinable()) threads_[i].join();
+    }
+    for (uint i = 0; i < N; ++i) loops_[i].reset();
+}
+
+// ---- outbound shims --------------------------------------------------------
+
+template <uint N>
+inline void Node<N>::send_append_entries_rpc(
+    NodeID peer_id,
+    AppendEntriesReqPayload payload,
+    std::function<void(AppendEntriesRespPayload)> on_reply) {
+    const auto i = peer_id % N;
+    if (!loops_[i]) throw std::runtime_error("Node not started");
+    loops_[i]->EnqueueAE(peer_id, std::move(payload), std::move(on_reply));
+}
+
+template <uint N>
+inline void Node<N>::send_request_vote_rpc(
+    NodeID peer_id,
+    RequestVoteReqPayload payload,
+    std::function<void(RequestVoteRespPayload)> on_reply) {
+    const auto i = peer_id % N;
+    if (!loops_[i]) throw std::runtime_error("Node not started");
+    loops_[i]->EnqueueRV(peer_id, std::move(payload), std::move(on_reply));
+}
+
+template <uint N>
+inline void Node<N>::send_install_snapshot_rpc(
+    NodeID peer_id,
+    InstallSnapshotReqPayload payload,
+    std::function<void(InstallSnapshotRespPayload)> on_reply) {
+    const auto i = peer_id % N;
+    if (!loops_[i]) throw std::runtime_error("Node not started");
+    loops_[i]->EnqueueIS(peer_id, std::move(payload), std::move(on_reply));
+}
+
+// ---- inbound handlers ------------------------------------------------------
+//
+// Stubs for now -- full Raft state machine logic (log matching,
+// commit advancement, vote rules, snapshot install) is out of scope
+// for this commit. Each handler acquires state_mu_, makes the
+// minimal term-bumping decision, and returns a wire-formed reply.
+
+template <uint N>
+inline AppendEntriesRespPayload Node<N>::handle_append_entries(
+    const AppendEntriesReqPayload& req) {
+    std::lock_guard<std::mutex> lk(state_mu_);
+    if (static_cast<int>(req.term) < current_term) {
+        return AppendEntriesRespPayload{static_cast<uint32_t>(current_term), 0};
+    }
+    if (static_cast<int>(req.term) > current_term) {
+        current_term = static_cast<int>(req.term);
+        voted_for    = -1;
+        leader       = false;
+    }
+    // TODO: log matching, append, leader_commit advancement.
+    return AppendEntriesRespPayload{static_cast<uint32_t>(current_term), 1};
+}
+
+template <uint N>
+inline RequestVoteRespPayload Node<N>::handle_request_vote(
+    const RequestVoteReqPayload& req) {
+    std::lock_guard<std::mutex> lk(state_mu_);
+    if (static_cast<int>(req.term) < current_term) {
+        return RequestVoteRespPayload{static_cast<uint32_t>(current_term), 0};
+    }
+    if (static_cast<int>(req.term) > current_term) {
+        current_term = static_cast<int>(req.term);
+        voted_for    = -1;
+        leader       = false;
+    }
+    uint8_t granted = 0;
+    if (voted_for == -1 || voted_for == static_cast<int>(req.candidate_id)) {
+        // TODO: log up-to-date check (last_log_idx/last_log_term).
+        voted_for = static_cast<int>(req.candidate_id);
+        granted   = 1;
+    }
+    return RequestVoteRespPayload{static_cast<uint32_t>(current_term), granted};
+}
+
+template <uint N>
+inline InstallSnapshotRespPayload Node<N>::handle_install_snapshot(
+    const InstallSnapshotReqPayload& req) {
+    std::lock_guard<std::mutex> lk(state_mu_);
+    if (static_cast<int>(req.term) < current_term) {
+        return InstallSnapshotRespPayload{static_cast<uint32_t>(current_term)};
+    }
+    if (static_cast<int>(req.term) > current_term) {
+        current_term = static_cast<int>(req.term);
+        voted_for    = -1;
+        leader       = false;
+    }
+    // TODO: chunk reassembly, install snapshot to state machine.
+    return InstallSnapshotRespPayload{static_cast<uint32_t>(current_term)};
 }

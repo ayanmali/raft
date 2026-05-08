@@ -1,27 +1,39 @@
 #pragma once
-/*
-Binary serialization/deserialization
-
-Every RPC frame is:
-  uint8_t id          (RPC type tag)
-  fixed-size fields   (network byte order, uint32_t each unless noted)
-  optional length-prefixed trailer (uint32_t length, then `length` opaque bytes)
-
-Receive side dispatches on `id` and calls a generic visitor with the
-strongly-typed payload.
-*/
-
+#include "./conns.hpp"
 #include "./payloads.hpp"
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <functional>
+#include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <utility>
 #include <vector>
+
+// =============================================================================
+// Buffer-backed (non-blocking) ser/de.
+//
+// The fd-backed helpers above call read_full/write_full which block until the
+// kernel hands over the requested number of bytes. That's incompatible with an
+// epoll loop that recv()s into a per-conn rbuf and needs to make progress
+// without ever blocking.
+//
+// The functions below operate on caller-managed byte buffers:
+//   - try_parse_*_req  : returns a payload iff the buffer contains a complete
+//                        frame; sets *consumed to the number of bytes the
+//                        caller should pop from the front of its rbuf.
+//   - try_parse_*_resp : same, for replies (no id tag; caller knows the kind).
+//   - serialize_*_req  : appends the wire-format bytes for a request to a
+//                        std::vector<std::byte> wbuf.
+//   - serialize_*_resp : same, for replies.
+// =============================================================================
+
 
 static constexpr uint32_t MAX_VECTOR_SIZE_SANITY = 8192;
 static constexpr uint8_t AE_RPC_ID = 1;
@@ -30,382 +42,341 @@ static constexpr uint8_t IS_RPC_ID = 3;
 
 namespace detail {
 
-// Thrown by read_full/write_full when the underlying connection is dead
-// (peer EOF, EPIPE, ECONNRESET, etc). Callers that maintain a connection
-// pool catch this to drop the cached fd and reconnect; everything else
-// still sees a std::runtime_error.
-struct DeadConnError : std::runtime_error {
-    using std::runtime_error::runtime_error;
+    inline uint32_t read_u32_be(const std::byte* p) noexcept {
+        uint32_t net;
+        std::memcpy(&net, p, sizeof(net));
+        return ntohl(net);
+    }
+    
+    inline uint8_t read_u8(const std::byte* p) noexcept {
+        return static_cast<uint8_t>(*p);
+    }
+    
+    inline void append_u32_be(std::vector<std::byte>& buf, uint32_t v) {
+        uint32_t net = htonl(v);
+        const auto* b = reinterpret_cast<const std::byte*>(&net);
+        buf.insert(buf.end(), b, b + sizeof(net));
+    }
+    
+    inline void append_u8(std::vector<std::byte>& buf, uint8_t v) {
+        buf.push_back(static_cast<std::byte>(v));
+    }
+    
+    inline void append_bytes(std::vector<std::byte>& buf, const std::byte* p, size_t n) {
+        buf.insert(buf.end(), p, p + n);
+    }
+    
+    } // namespace detail
+    
+    // ---- Request parsers -------------------------------------------------------
+    
+    inline std::optional<AppendEntriesReqPayload>
+    try_parse_ae_req(const std::byte* buf, size_t avail, size_t* consumed) {
+        // Layout: id(1) | term(4) | leader_id(4) | prev_log_idx(4) |
+        //         prev_log_term(4) | leader_commit(4) | entries_len(4) | entries...
+        constexpr size_t HDR = 1 + 4 * 6; // header + each member
+        if (avail < HDR) return std::nullopt;
+    
+        uint32_t entries_len = detail::read_u32_be(buf + 1 + 4 * 5);
+        if (entries_len > MAX_VECTOR_SIZE_SANITY) {
+            throw std::runtime_error("AppendEntries entries vector exceeds sanity limit");
+        }
+        if (avail < HDR + entries_len) return std::nullopt;
+    
+        uint32_t term          = detail::read_u32_be(buf + 1 + 0);
+        uint32_t leader_id     = detail::read_u32_be(buf + 1 + 4);
+        uint32_t prev_log_idx  = detail::read_u32_be(buf + 1 + 8);
+        uint32_t prev_log_term = detail::read_u32_be(buf + 1 + 12);
+        uint32_t leader_commit = detail::read_u32_be(buf + 1 + 16);
+    
+        std::vector<std::byte> entries(buf + HDR, buf + HDR + entries_len);
+        *consumed = HDR + entries_len;
+        return AppendEntriesReqPayload(entries, term, leader_id,
+                                       prev_log_idx, prev_log_term, leader_commit);
+    }
+    
+    inline std::optional<RequestVoteReqPayload>
+    try_parse_rv_req(const std::byte* buf, size_t avail, size_t* consumed) {
+        constexpr size_t SZ = 1 + 4 * 4; // header + each member
+        if (avail < SZ) return std::nullopt;
+    
+        uint32_t term          = detail::read_u32_be(buf + 1 + 0);
+        uint32_t candidate_id  = detail::read_u32_be(buf + 1 + 4);
+        uint32_t last_log_idx  = detail::read_u32_be(buf + 1 + 8);
+        uint32_t last_log_term = detail::read_u32_be(buf + 1 + 12);
+    
+        *consumed = SZ;
+        return RequestVoteReqPayload(term, candidate_id, last_log_idx, last_log_term);
+    }
+    
+    inline std::optional<InstallSnapshotReqPayload>
+    try_parse_is_req(const std::byte* buf, size_t avail, size_t* consumed) {
+        // Layout: id(1) | term(4) | leader_id(4) | last_included_idx(4) |
+        //         last_included_term(4) | offset(4) | done(1) | snapshot_len(4) | snapshot...
+        constexpr size_t HDR = 1 + 4 * 5 + 1 + 4; // header + each member
+        if (avail < HDR) return std::nullopt;
+    
+        uint32_t snapshot_len = detail::read_u32_be(buf + 1 + 4 * 5 + 1);
+        if (snapshot_len > MAX_VECTOR_SIZE_SANITY) {
+            throw std::runtime_error("InstallSnapshot snapshot vector exceeds sanity limit");
+        }
+        if (avail < HDR + snapshot_len) return std::nullopt;
+    
+        uint32_t term               = detail::read_u32_be(buf + 1 + 0);
+        uint32_t leader_id          = detail::read_u32_be(buf + 1 + 4);
+        uint32_t last_included_idx  = detail::read_u32_be(buf + 1 + 8);
+        uint32_t last_included_term = detail::read_u32_be(buf + 1 + 12);
+        uint32_t offset             = detail::read_u32_be(buf + 1 + 16);
+        uint8_t  done               = detail::read_u8(buf + 1 + 4 * 5);
+    
+        std::vector<std::byte> snapshot(buf + HDR, buf + HDR + snapshot_len);
+        *consumed = HDR + snapshot_len;
+        return InstallSnapshotReqPayload(snapshot, term, leader_id,
+                                         last_included_idx, last_included_term,
+                                         offset, done);
+    }
+    
+    // Peeks the id byte and dispatches. Returns true iff a full frame was
+    // parsed; on success `*consumed` is set and `v(payload)` is invoked
+    // exactly once with the strongly-typed payload. Throws on unknown id.
+    template <class Visitor>
+    inline bool try_parse_req(const std::byte* buf, size_t avail,
+                              size_t* consumed, Visitor&& v) {
+        if (avail < 1) return false;
+        uint8_t id = detail::read_u8(buf);
+        switch (id) {
+            case AE_RPC_ID: {
+                auto p = try_parse_ae_req(buf, avail, consumed);
+                if (!p) return false;
+                std::forward<Visitor>(v)(std::move(*p));
+                return true;
+            }
+            case RV_RPC_ID: {
+                auto p = try_parse_rv_req(buf, avail, consumed);
+                if (!p) return false;
+                std::forward<Visitor>(v)(std::move(*p));
+                return true;
+            }
+            case IS_RPC_ID: {
+                auto p = try_parse_is_req(buf, avail, consumed);
+                if (!p) return false;
+                std::forward<Visitor>(v)(std::move(*p));
+                return true;
+            }
+            default:
+                throw std::runtime_error("unknown RPC id");
+        }
+    }
+    
+    // ---- Reply parsers (no id byte; caller dispatches by RpcKind) --------------
+    
+    inline std::optional<AppendEntriesRespPayload>
+    try_parse_ae_resp(const std::byte* buf, size_t avail, size_t* consumed) {
+        constexpr size_t SZ = 4 + 1;
+        if (avail < SZ) return std::nullopt;
+        uint32_t term = detail::read_u32_be(buf + 0);
+        uint8_t  ok   = detail::read_u8(buf + 4);
+        *consumed = SZ;
+        return AppendEntriesRespPayload{ term, ok };
+    }
+    
+    inline std::optional<RequestVoteRespPayload>
+    try_parse_rv_resp(const std::byte* buf, size_t avail, size_t* consumed) {
+        constexpr size_t SZ = 4 + 1;
+        if (avail < SZ) return std::nullopt;
+        uint32_t term = detail::read_u32_be(buf + 0);
+        uint8_t  vg   = detail::read_u8(buf + 4);
+        *consumed = SZ;
+        return RequestVoteRespPayload{ term, vg };
+    }
+    
+    inline std::optional<InstallSnapshotRespPayload>
+    try_parse_is_resp(const std::byte* buf, size_t avail, size_t* consumed) {
+        constexpr size_t SZ = 4;
+        if (avail < SZ) return std::nullopt;
+        uint32_t term = detail::read_u32_be(buf + 0);
+        *consumed = SZ;
+        return InstallSnapshotRespPayload{ term };
+    }
+    
+    // ---- Serializers (append wire bytes to a std::vector<std::byte>) -----------
+    
+    inline void serialize_ae_req(const AppendEntriesReqPayload& p,
+                                 std::vector<std::byte>& out) {
+        detail::append_u8(out,      AE_RPC_ID);
+        detail::append_u32_be(out,  p.term);
+        detail::append_u32_be(out,  p.leader_id);
+        detail::append_u32_be(out,  p.prev_log_idx);
+        detail::append_u32_be(out,  p.prev_log_term);
+        detail::append_u32_be(out,  p.leader_commit);
+        detail::append_u32_be(out,  static_cast<uint32_t>(p.entries.size()));
+        detail::append_bytes(out,   p.entries.data(), p.entries.size());
+    }
+    
+    inline void serialize_rv_req(const RequestVoteReqPayload& p,
+                                 std::vector<std::byte>& out) {
+        detail::append_u8(out,      RV_RPC_ID);
+        detail::append_u32_be(out,  p.term);
+        detail::append_u32_be(out,  p.candidate_id);
+        detail::append_u32_be(out,  p.last_log_idx);
+        detail::append_u32_be(out,  p.last_log_term);
+    }
+    
+    inline void serialize_is_req(const InstallSnapshotReqPayload& p,
+                                 std::vector<std::byte>& out) {
+        detail::append_u8(out,      IS_RPC_ID);
+        detail::append_u32_be(out,  p.term);
+        detail::append_u32_be(out,  p.leader_id);
+        detail::append_u32_be(out,  p.last_included_idx);
+        detail::append_u32_be(out,  p.last_included_term);
+        detail::append_u32_be(out,  p.offset);
+        detail::append_u8(out,      p.done);
+        detail::append_u32_be(out,  static_cast<uint32_t>(p.snapshot.size()));
+        detail::append_bytes(out,   p.snapshot.data(), p.snapshot.size());
+    }
+    
+    inline void serialize_ae_resp(const AppendEntriesRespPayload& p,
+                                  std::vector<std::byte>& out) {
+        detail::append_u32_be(out, p.term);
+        detail::append_u8(out,     p.success);
+    }
+
+    inline void serialize_rv_resp(const RequestVoteRespPayload& p,
+                                  std::vector<std::byte>& out) {
+        detail::append_u32_be(out, p.term);
+        detail::append_u8(out,     p.vote_granted);
+    }
+
+    inline void serialize_is_resp(const InstallSnapshotRespPayload& p,
+                                  std::vector<std::byte>& out) {
+        detail::append_u32_be(out, p.term);
+    }
+
+// =============================================================================
+// Dispatch tables.
+//
+// The visitor + nested switch pattern (try_parse_req(buf, avail, *consumed,
+// Visitor) above) requires the call site to mirror the dispatcher's branching
+// shape with a compile-time `if constexpr` chain. Visually that's redundant.
+//
+// The two tables below collapse the id-to-action mapping into a single
+// place per direction:
+//   - kRpcEntries[id]                         -> parse_and_handle_*
+//   - kReplyEntries[static_cast<size_t>(kind)] -> parse_and_invoke_*_reply
+//
+// At runtime each call site becomes "bounds check -> indexed indirect call".
+// The indirect call uses the BTB, which is well-predicted for stable id
+// distributions, so this is no worse than the switch it replaces -- and the
+// visitor lambda + `if constexpr` chain at the call site go away.
+// =============================================================================
+
+// Synchronous request handlers the loop calls when a complete inbound frame
+// is parsed. Node populates these with member-function shims that acquire
+// state_mu_ and produce a response payload.
+struct RpcHandlers {
+    std::function<AppendEntriesRespPayload(const AppendEntriesReqPayload&)>     on_ae_req;
+    std::function<RequestVoteRespPayload(const RequestVoteReqPayload&)>         on_rv_req;
+    std::function<InstallSnapshotRespPayload(const InstallSnapshotReqPayload&)> on_is_req;
 };
 
-// Returns true if `err` (typically errno) indicates the underlying
-// connection is dead and the caller should reconnect rather than retry on
-// the same fd. EAGAIN/EWOULDBLOCK/EINTR are explicitly NOT dead — they
-// mean "try again on the same fd".
-inline bool is_dead_conn(int err) {
-    switch (err) {
-        case EPIPE:
-        case ECONNRESET:
-        case ECONNREFUSED:
-        case ECONNABORTED:
-        case ENOTCONN:
-        case ETIMEDOUT:
-        case EHOSTUNREACH:
-        case ENETUNREACH:
-        case ENETRESET:
-        case EBADF:
-            return true;
-        default:
-            return false;
+// ---- Request side: parse + handle + serialize-resp ------------------------
+
+using RpcEntry = size_t (*)(const std::byte* buf, size_t avail,
+                            std::vector<std::byte>& wbuf,
+                            const RpcHandlers& h);
+
+inline size_t parse_and_handle_ae(const std::byte* buf, size_t avail,
+                                  std::vector<std::byte>& wbuf,
+                                  const RpcHandlers& h) {
+    size_t consumed = 0;
+    auto p = try_parse_ae_req(buf, avail, &consumed);
+    if (!p) return 0;
+    serialize_ae_resp(h.on_ae_req(*p), wbuf);
+    return consumed;
+}
+
+inline size_t parse_and_handle_rv(const std::byte* buf, size_t avail,
+                                  std::vector<std::byte>& wbuf,
+                                  const RpcHandlers& h) {
+    size_t consumed = 0;
+    auto p = try_parse_rv_req(buf, avail, &consumed);
+    if (!p) return 0;
+    serialize_rv_resp(h.on_rv_req(*p), wbuf);
+    return consumed;
+}
+
+inline size_t parse_and_handle_is(const std::byte* buf, size_t avail,
+                                  std::vector<std::byte>& wbuf,
+                                  const RpcHandlers& h) {
+    size_t consumed = 0;
+    auto p = try_parse_is_req(buf, avail, &consumed);
+    if (!p) return 0;
+    serialize_is_resp(h.on_is_req(*p), wbuf);
+    return consumed;
+}
+
+// Indexed by wire id. Slot 0 unused (sentinel = nullptr); valid ids are
+// AE_RPC_ID (1), RV_RPC_ID (2), IS_RPC_ID (3).
+inline constexpr RpcEntry kRpcEntries[] = {
+    nullptr,                 // 0
+    &parse_and_handle_ae,    // AE_RPC_ID = 1
+    &parse_and_handle_rv,    // RV_RPC_ID = 2
+    &parse_and_handle_is,    // IS_RPC_ID = 3
+};
+
+// Single entry point used by EventLoop::DispatchOneRequest. Returns true iff
+// a full frame was parsed and the response was serialized into wbuf; on
+// success *consumed is set to the number of bytes the caller should pop
+// from the front of its rbuf. Throws on unknown id.
+inline bool try_parse_and_handle_req(const std::byte* buf, size_t avail,
+                                     size_t* consumed,
+                                     std::vector<std::byte>& wbuf,
+                                     const RpcHandlers& h) {
+    if (avail < 1) { *consumed = 0; return false; }
+    uint8_t id = detail::read_u8(buf);
+    if (id >= std::size(kRpcEntries) || !kRpcEntries[id]) {
+        throw std::runtime_error("unknown RPC id");
     }
+    *consumed = kRpcEntries[id](buf, avail, wbuf, h); // sending reply
+    return *consumed != 0;
 }
 
-// Drain `iov` of length `iovcnt` from `fd` using readv, looping over partial
-// reads and advancing the iov front as bytes arrive. Throws DeadConnError on
-// peer close or dead-connection errno; std::runtime_error on hard error.
-inline ssize_t read_full(int fd, iovec* iov, int iovcnt) {
-    ssize_t total = 0;
-    while (iovcnt > 0) {
-        ssize_t n = ::readv(fd, iov, iovcnt);
-        if (n == 0) throw DeadConnError("peer closed connection during read");
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            if (is_dead_conn(errno)) throw DeadConnError("readv: dead connection");
-            throw std::runtime_error("readv failed");
-        }
-        total += n;
-        while (iovcnt > 0 && static_cast<size_t>(n) >= iov->iov_len) {
-            n -= static_cast<ssize_t>(iov->iov_len);
-            ++iov;
-            --iovcnt;
-        }
-        if (iovcnt > 0 && n > 0) {
-            iov->iov_base = static_cast<char*>(iov->iov_base) + n;
-            iov->iov_len  -= static_cast<size_t>(n);
-        }
-    }
-    return total;
+// ---- Reply side: parse + invoke matching callback -------------------------
+
+using ReplyEntry = size_t (*)(const std::byte* buf, size_t avail,
+                              const PendingReply& pr);
+
+inline size_t parse_and_invoke_ae_reply(const std::byte* buf, size_t avail,
+                                        const PendingReply& pr) {
+    size_t consumed = 0;
+    auto r = try_parse_ae_resp(buf, avail, &consumed);
+    if (!r) return 0;
+    if (pr.on_ae) pr.on_ae(*r);
+    return consumed;
 }
 
-// Mirror of read_full for writev.
-inline ssize_t write_full(int fd, iovec* iov, int iovcnt) {
-    ssize_t total = 0;
-    while (iovcnt > 0) {
-        ssize_t n = ::writev(fd, iov, iovcnt);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            if (is_dead_conn(errno)) throw DeadConnError("writev: dead connection");
-            throw std::runtime_error("writev failed");
-        }
-        total += n;
-        while (iovcnt > 0 && static_cast<size_t>(n) >= iov->iov_len) {
-            n -= static_cast<ssize_t>(iov->iov_len);
-            ++iov;
-            --iovcnt;
-        }
-        if (iovcnt > 0 && n > 0) {
-            iov->iov_base = static_cast<char*>(iov->iov_base) + n;
-            iov->iov_len  -= static_cast<size_t>(n);
-        }
-    }
-    return total;
+inline size_t parse_and_invoke_rv_reply(const std::byte* buf, size_t avail,
+                                        const PendingReply& pr) {
+    size_t consumed = 0;
+    auto r = try_parse_rv_resp(buf, avail, &consumed);
+    if (!r) return 0;
+    if (pr.on_rv) pr.on_rv(*r);
+    return consumed;
 }
 
-} // namespace detail
-
-/*
-AppendEntries wire layout:
-  id (u8) | term | leader_id | prev_log_idx | prev_log_term | leader_commit
-  | entries_len | entries_data...
-*/
-inline ssize_t serialize_and_send(const AppendEntriesReqPayload& payload, int sock_fd) {
-    uint8_t  net_id            = AE_RPC_ID;
-    uint32_t net_term          = htonl(payload.term);
-    uint32_t net_leader_id     = htonl(payload.leader_id);
-    uint32_t net_prev_log_idx  = htonl(payload.prev_log_idx);
-    uint32_t net_prev_log_term = htonl(payload.prev_log_term);
-    uint32_t net_leader_commit = htonl(payload.leader_commit);
-    uint32_t net_entries_len   = htonl(static_cast<uint32_t>(payload.entries.size()));
-
-    iovec iov[8];
-    iov[0].iov_base = &net_id;            iov[0].iov_len = sizeof(net_id);
-    iov[1].iov_base = &net_term;          iov[1].iov_len = sizeof(net_term);
-    iov[2].iov_base = &net_leader_id;     iov[2].iov_len = sizeof(net_leader_id);
-    iov[3].iov_base = &net_prev_log_idx;  iov[3].iov_len = sizeof(net_prev_log_idx);
-    iov[4].iov_base = &net_prev_log_term; iov[4].iov_len = sizeof(net_prev_log_term);
-    iov[5].iov_base = &net_leader_commit; iov[5].iov_len = sizeof(net_leader_commit);
-    iov[6].iov_base = &net_entries_len;   iov[6].iov_len = sizeof(net_entries_len);
-    iov[7].iov_base = const_cast<std::byte*>(payload.entries.data());
-    iov[7].iov_len  = payload.entries.size();
-
-    return detail::write_full(sock_fd, iov, 8);
+inline size_t parse_and_invoke_is_reply(const std::byte* buf, size_t avail,
+                                        const PendingReply& pr) {
+    size_t consumed = 0;
+    auto r = try_parse_is_resp(buf, avail, &consumed);
+    if (!r) return 0;
+    if (pr.on_is) pr.on_is(*r);
+    return consumed;
 }
 
-/*
-RequestVote wire layout:
-  id (u8) | term | candidate_id | last_log_idx | last_log_term
-*/
-inline ssize_t serialize_and_send(const RequestVoteReqPayload& payload, int sock_fd) {
-    uint8_t  net_id            = RV_RPC_ID;
-    uint32_t net_term          = htonl(payload.term);
-    uint32_t net_candidate_id  = htonl(payload.candidate_id);
-    uint32_t net_last_log_idx  = htonl(payload.last_log_idx);
-    uint32_t net_last_log_term = htonl(payload.last_log_term);
-
-    iovec iov[5];
-    iov[0].iov_base = &net_id;            iov[0].iov_len = sizeof(net_id);
-    iov[1].iov_base = &net_term;          iov[1].iov_len = sizeof(net_term);
-    iov[2].iov_base = &net_candidate_id;  iov[2].iov_len = sizeof(net_candidate_id);
-    iov[3].iov_base = &net_last_log_idx;  iov[3].iov_len = sizeof(net_last_log_idx);
-    iov[4].iov_base = &net_last_log_term; iov[4].iov_len = sizeof(net_last_log_term);
-
-    return detail::write_full(sock_fd, iov, 5);
-}
-
-/*
-InstallSnapshot wire layout:
-  id (u8) | term | leader_id | last_included_idx | last_included_term
-  | offset | done (u8) | snapshot_len | snapshot_data...
-*/
-inline ssize_t serialize_and_send(const InstallSnapshotReqPayload& payload, int sock_fd) {
-    uint8_t  net_id                 = IS_RPC_ID;
-    uint32_t net_term               = htonl(payload.term);
-    uint32_t net_leader_id          = htonl(payload.leader_id);
-    uint32_t net_last_included_idx  = htonl(payload.last_included_idx);
-    uint32_t net_last_included_term = htonl(payload.last_included_term);
-    uint32_t net_offset             = htonl(payload.offset);
-    uint8_t  net_done               = payload.done;
-    uint32_t net_snapshot_len       = htonl(static_cast<uint32_t>(payload.snapshot.size()));
-
-    iovec iov[9];
-    iov[0].iov_base = &net_id;                 iov[0].iov_len = sizeof(net_id);
-    iov[1].iov_base = &net_term;               iov[1].iov_len = sizeof(net_term);
-    iov[2].iov_base = &net_leader_id;          iov[2].iov_len = sizeof(net_leader_id);
-    iov[3].iov_base = &net_last_included_idx;  iov[3].iov_len = sizeof(net_last_included_idx);
-    iov[4].iov_base = &net_last_included_term; iov[4].iov_len = sizeof(net_last_included_term);
-    iov[5].iov_base = &net_offset;             iov[5].iov_len = sizeof(net_offset);
-    iov[6].iov_base = &net_done;               iov[6].iov_len = sizeof(net_done);
-    iov[7].iov_base = &net_snapshot_len;       iov[7].iov_len = sizeof(net_snapshot_len);
-    iov[8].iov_base = const_cast<std::byte*>(payload.snapshot.data());
-    iov[8].iov_len  = payload.snapshot.size();
-
-    return detail::write_full(sock_fd, iov, 9);
-}
-
-/*
-Reply wire layouts (no id tag — the client knows which RPC it issued):
-  AppendEntries reply:    term | success (u8)
-  RequestVote reply:      term | vote_granted (u8)
-  InstallSnapshot reply:  term
-*/
-inline ssize_t serialize_and_send(const AppendEntriesRespPayload& payload, int sock_fd) {
-    uint32_t net_term    = htonl(payload.term);
-    uint8_t  net_success = payload.success;
-
-    iovec iov[2];
-    iov[0].iov_base = &net_term;    iov[0].iov_len = sizeof(net_term);
-    iov[1].iov_base = &net_success; iov[1].iov_len = sizeof(net_success);
-    return detail::write_full(sock_fd, iov, 2);
-}
-
-inline ssize_t serialize_and_send(const RequestVoteRespPayload& payload, int sock_fd) {
-    uint32_t net_term         = htonl(payload.term);
-    uint8_t  net_vote_granted = payload.vote_granted;
-
-    iovec iov[2];
-    iov[0].iov_base = &net_term;         iov[0].iov_len = sizeof(net_term);
-    iov[1].iov_base = &net_vote_granted; iov[1].iov_len = sizeof(net_vote_granted);
-    return detail::write_full(sock_fd, iov, 2);
-}
-
-inline ssize_t serialize_and_send(const InstallSnapshotRespPayload& payload, int sock_fd) {
-    uint32_t net_term = htonl(payload.term);
-
-    iovec iov{ &net_term, sizeof(net_term) };
-    return detail::write_full(sock_fd, &iov, 1);
-}
-
-// Each deserialize_xx() reads everything *after* the 1-byte RPC id, which
-// the dispatcher has already consumed.
-
-inline AppendEntriesReqPayload deserialize_ae(int sock_fd) {
-    uint32_t net_term;
-    uint32_t net_leader_id;
-    uint32_t net_prev_log_idx;
-    uint32_t net_prev_log_term;
-    uint32_t net_leader_commit;
-    uint32_t net_entries_len;
-
-    iovec hdr[6];
-    hdr[0].iov_base = &net_term;          hdr[0].iov_len = sizeof(net_term);
-    hdr[1].iov_base = &net_leader_id;     hdr[1].iov_len = sizeof(net_leader_id);
-    hdr[2].iov_base = &net_prev_log_idx;  hdr[2].iov_len = sizeof(net_prev_log_idx);
-    hdr[3].iov_base = &net_prev_log_term; hdr[3].iov_len = sizeof(net_prev_log_term);
-    hdr[4].iov_base = &net_leader_commit; hdr[4].iov_len = sizeof(net_leader_commit);
-    hdr[5].iov_base = &net_entries_len;   hdr[5].iov_len = sizeof(net_entries_len);
-    detail::read_full(sock_fd, hdr, 6);
-
-    uint32_t entries_len = ntohl(net_entries_len);
-    if (entries_len > MAX_VECTOR_SIZE_SANITY) {
-        throw std::runtime_error("AppendEntries entries vector exceeds sanity limit; dropping message");
-    }
-
-    std::vector<std::byte> entries(entries_len);
-    if (entries_len > 0) {
-        iovec trailer{ entries.data(), entries_len };
-        detail::read_full(sock_fd, &trailer, 1);
-    }
-
-    AppendEntriesReqPayload out{
-        std::move(entries),
-        ntohl(net_term),
-        ntohl(net_leader_id),
-        ntohl(net_prev_log_idx),
-        ntohl(net_prev_log_term),
-        ntohl(net_leader_commit),
-    };
-
-    return out;
-}
-
-inline RequestVoteReqPayload deserialize_rv(int sock_fd) {
-    uint32_t net_term;
-    uint32_t net_candidate_id;
-    uint32_t net_last_log_idx;
-    uint32_t net_last_log_term;
-
-    iovec iov[4];
-    iov[0].iov_base = &net_term;          iov[0].iov_len = sizeof(net_term);
-    iov[1].iov_base = &net_candidate_id;  iov[1].iov_len = sizeof(net_candidate_id);
-    iov[2].iov_base = &net_last_log_idx;  iov[2].iov_len = sizeof(net_last_log_idx);
-    iov[3].iov_base = &net_last_log_term; iov[3].iov_len = sizeof(net_last_log_term);
-    detail::read_full(sock_fd, iov, 4);
-
-    return RequestVoteReqPayload{
-        ntohl(net_term),
-        ntohl(net_candidate_id),
-        ntohl(net_last_log_idx),
-        ntohl(net_last_log_term),
-    };
-}
-
-inline InstallSnapshotReqPayload deserialize_is(int sock_fd) {
-    uint32_t net_term;
-    uint32_t net_leader_id;
-    uint32_t net_last_included_idx;
-    uint32_t net_last_included_term;
-    uint32_t net_offset;
-    uint8_t  net_done;
-    uint32_t net_snapshot_len;
-
-    iovec hdr[7];
-    hdr[0].iov_base = &net_term;               hdr[0].iov_len = sizeof(net_term);
-    hdr[1].iov_base = &net_leader_id;          hdr[1].iov_len = sizeof(net_leader_id);
-    hdr[2].iov_base = &net_last_included_idx;  hdr[2].iov_len = sizeof(net_last_included_idx);
-    hdr[3].iov_base = &net_last_included_term; hdr[3].iov_len = sizeof(net_last_included_term);
-    hdr[4].iov_base = &net_offset;             hdr[4].iov_len = sizeof(net_offset);
-    hdr[5].iov_base = &net_done;               hdr[5].iov_len = sizeof(net_done);
-    hdr[6].iov_base = &net_snapshot_len;       hdr[6].iov_len = sizeof(net_snapshot_len);
-    detail::read_full(sock_fd, hdr, 7);
-
-    uint32_t snapshot_len = ntohl(net_snapshot_len);
-    if (snapshot_len > MAX_VECTOR_SIZE_SANITY) {
-        throw std::runtime_error("InstallSnapshot snapshot vector exceeds sanity limit; dropping message");
-    }
-
-    std::vector<std::byte> snapshot(snapshot_len);
-    if (snapshot_len > 0) {
-        iovec trailer{ snapshot.data(), snapshot_len };
-        detail::read_full(sock_fd, &trailer, 1);
-    }
-
-    InstallSnapshotReqPayload out{
-        std::move(snapshot),
-        ntohl(net_term),
-        ntohl(net_leader_id),
-        ntohl(net_last_included_idx),
-        ntohl(net_last_included_term),
-        ntohl(net_offset),
-        net_done,
-    };
-    return out;
-}
-
-// Reply deserializers. No id byte to consume — replies are matched to the
-// in-flight request by the caller, not by an on-wire tag.
-
-inline AppendEntriesRespPayload deserialize_ae_resp(int sock_fd) {
-    uint32_t net_term;
-    uint8_t  net_success;
-
-    iovec iov[2];
-    iov[0].iov_base = &net_term;    iov[0].iov_len = sizeof(net_term);
-    iov[1].iov_base = &net_success; iov[1].iov_len = sizeof(net_success);
-    detail::read_full(sock_fd, iov, 2);
-
-    return AppendEntriesRespPayload{ ntohl(net_term), net_success };
-}
-
-inline RequestVoteRespPayload deserialize_rv_resp(int sock_fd) {
-    uint32_t net_term;
-    uint8_t  net_vote_granted;
-
-    iovec iov[2];
-    iov[0].iov_base = &net_term;         iov[0].iov_len = sizeof(net_term);
-    iov[1].iov_base = &net_vote_granted; iov[1].iov_len = sizeof(net_vote_granted);
-    detail::read_full(sock_fd, iov, 2);
-
-    return RequestVoteRespPayload{ ntohl(net_term), net_vote_granted };
-}
-
-inline InstallSnapshotRespPayload deserialize_is_resp(int sock_fd) {
-    uint32_t net_term;
-
-    iovec iov{ &net_term, sizeof(net_term) };
-    detail::read_full(sock_fd, &iov, 1);
-
-    return InstallSnapshotRespPayload{ ntohl(net_term) };
-}
-
-template<typename Visitor>
-using Entry = void(*)(Visitor&&);
-
-template <typename Visitor>
-constexpr auto make_table() {
-    return std::array<Entry<Visitor>, 3>{
-        [](int sock_fd, Visitor&& v) { v(deserialize_ae(sock_fd)); },
-        [](int sock_fd, Visitor&& v) { v(deserialize_rv(sock_fd)); },
-        [](int sock_fd, Visitor&& v) { v(deserialize_is(sock_fd)); },
-    };
-}
-
-template <typename Visitor>
-void deserialize_dispatch(int i, int sock_fd, Visitor&& v) {
-    static constexpr auto table = make_table<Visitor>();
-    table[i](sock_fd, std::forward<Visitor>(v));
-}
-
-// Read the 1-byte RPC id, then dispatch to the matching deserialize_xx and pass the result to `v`.
-template <class Visitor>
-inline void deserialize_and_receive(int sock_fd, Visitor&& v) {
-    uint8_t id;
-    iovec iov{ &id, sizeof(id) };
-    detail::read_full(sock_fd, &iov, 1);
-
-    /* Call example
-
-    Consuming value (no return): 
-    deserialize_dispatch(0, sock_fd, [](auto&& x) {
-    std::cout << x << "\n";
-    });
-    
-    */
-
-    // Calling `v` and passing the corresponding helper's deserialized payload into it
-    switch (id) {
-        case AE_RPC_ID: std::forward<Visitor>(v)(deserialize_ae(sock_fd)); break;
-        case RV_RPC_ID: std::forward<Visitor>(v)(deserialize_rv(sock_fd)); break;
-        case IS_RPC_ID: std::forward<Visitor>(v)(deserialize_is(sock_fd)); break;
-        default: throw std::runtime_error("unknown RPC id");
-    }
-}
+// Indexed by static_cast<size_t>(RpcKind). RpcKind is dense and 0-based, so
+// no bounds check is needed at the call site.
+inline constexpr ReplyEntry kReplyEntries[] = {
+    &parse_and_invoke_ae_reply,  // RpcKind::AppendEntries   = 0
+    &parse_and_invoke_rv_reply,  // RpcKind::RequestVote     = 1
+    &parse_and_invoke_is_reply,  // RpcKind::InstallSnapshot = 2
+};
