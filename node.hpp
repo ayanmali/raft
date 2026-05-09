@@ -103,10 +103,10 @@ public:
 
 private:
     // ---- transport ----
-    std::array<FD, N>                          listen_fds_{};
-    std::array<std::unique_ptr<EventLoop>, N>  loops_;
-    std::array<std::thread, N>                 threads_;
-    bool                                       running_ = false;
+    std::array<FD, N>                              listen_fds_{};
+    std::array<std::unique_ptr<EventLoop<N>>, N>   loops_;
+    std::array<std::thread, N>                     threads_;
+    bool                                           running_ = false;
 
     // ---- raft state ----
     std::mutex                state_mu_;              // since multiple event loop threads could modify state concurrently
@@ -144,7 +144,8 @@ private:
 
 template <uint N>
 inline Node<N>::Node() {
-    static_assert(N > 0);
+    static_assert(N > 0 && (N & (N - 1)) == 0,
+                  "Node<N>: N must be a power of 2 (MPSC inbox requires it)");
 
     // SIGPIPE would otherwise kill the process if a peer disappears
     // mid-send. send/recv calls also pass MSG_NOSIGNAL belt-and-
@@ -254,13 +255,24 @@ inline void Node<N>::start() {
     if (running_) return;
     running_ = true;
 
+    // Phase 1: construct every loop so all event_fds and inboxes exist
+    // before any thread starts producing.
+    std::array<EventLoop<N>*, N> raw{};
     for (uint i = 0; i < N; ++i) {
-        loops_[i] = std::make_unique<EventLoop>(
+        loops_[i] = std::make_unique<EventLoop<N>>(
             listen_fds_[i],
             peer_subset_for(i),
             make_handlers(),
-            MAX_SERVER_CONNS);
+            MAX_SERVER_CONNS,
+            static_cast<size_t>(i));
+        raw[i] = loops_[i].get();
     }
+    // Phase 2: wire sibling pointers. Necessary before any loop thread
+    // can Enqueue* into another loop's inbox.
+    for (uint i = 0; i < N; ++i) loops_[i]->set_loops(raw);
+
+    // Phase 3: spawn the worker threads. Each one sets g_loop_producer_id
+    // = my_id_ at the top of Run() before pushing into any sibling inbox.
     for (uint i = 0; i < N; ++i) {
         threads_[i] = std::thread([this, i] { loops_[i]->Run(); });
     }

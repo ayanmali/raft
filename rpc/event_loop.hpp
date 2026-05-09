@@ -2,8 +2,8 @@
 /*
 Per-thread EventLoop.
 
-A Node<N> spawns N worker threads, each running its own EventLoop. Each
-loop owns:
+A Node<N> spawns N worker threads, each running its own EventLoop<N>.
+Each loop owns:
   - One listening socket bound to the same TCP port via SO_REUSEPORT;
     the kernel hashes incoming connection 4-tuples to one of the N
     accept queues, so different inbound clients land on different
@@ -22,12 +22,15 @@ Inbound flow:
   EPOLLOUT is armed -> OnWritable drains wbuf.
 
 Outbound flow:
-  Node calls EnqueueAE/RV/IS on the owning loop. The request is
-  serialized into a temp buffer, packaged with a reply callback, and
-  pushed onto inbox_ under a mutex; the loop is woken by writing to
-  eventfd. OnEventfd drains the inbox, lazily kicks a non-blocking
-  connect for any peer in Disconnected, appends bytes to peer.wbuf,
-  pushes the PendingReply onto peer.inflight, and arms EPOLLOUT.
+  Node calls EnqueueAE/RV/IS on the *target* loop (the one whose
+  peer_id % N matches). The producer thread heap-allocates an
+  Outbound, serializes the request into it, and pushes the pointer
+  into the target loop's lock-free MPSC inbox at the slot indexed by
+  the producer's loop id. A wake-coalesced eventfd write nudges the
+  target loop. The consumer drains all sub-rings round-robin in
+  OnEventfd, lazily kicks a non-blocking connect for any peer in
+  Disconnected, appends bytes to peer.wbuf, pushes the PendingReply
+  onto peer.inflight, arms EPOLLOUT, then `delete`s the Outbound.
   Connection completion arrives as EPOLLOUT in Connecting; SO_ERROR
   is checked. Once Connected, OnPeerWritable drains; OnPeerReadable
   calls try_parse_*_resp in inflight-FIFO order and fires the
@@ -37,12 +40,14 @@ Outbound flow:
 #include "./conns.hpp"
 #include "./payloads.hpp"
 #include "./protocol.hpp"
+#include "../queues/mpsc.hpp"
+#include <array>
 #include <atomic>
+#include <cassert>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
 #include <functional>
-#include <mutex>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -53,35 +58,34 @@ Outbound flow:
 #include <sys/uio.h>
 #include <unistd.h>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
-inline constexpr int    EPOLL_BATCH    = 64;
-inline constexpr size_t RECV_CHUNK     = 4096;
+inline constexpr int    EPOLL_BATCH      = 64; // max # of fds processed per loop iteration
+inline constexpr size_t RECV_CHUNK       = 4096;
+inline constexpr size_t INBOX_RING_CAP   = 64;  // per producer; must be power of 2
 
-// struct PeerEndpoint {
-//     NodeID      id;
-//     const char* ip;
-//     const char* port;
-// };
-
-// Peer endpoints in stable storage. Indexed by NodeID.
-struct PeerInfo {
-    NodeID      id;
-    const char* ip;
-    const char* port;
-};
+// Each event-loop thread sets this to its loop index at the top of Run().
+// EnqueueAE/RV/IS read it to pick the producer's MPSC sub-queue slot. Any
+// thread that calls into Node::send_*_rpc must therefore be an event-loop
+// thread (the whole design assumes Raft state machine work runs on loops).
+inline thread_local size_t g_loop_producer_id = SIZE_MAX;
 
 // RpcHandlers and the per-direction dispatch tables (kRpcEntries,
 // kReplyEntries) live in protocol.hpp so they can be reused by other
 // callers and so the id-to-action mapping has a single source of truth.
 
+template <size_t N>
 struct EventLoop {
+    static_assert(N > 0 && (N & (N - 1)) == 0,
+                  "EventLoop<N>: N must be a power of 2 (MPSC requirement)");
+
+    template <std::ranges::input_range R>
     EventLoop(FD listen_fd,
-              std::vector<PeerInfo> peers,
+              R&& peers,
               RpcHandlers handlers,
-              size_t inbound_cap);
+              size_t inbound_cap,
+              size_t my_id);
     ~EventLoop();
 
     EventLoop(const EventLoop&)            = delete;
@@ -90,8 +94,21 @@ struct EventLoop {
     void Run();
     void Stop();
 
-    // Cross-thread: serialize the request, package with reply callback,
-    // push onto inbox, wake loop. Safe to call from any thread.
+    // Populated by Node post-construction (two-phase init): all sibling
+    // EventLoops, indexed by their my_id_. Enqueue* uses this to route
+    // outbound RPCs to the loop that owns the destination peer.
+    void set_loops(std::array<EventLoop<N>*, N>& loops);
+
+    // Wake-coalesced. Safe to call from any thread. Used by sibling loops
+    // after they push into this loop's inbox, and by Stop() (indirectly
+    // via the unconditional wake) to break out of epoll_wait.
+    void Wake();
+
+    // Cross-thread RPC entry points. Computes target = peer_id % N and
+    // pushes into `loops_[target]`'s inbox at slot g_loop_producer_id, so
+    // Node can call any loop's Enqueue* (including the caller's own) and
+    // routing happens internally. The calling thread must be an
+    // event-loop thread (i.e. g_loop_producer_id < N).
     void EnqueueAE(NodeID peer_id,
                    AppendEntriesReqPayload payload,
                    std::function<void(AppendEntriesRespPayload)> on_reply);
@@ -103,40 +120,62 @@ struct EventLoop {
                    std::function<void(InstallSnapshotRespPayload)> on_reply);
 
 private:
+    // Outbound is heap-allocated by the producer and freed by the consumer
+    // after its state has been moved into peer.wbuf and peer.inflight. Only
+    // raw `Outbound*` (trivially copyable) travels through the SPSC ring.
+    struct Outbound {
+        std::vector<std::byte> bytes;
+        PendingReply           reply;
+        NodeID                 peer_id;
+    };
+
+    using Inbox = MPSC<Outbound*, INBOX_RING_CAP, N>;
+
     // ---- fds and lifecycle -----
-    FD epoll_fd = -1;
+    FD epoll_fd  = -1;
     FD listen_fd = -1;
     FD event_fd  = -1;
     std::atomic<bool> stopped{false};
 
-    RpcHandlers handlers;
+    // Wake-coalescing flag. true == a wake has been signaled by some
+    // producer and the consumer has not yet drained. Producers test-and-set
+    // (false -> true) before issuing eventfd_write; only the winning
+    // producer pays the syscall. The consumer disarms (stores false) at
+    // the top of DrainInbox -- BEFORE draining the inbox -- so any
+    // producer that pushes during the drain sees armed=false, rearms, and
+    // re-wakes. This guarantees no lost items.
+    std::atomic<bool> wake_armed{false};
+
+    size_t       my_id_;
+    RpcHandlers  handlers;
+
+    // Sibling pointers populated post-construction by Node::start(). All
+    // entries are non-null after set_loops() and stay valid for the
+    // lifetime of the Node. Read-only on the loop threads after init.
+    std::array<EventLoop<N>*, N> loops_{};
 
     // ---- inbound ----
     ClientConnSlab                            client_slab;
     std::unordered_map<ClientID, ClientConn*> conns;
     std::unordered_map<FD, ClientID>          fd_to_id;
-    //std::unordered_set<ClientID>              stalled;
     ClientID next_conn_id = 1;
 
     // ---- outbound ----
     std::unordered_map<NodeID, PeerConn> peer_conns;
     std::unordered_map<FD, NodeID>       peer_fd_to_id;
 
-    // ---- cross-thread inbox ----
-    struct Outbound {
-        std::vector<std::byte> bytes;
-        PendingReply reply;
-        NodeID peer_id;
-    };
-    std::mutex inbox_mu;
-    std::vector<Outbound> inbox;
+    // ---- cross-thread inbox (lock-free) ----
+    Inbox inbox_;
 
     // ---- helpers ----
     static void set_nonblocking(FD fd);
     void register_fd(FD fd, uint32_t events);
     void modify_client_interest(ClientConn& c, uint32_t events);
     void modify_peer_interest(PeerConn& p, uint32_t events);
-    void wake();
+
+    // Unconditional eventfd_write -- bypasses wake_armed. Used by Stop()
+    // so shutdown wakes the loop even if nobody else is producing.
+    void wake_eventfd_unconditional();
 
     // inbound messaging
     void Accept();
@@ -155,17 +194,23 @@ private:
     // wake / inbox
     void OnEventfd();
     void DrainInbox();
+
+    // shared by EnqueueAE/RV/IS once the Outbound is fully built.
+    void post_outbound(Outbound* out);
 };
 
 // =============================================================================
 // Implementation
 // =============================================================================
 
-inline EventLoop::EventLoop(FD listen_fd_,
-                            std::vector<PeerInfo> peers,
-                            RpcHandlers handlers_,
-                            size_t inbound_cap)
+template <size_t N, std::ranges::input_range R>
+inline EventLoop<N>::EventLoop(FD listen_fd_,
+                               R&& peers,
+                               RpcHandlers handlers_,
+                               size_t inbound_cap,
+                               size_t my_id)
     : listen_fd(listen_fd_),
+      my_id_(my_id),
       handlers(std::move(handlers_)),
       client_slab(inbound_cap) {
     epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
@@ -175,7 +220,7 @@ inline EventLoop::EventLoop(FD listen_fd_,
     if (event_fd < 0) throw std::runtime_error("eventfd failed");
 
     set_nonblocking(listen_fd);
-    register_fd(listen_fd, EPOLLIN);
+    register_fd(listen_fd, EPOLLIN | EPOLLET);
     register_fd(event_fd,  EPOLLIN);
 
     peer_conns.reserve(peers.size());
@@ -188,7 +233,8 @@ inline EventLoop::EventLoop(FD listen_fd_,
     }
 }
 
-inline EventLoop::~EventLoop() {
+template <size_t N>
+inline EventLoop<N>::~EventLoop() {
     if (epoll_fd >= 0) ::close(epoll_fd);
     if (event_fd >= 0) ::close(event_fd);
     // Per-peer fds: close anything still live.
@@ -196,21 +242,35 @@ inline EventLoop::~EventLoop() {
         if (p.fd >= 0) ::close(p.fd);
     }
     // Listen fd is owned by Node.
+
+    // Drain anything still in the inbox so we don't leak the Outbound
+    // payloads (their on_reply std::functions hold captured state).
+    inbox_.DrainAll([](Outbound* out) { delete out; });
 }
 
-inline void EventLoop::Stop() {
+template <size_t N>
+inline void EventLoop<N>::Stop() {
     stopped.store(true, std::memory_order_release);
-    wake();
+    wake_eventfd_unconditional();
 }
 
-inline void EventLoop::wake() {
+template <size_t N>
+inline void EventLoop<N>::Wake() {
+    if (!wake_armed.exchange(true, std::memory_order_acq_rel)) {
+        wake_eventfd_unconditional();
+    }
+}
+
+template <size_t N>
+inline void EventLoop<N>::wake_eventfd_unconditional() {
     uint64_t one = 1;
-    ssize_t n = ::write(event_fd, &one, sizeof(one));
+    ssize_t  n   = ::write(event_fd, &one, sizeof(one));
     (void)n; // EAGAIN is fine; eventfd counter is already > 0 and the loop
              // will pick up the inbox on its next wake.
 }
 
-inline void EventLoop::set_nonblocking(FD fd) {
+template <size_t N>
+inline void EventLoop<N>::set_nonblocking(FD fd) {
     int flags = ::fcntl(fd, F_GETFL, 0);
     if (flags < 0) throw std::runtime_error("fcntl F_GETFL failed");
     if (::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
@@ -218,7 +278,8 @@ inline void EventLoop::set_nonblocking(FD fd) {
     }
 }
 
-inline void EventLoop::register_fd(FD fd, uint32_t events) {
+template <size_t N>
+inline void EventLoop<N>::register_fd(FD fd, uint32_t events) {
     epoll_event ev{};
     ev.events  = events;
     ev.data.fd = fd;
@@ -227,7 +288,8 @@ inline void EventLoop::register_fd(FD fd, uint32_t events) {
     }
 }
 
-inline void EventLoop::modify_client_interest(ClientConn& c, uint32_t events) {
+template <size_t N>
+inline void EventLoop<N>::modify_client_interest(ClientConn& c, uint32_t events) {
     if (c.epoll_events == events) return;
     epoll_event ev{};
     ev.events  = events;
@@ -239,7 +301,8 @@ inline void EventLoop::modify_client_interest(ClientConn& c, uint32_t events) {
     c.epoll_events = events;
 }
 
-inline void EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
+template <size_t N>
+inline void EventLoop<N>::modify_peer_interest(PeerConn& p, uint32_t events) {
     if (p.epoll_events == events) return;
     epoll_event ev{};
     ev.events  = events;
@@ -253,7 +316,10 @@ inline void EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
 
 // ---- main run loop ----------------------------------------------------------
 
-inline void EventLoop::Run() {
+template <size_t N>
+inline void EventLoop<N>::Run() {
+    g_loop_producer_id = my_id_;
+
     epoll_event evs[EPOLL_BATCH];
     while (!stopped.load(std::memory_order_acquire)) {
         int n = ::epoll_wait(epoll_fd, evs, EPOLL_BATCH, -1);
@@ -300,7 +366,8 @@ inline void EventLoop::Run() {
 // Inbound path
 // =============================================================================
 
-inline void EventLoop::Accept() {
+template <size_t N>
+inline void EventLoop<N>::Accept() {
     for (;;) {
         sockaddr_in peer{};
         socklen_t   plen = sizeof(peer);
@@ -323,7 +390,7 @@ inline void EventLoop::Accept() {
         }
         c->fd = fd;
         c->id = next_conn_id++;
-        c->epoll_events = EPOLLIN | EPOLLRDHUP;
+        c->epoll_events = EPOLLIN | EPOLLRDHUP | EPOLLET;
 
         try {
             register_fd(fd, c->epoll_events);
@@ -337,17 +404,17 @@ inline void EventLoop::Accept() {
     }
 }
 
-inline void EventLoop::OnReadable(ClientConn& c) {
+template <size_t N>
+inline void EventLoop<N>::OnReadable(ClientConn& c) {
     // obtaining the raw bytes from the wire
     // can possibly yield incomplete message frames
-    std::byte tmp[RECV_CHUNK];
+    // TODO: if latency is too high here, replace c.rbuf w a ring buffer, or use readv
     for (;;) {
-        ssize_t n = ::recv(c.fd, tmp, sizeof(tmp), 0);
-        if (n > 0) {
-            c.rbuf.insert(c.rbuf.end(), tmp, tmp + n);
-            continue;
-        }
-        if (n == 0) { CloseClient(c); return; }
+        size_t old = c.rbuf.size();
+        c.rbuf.resize(old + RECV_CHUNK);
+        ssize_t n = ::recv(c.fd, c.rbuf.data() + old, RECV_CHUNK, 0);
+        if (n > 0) { c.rbuf.resize(old + n); continue; }
+        if (n == 0) { c.rbuf.resize(old); CloseClient(c); return; }
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) break;
         CloseClient(c);
@@ -363,7 +430,8 @@ inline void EventLoop::OnReadable(ClientConn& c) {
     }
 }
 
-inline void EventLoop::DispatchOneRequest(ClientConn& c) {
+template <size_t N>
+inline void EventLoop<N>::DispatchOneRequest(ClientConn& c) {
     size_t consumed = 0;
     bool parsed = false;
     try {
@@ -385,7 +453,8 @@ inline void EventLoop::DispatchOneRequest(ClientConn& c) {
     }
 }
 
-inline void EventLoop::OnWritable(ClientConn& c) {
+template <size_t N>
+inline void EventLoop<N>::OnWritable(ClientConn& c) {
     while (c.wbuf_offset < c.wbuf.size()) {
         ssize_t n = ::send(c.fd,
                            c.wbuf.data() + c.wbuf_offset,
@@ -403,7 +472,8 @@ inline void EventLoop::OnWritable(ClientConn& c) {
     if (c.closing && c.pending_tasks == 0) ReapClient(c);
 }
 
-inline void EventLoop::CloseClient(ClientConn& c) {
+template <size_t N>
+inline void EventLoop<N>::CloseClient(ClientConn& c) {
     if (c.closing) return;
     c.closing = true;
 
@@ -414,12 +484,12 @@ inline void EventLoop::CloseClient(ClientConn& c) {
         c.fd = -1;
     }
     c.epoll_events = 0;
-    // stalled.erase(c.id);
 
     if (c.pending_tasks == 0) ReapClient(c);
 }
 
-inline void EventLoop::ReapClient(ClientConn& c) {
+template <size_t N>
+inline void EventLoop<N>::ReapClient(ClientConn& c) {
     const ClientID id = c.id;
     ClientConn* ptr = &c;
     conns.erase(id);
@@ -430,7 +500,8 @@ inline void EventLoop::ReapClient(ClientConn& c) {
 // Outbound path
 // =============================================================================
 
-inline void EventLoop::StartConnect(PeerConn& p) {
+template <size_t N>
+inline void EventLoop<N>::StartConnect(PeerConn& p) {
     addrinfo hints{};
     hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -456,7 +527,7 @@ inline void EventLoop::StartConnect(PeerConn& p) {
 
     p.fd            = fd;
     p.state         = PeerConn::State::Connecting;
-    p.epoll_events  = EPOLLOUT | EPOLLRDHUP;
+    p.epoll_events  = EPOLLOUT | EPOLLRDHUP | EPOLLET;
 
     try {
         register_fd(fd, p.epoll_events);
@@ -470,7 +541,8 @@ inline void EventLoop::StartConnect(PeerConn& p) {
     peer_fd_to_id[fd] = p.peer_id;
 }
 
-inline void EventLoop::OnPeerWritable(PeerConn& p) {
+template <size_t N>
+inline void EventLoop<N>::OnPeerWritable(PeerConn& p) {
     if (p.state == PeerConn::State::Connecting) {
         int err = 0;
         socklen_t l = sizeof(err);
@@ -479,7 +551,7 @@ inline void EventLoop::OnPeerWritable(PeerConn& p) {
             return;
         }
         p.state = PeerConn::State::Connected;
-        modify_peer_interest(p, EPOLLIN | EPOLLOUT | EPOLLRDHUP);
+        modify_peer_interest(p, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET);
         if (p.fd < 0) return; // DropPeer ran inside modify_peer_interest
     }
 
@@ -499,12 +571,15 @@ inline void EventLoop::OnPeerWritable(PeerConn& p) {
     modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
 }
 
-inline void EventLoop::OnPeerReadable(PeerConn& p) {
-    std::byte tmp[RECV_CHUNK];
+template <size_t N>
+inline void EventLoop<N>::OnPeerReadable(PeerConn& p) {
+    // TODO: if too much latency here, replace p.rbuf w a ring buffer, or use readv
     for (;;) {
-        ssize_t n = ::recv(p.fd, tmp, sizeof(tmp), 0);
-        if (n > 0) { p.rbuf.insert(p.rbuf.end(), tmp, tmp + n); continue; }
-        if (n == 0) { DropPeer(p); return; }
+        size_t old = p.rbuf.size();
+        p.rbuf.resize(old + RECV_CHUNK);
+        ssize_t n = ::recv(p.fd, p.rbuf.data() + old, RECV_CHUNK, 0);
+        if (n > 0) { p.rbuf.resize(old + n); continue; }
+        if (n == 0) { p.rbuf.resize(old); DropPeer(p); return; }
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) break;
         DropPeer(p);
@@ -527,7 +602,8 @@ inline void EventLoop::OnPeerReadable(PeerConn& p) {
     }
 }
 
-inline void EventLoop::DropPeer(PeerConn& p) {
+template <size_t N>
+inline void EventLoop<N>::DropPeer(PeerConn& p) {
     if (p.fd >= 0) {
         ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, p.fd, nullptr);
         peer_fd_to_id.erase(p.fd);
@@ -549,7 +625,8 @@ inline void EventLoop::DropPeer(PeerConn& p) {
 // Cross-thread inbox
 // =============================================================================
 
-inline void EventLoop::OnEventfd() {
+template <size_t N>
+inline void EventLoop<N>::OnEventfd() {
     uint64_t counter;
     for (;;) {
         ssize_t n = ::read(event_fd, &counter, sizeof(counter));
@@ -561,74 +638,100 @@ inline void EventLoop::OnEventfd() {
     DrainInbox();
 }
 
-inline void EventLoop::DrainInbox() {
-    std::vector<Outbound> local;
-    {
-        std::lock_guard<std::mutex> lk(inbox_mu);
-        local.swap(inbox);
-    }
-    for (auto& out : local) {
-        auto it = peer_conns.find(out.peer_id);
-        if (it == peer_conns.end()) continue; // not our peer
+template <size_t N>
+inline void EventLoop<N>::DrainInbox() {
+    // Disarm BEFORE draining the ring. Any producer that pushes after this
+    // store but before we finish draining will see armed=false, rearm, and
+    // re-wake -- so the next epoll_wait will see the eventfd already
+    // counted up and we'll come right back. No lost items.
+    wake_armed.store(false, std::memory_order_release);
+
+    inbox_.DrainAll([this](Outbound* out) {
+        auto it = peer_conns.find(out->peer_id);
+        if (it == peer_conns.end()) {
+            // Peer not owned by this loop. Producer routing is wrong;
+            // drop the request rather than crash. Free the Outbound.
+            delete out;
+            return;
+        }
         PeerConn& p = it->second;
 
-        p.wbuf.insert(p.wbuf.end(), out.bytes.begin(), out.bytes.end());
-        p.inflight.push_back(std::move(out.reply));
+        p.wbuf.insert(p.wbuf.end(), out->bytes.begin(), out->bytes.end());
+        p.inflight.push_back(std::move(out->reply));
 
         if (p.state == PeerConn::State::Disconnected) {
             StartConnect(p);
             // EPOLLOUT already armed; bytes drain after connect completes.
-            continue;
-        }
-        if (p.state == PeerConn::State::Connected) {
+        } else if (p.state == PeerConn::State::Connected) {
             modify_peer_interest(p, p.epoll_events | EPOLLOUT);
         }
         // If Connecting, EPOLLOUT is already armed and OnPeerWritable will
         // drain once the connect lands.
-    }
+
+        delete out;
+    });
 }
 
-inline void EventLoop::EnqueueAE(NodeID peer_id,
-                                 AppendEntriesReqPayload payload,
-                                 std::function<void(AppendEntriesRespPayload)> on_reply) {
-    Outbound out;
-    out.peer_id = peer_id;
-    serialize_ae_req(payload, out.bytes);
-    out.reply.kind  = RpcKind::AppendEntries;
-    out.reply.on_ae = std::move(on_reply);
-    {
-        std::lock_guard<std::mutex> lk(inbox_mu);
-        inbox.push_back(std::move(out));
-    }
-    wake();
+template <size_t N>
+inline void EventLoop<N>::set_loops(std::array<EventLoop<N>*, N>& loops) {
+    loops_ = loops;
 }
 
-inline void EventLoop::EnqueueRV(NodeID peer_id,
-                                 RequestVoteReqPayload payload,
-                                 std::function<void(RequestVoteRespPayload)> on_reply) {
-    Outbound out;
-    out.peer_id = peer_id;
-    serialize_rv_req(payload, out.bytes);
-    out.reply.kind  = RpcKind::RequestVote;
-    out.reply.on_rv = std::move(on_reply);
-    {
-        std::lock_guard<std::mutex> lk(inbox_mu);
-        inbox.push_back(std::move(out));
+template <size_t N>
+inline void EventLoop<N>::post_outbound(Outbound* out) {
+    // The caller must be an event-loop thread; otherwise we'd index off
+    // the end of the MPSC sub-queue array. Non-loop callers (Stop, dtors)
+    // never enqueue, so this assert defends against future misuse.
+    assert(g_loop_producer_id < N && "Enqueue* called from non-event-loop thread");
+
+    const size_t target = static_cast<size_t>(out->peer_id) % N;
+    EventLoop<N>* t = loops_[target];
+    assert(t != nullptr && "EventLoop::set_loops not called");
+
+    if (!t->inbox_.Push(g_loop_producer_id, out)) {
+        // Ring full. With INBOX_RING_CAP=64 and Raft's per-peer in-flight
+        // bound of 1, this should be unreachable under normal operation.
+        // Treat as fatal so an operator hears about it; TODO: future passes can
+        // synthesize a failure reply instead.
+        delete out;
+        assert(false && "EventLoop inbox ring full");
+        return;
     }
-    wake();
+    t->Wake();
 }
 
-inline void EventLoop::EnqueueIS(NodeID peer_id,
-                                 InstallSnapshotReqPayload payload,
-                                 std::function<void(InstallSnapshotRespPayload)> on_reply) {
-    Outbound out;
-    out.peer_id = peer_id;
-    serialize_is_req(payload, out.bytes);
-    out.reply.kind  = RpcKind::InstallSnapshot;
-    out.reply.on_is = std::move(on_reply);
-    {
-        std::lock_guard<std::mutex> lk(inbox_mu);
-        inbox.push_back(std::move(out));
-    }
-    wake();
+template <size_t N>
+inline void EventLoop<N>::EnqueueAE(NodeID peer_id,
+                                    AppendEntriesReqPayload payload,
+                                    std::function<void(AppendEntriesRespPayload)> on_reply) {
+    auto* out = new Outbound{};
+    out->peer_id = peer_id;
+    serialize_ae_req(payload, out->bytes);
+    out->reply.kind  = RpcKind::AppendEntries;
+    out->reply.on_ae = std::move(on_reply);
+    post_outbound(out);
+}
+
+template <size_t N>
+inline void EventLoop<N>::EnqueueRV(NodeID peer_id,
+                                    RequestVoteReqPayload payload,
+                                    std::function<void(RequestVoteRespPayload)> on_reply) {
+    auto* out = new Outbound{};
+    out->peer_id = peer_id;
+    serialize_rv_req(payload, out->bytes);
+    out->reply.kind  = RpcKind::RequestVote;
+    out->reply.on_rv = std::move(on_reply);
+    post_outbound(out);
+}
+
+template <size_t N>
+inline void EventLoop<N>::EnqueueIS(NodeID peer_id,
+                                    InstallSnapshotReqPayload payload,
+                                    std::function<void(InstallSnapshotRespPayload)> on_reply) {
+    auto* out = new Outbound{};
+    out->peer_id = peer_id;
+    serialize_is_req(payload, out->bytes);
+    out->reply.kind  = RpcKind::InstallSnapshot;
+    out->reply.on_is = std::move(on_reply);
+    post_outbound(out);
 }

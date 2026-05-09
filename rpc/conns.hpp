@@ -30,6 +30,13 @@ using NodeID = uint;
 using FD = int;
 using ClientID = uint64_t;
 
+// Peer endpoints in stable storage. Indexed by NodeID.
+struct PeerInfo {
+    NodeID      id;
+    const char* ip;
+    const char* port;
+};
+
 // Tracks the kind of in-flight RPC for a given peer connection so the
 // reply parser knows which deserialize_*_resp to run. Replies do not
 // carry an id byte (see protocol.hpp), so the caller maintains its own
