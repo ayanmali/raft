@@ -17,6 +17,7 @@ Buffering convention (used by both flavors):
             EPOLLOUT is disarmed.
 */
 #include "./payloads.hpp"
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -237,4 +238,8 @@ struct PeerConn {
     // currently-arriving reply. Entry includes both the kind (drives the
     // deserializer) and the user callback to invoke on completion.
     std::deque<PendingReply> inflight;
+
+    FD timer_fd = -1;
+    std::chrono::steady_clock::time_point next_due; // for diagnostics
+    uint64_t in_flight_seq = 0; // matches up timer fires w/ the AE sent
 };

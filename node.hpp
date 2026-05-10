@@ -95,6 +95,20 @@ public:
         InstallSnapshotReqPayload payload,
         std::function<void(InstallSnapshotRespPayload)> on_reply);
 
+    void send_heartbeats(std::function<void(AppendEntriesRespPayload)> on_reply);
+
+    // Raft leadership transitions. Both must run on an event-loop thread
+    // (i.e. as part of a state-machine reaction to an inbound RPC, reply,
+    // or timer fire) so g_loop_producer_id is set and the Enqueue* path
+    // routes correctly. Snapshot the decision under state_mu_ in the
+    // caller, release it, and then call these.
+    //
+    // Each peer's heartbeat timer is armed on the loop that owns that
+    // peer (peer.id % N), via an inbox-routed control message. The
+    // owning loop performs timerfd_settime; no cross-loop syscalls.
+    void on_leader_elected();
+    void on_leader_demoted();
+
     // Inbound handlers. Locked under state_mu_; called by event loops
     // when they finish parsing one full request frame from a client.
     AppendEntriesRespPayload     handle_append_entries(const AppendEntriesReqPayload&);
@@ -136,6 +150,8 @@ private:
     // Constructs the RpcHandlers struct (member-fn lambdas) the loops
     // dispatch to on inbound requests.
     RpcHandlers make_handlers();
+
+    void tick_peer(NodeID peer_id);
 };
 
 // =============================================================================
@@ -247,6 +263,7 @@ inline RpcHandlers Node<N>::make_handlers() {
     h.on_is_req = [this](const InstallSnapshotReqPayload& p) {
         return handle_install_snapshot(p);
     };
+    h.on_peer_tick = [this](NodeID peer_id) { tick_peer(peer_id); };
     return h;
 }
 
@@ -321,6 +338,49 @@ inline void Node<N>::send_install_snapshot_rpc(
     const auto i = peer_id % N;
     if (!loops_[i]) throw std::runtime_error("Node not started");
     loops_[i]->EnqueueIS(peer_id, std::move(payload), std::move(on_reply));
+}
+
+template <uint N>
+inline void Node<N>::send_heartbeats(std::function<void(AppendEntriesRespPayload)> on_reply) {
+    // for each event loop, call send_append_entries_rpc() on each peer
+    for (auto& el : loops_) {
+        for (auto& p : el->peer_conns) {
+            send_append_entries_rpc(p.id, {}, on_reply);
+        }
+    }
+
+}
+
+void Node<N>::tick_peer(NodeID peer_id) {
+    AppendEntriesReqPayload payload{}; // heartbeat message == empty AE message
+    {
+        std::lock_guard<std::mutex> lk(state_mu_);
+        if (!leader) return;                                      // not leader: nothing to send
+    }
+    // Enqueue lands in this peer's owning loop's inbox.
+    // g_loop_producer_id is set because we're on a loop thread.
+    loops_[peer_id % N]->EnqueueAE(
+        peer_id, std::move(payload),
+        [this, peer_id](AppendEntriesRespPayload r) { on_ae_reply(peer_id, r); });
+}
+
+template <uint N>
+inline void Node<N>::on_leader_elected() {
+    // Caller has already snapshotted state under state_mu_ and decided
+    // we're now leader. Arm every peer's heartbeat timer on its owning
+    // loop. The Enqueue path routes through the inbox so the
+    // timerfd_settime syscall happens on the owning loop's thread, not
+    // on whichever loop detected the election win.
+    for (const auto& p : peers_) {
+        loops_[p.id % N]->EnqueueArmTimer(p.id, HEARTBEAT_INTERVAL);
+    }
+}
+
+template <uint N>
+inline void Node<N>::on_leader_demoted() {
+    for (const auto& p : peers_) {
+        loops_[p.id % N]->EnqueueDisarmTimer(p.id);
+    }
 }
 
 // ---- inbound handlers ------------------------------------------------------

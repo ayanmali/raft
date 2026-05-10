@@ -45,6 +45,7 @@ Outbound flow:
 #include <atomic>
 #include <cassert>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <fcntl.h>
 #include <functional>
@@ -55,6 +56,7 @@ Outbound flow:
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
 #include <sys/uio.h>
 #include <unistd.h>
 #include <unordered_map>
@@ -119,14 +121,40 @@ struct EventLoop {
                    InstallSnapshotReqPayload payload,
                    std::function<void(InstallSnapshotRespPayload)> on_reply);
 
+    // Cross-thread timer control. Same routing topology as Enqueue*: the
+    // call lands on whatever loop, computes target = peer_id % N, and
+    // pushes a tagged Outbound into the target loop's inbox so the target
+    // (and only the target) issues the timerfd_settime syscall.
+    //
+    // Use these only for *cross-loop* arms (e.g. Node-side leader-elected
+    // hooks). For same-loop re-arming inside a reply callback, call the
+    // private arm_peer_timer helper directly to avoid pointless heap
+    // traffic and a round-trip through the inbox.
+    void EnqueueArmTimer(NodeID peer_id, std::chrono::nanoseconds period);
+    void EnqueueDisarmTimer(NodeID peer_id);
+
 private:
     // Outbound is heap-allocated by the producer and freed by the consumer
-    // after its state has been moved into peer.wbuf and peer.inflight. Only
-    // raw `Outbound*` (trivially copyable) travels through the SPSC ring.
+    // after its state has been moved into peer.wbuf and peer.inflight (or
+    // the timer arm/disarm has been issued). Only raw `Outbound*`
+    // (trivially copyable) travels through the SPSC ring.
+    enum class Kind : uint8_t { Rpc, ArmTimer, DisarmTimer };
     struct Outbound {
+        // Kind::Rpc body. Default-constructed (and harmless) for control
+        // kinds; the ~80 B of empty std::vector + std::function slots is
+        // negligible until profiling says otherwise.
         std::vector<std::byte> bytes;
         PendingReply           reply;
-        NodeID                 peer_id;
+
+        // Kind::ArmTimer body. Ignored by other kinds.
+        std::chrono::nanoseconds period{0};
+
+        // Selects which body of this struct is meaningful. Drives the
+        // dispatch switch in DrainInbox.
+        Kind kind = Kind::Rpc;
+
+        // Routing key (target loop = peer_id % N). Always meaningful.
+        NodeID peer_id = 0;
     };
 
     using Inbox = MPSC<Outbound*, INBOX_RING_CAP, N>;
@@ -163,6 +191,7 @@ private:
     // ---- outbound ----
     std::unordered_map<NodeID, PeerConn> peer_conns;
     std::unordered_map<FD, NodeID>       peer_fd_to_id;
+    std::unordered_map<FD, NodeID>       peer_timer_to_id; // for heartbeats
 
     // ---- cross-thread inbox (lock-free) ----
     Inbox inbox_;
@@ -195,7 +224,18 @@ private:
     void OnEventfd();
     void DrainInbox();
 
-    // shared by EnqueueAE/RV/IS once the Outbound is fully built.
+    // Per-Outbound dispatch helpers, all called on the owning loop's thread
+    // from inside DrainInbox. handle_rpc_outbound runs the existing
+    // wbuf-append / inflight-push / EPOLLOUT-arm sequence; arm/disarm wrap
+    // timerfd_settime. The same-loop variants of arm/disarm are also safe
+    // to call directly from reply callbacks (which already run here),
+    // avoiding a round-trip through the inbox.
+    void handle_rpc_outbound(Outbound& out);
+    void arm_peer_timer(NodeID peer_id, std::chrono::nanoseconds period);
+    void disarm_peer_timer(NodeID peer_id);
+
+    // shared by EnqueueAE/RV/IS/ArmTimer/DisarmTimer once the Outbound is
+    // fully built: route to loops_[peer_id % N], push, wake-coalesce.
     void post_outbound(Outbound* out);
 };
 
@@ -230,6 +270,13 @@ inline EventLoop<N>::EventLoop(FD listen_fd_,
         pc.ip      = pe.ip;
         pc.port    = pe.port;
         peer_conns.emplace(pe.id, std::move(pc));
+    }
+
+    for (auto& [id, p] : peer_conns) {
+        p.timer_fd = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+        if (p.timer_fd < 0) throw std::runtime_error("timerfd_create");
+        register_fd(p.timer_fd, EPOLLIN);
+        peer_timer_to_id[p.timer_fd] = id;
     }
 }
 
@@ -354,8 +401,14 @@ inline void EventLoop<N>::Run() {
                     DropPeer(p);
                     continue;
                 }
-                if (e & EPOLLOUT) OnPeerWritable(p);
                 if (e & EPOLLIN)  OnPeerReadable(p);
+                if (e & EPOLLOUT) OnPeerWritable(p);
+                continue;
+            }
+
+            if (auto it = peer_timer_to_id.find(fd); it != peer_timer_to_id.end()) {
+                PeerConn& p = peer_conns.at(it->second);
+                if (e & EPOLLIN) OnPeerTimer(p);
                 continue;
             }
         }
@@ -539,6 +592,7 @@ inline void EventLoop<N>::StartConnect(PeerConn& p) {
         return;
     }
     peer_fd_to_id[fd] = p.peer_id;
+    // peer_timer_to_id[p.timer_fd] = p.peer_id;
 }
 
 template <size_t N>
@@ -647,29 +701,79 @@ inline void EventLoop<N>::DrainInbox() {
     wake_armed.store(false, std::memory_order_release);
 
     inbox_.DrainAll([this](Outbound* out) {
-        auto it = peer_conns.find(out->peer_id);
-        if (it == peer_conns.end()) {
-            // Peer not owned by this loop. Producer routing is wrong;
-            // drop the request rather than crash. Free the Outbound.
-            delete out;
-            return;
+        if constexpr (out->kind == Kind::Rpc) {
+            handle_rpc_outbound(out);
+        } else if constexpr (out->kind == Kind::ArmTimer) {
+            arm_peer_timer(out->peer_id, out->period);
+        } else {
+            disarm_peer_timer(out->peer_id);
         }
-        PeerConn& p = it->second;
-
-        p.wbuf.insert(p.wbuf.end(), out->bytes.begin(), out->bytes.end());
-        p.inflight.push_back(std::move(out->reply));
-
-        if (p.state == PeerConn::State::Disconnected) {
-            StartConnect(p);
-            // EPOLLOUT already armed; bytes drain after connect completes.
-        } else if (p.state == PeerConn::State::Connected) {
-            modify_peer_interest(p, p.epoll_events | EPOLLOUT);
-        }
-        // If Connecting, EPOLLOUT is already armed and OnPeerWritable will
-        // drain once the connect lands.
-
+        // switch (out->kind) {
+        //     case Kind::Rpc:
+        //         handle_rpc_outbound(*out);
+        //         break;
+        //     case Kind::ArmTimer:
+        //         arm_peer_timer(out->peer_id, out->period);
+        //         break;
+        //     case Kind::DisarmTimer:
+        //         disarm_peer_timer(out->peer_id);
+        //         break;
+        // }
         delete out;
     });
+}
+
+template <size_t N>
+inline void EventLoop<N>::handle_rpc_outbound(Outbound& out) {
+    auto it = peer_conns.find(out.peer_id);
+    if (it == peer_conns.end()) {
+        // Peer not owned by this loop. Producer routing is wrong; drop
+        // the request rather than crash. Outbound is freed by caller.
+        return;
+    }
+    PeerConn& p = it->second;
+
+    p.wbuf.insert(p.wbuf.end(), out.bytes.begin(), out.bytes.end());
+    p.inflight.push_back(std::move(out.reply));
+
+    if (p.state == PeerConn::State::Disconnected) {
+        StartConnect(p);
+        // EPOLLOUT already armed; bytes drain after connect completes.
+    } else if (p.state == PeerConn::State::Connected) {
+        modify_peer_interest(p, p.epoll_events | EPOLLOUT);
+    }
+    // If Connecting, EPOLLOUT is already armed and OnPeerWritable will
+    // drain once the connect lands.
+}
+
+template <size_t N>
+inline void EventLoop<N>::arm_peer_timer(NodeID peer_id,
+                                         std::chrono::nanoseconds period) {
+    auto it = peer_conns.find(peer_id);
+    if (it == peer_conns.end() || it->second.timer_fd < 0) return;
+
+    // Periodic timer: it_value == it_interval == period. The first
+    // expiration lands `period` from now; subsequent ones fire at the
+    // same cadence until disarmed.
+    constexpr long NS_PER_SEC = 1'000'000'000;
+    const long ns = static_cast<long>(period.count());
+    itimerspec spec{};
+    spec.it_value.tv_sec  = ns / NS_PER_SEC;
+    spec.it_value.tv_nsec = ns % NS_PER_SEC;
+    spec.it_interval      = spec.it_value;
+
+    ::timerfd_settime(it->second.timer_fd, 0, &spec, nullptr);
+}
+
+template <size_t N>
+inline void EventLoop<N>::disarm_peer_timer(NodeID peer_id) {
+    auto it = peer_conns.find(peer_id);
+    if (it == peer_conns.end() || it->second.timer_fd < 0) return;
+    // Zero spec disarms; any pending expirations are cleared on the next
+    // read. epoll readiness for an already-counted timerfd is harmless --
+    // OnPeerTimer just sees expirations==0 and moves on.
+    itimerspec zero{};
+    ::timerfd_settime(it->second.timer_fd, 0, &zero, nullptr);
 }
 
 template <size_t N>
@@ -734,4 +838,31 @@ inline void EventLoop<N>::EnqueueIS(NodeID peer_id,
     out->reply.kind  = RpcKind::InstallSnapshot;
     out->reply.on_is = std::move(on_reply);
     post_outbound(out);
+}
+
+template <size_t N>
+inline void EventLoop<N>::EnqueueArmTimer(NodeID peer_id,
+                                          std::chrono::nanoseconds period) {
+    auto* out = new Outbound{};
+    out->kind    = Kind::ArmTimer;
+    out->peer_id = peer_id;
+    out->period  = period;
+    post_outbound(out);
+}
+
+template <size_t N>
+inline void EventLoop<N>::EnqueueDisarmTimer(NodeID peer_id) {
+    auto* out = new Outbound{};
+    out->kind    = Kind::DisarmTimer;
+    out->peer_id = peer_id;
+    post_outbound(out);
+}
+
+void OnPeerTimer(PeerConn& p) {
+    uint64_t expirations = 0;
+    ssize_t n = ::read(p.timer_fd, &expirations, sizeof(expirations));
+    (void)n; // EAGAIN means it was cleared by another wake; ignore.
+    // Hand off to Node. We're already on the owning loop, so this can
+    // synchronously call back into EnqueueAE for this peer.
+    handlers.on_peer_tick(p.peer_id);
 }

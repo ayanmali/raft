@@ -277,6 +277,7 @@ struct RpcHandlers {
     std::function<AppendEntriesRespPayload(const AppendEntriesReqPayload&)>     on_ae_req;
     std::function<RequestVoteRespPayload(const RequestVoteReqPayload&)>         on_rv_req;
     std::function<InstallSnapshotRespPayload(const InstallSnapshotReqPayload&)> on_is_req;
+    std::function<void(NodeID)>                                                 on_peer_tick;
 };
 
 // ---- Request side: parse + handle + serialize-resp ------------------------
