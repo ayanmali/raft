@@ -23,8 +23,17 @@ struct MPSC {
 
     SPSCQueue<T, N> qs[P];
 
-    bool Push(size_t producer_id, const T& v) {
-        return qs[producer_id].PushOne(v);
+    // Push `payload_size` bytes into the sub-queue owned by
+    // `producer_id`. `write_fn(uint8_t* buf, size_t cap, size_t off)`
+    // is invoked once and must write exactly `payload_size` bytes via
+    // Queues::CopyIn starting at `off`. T is a phantom tag for type
+    // safety; the queue itself stores raw bytes.
+    // template <typename WriteFn>
+    // bool Push(size_t producer_id, size_t payload_size, WriteFn&& write_fn) {
+    //     return qs[producer_id].Push(payload_size, std::forward<WriteFn>(write_fn));
+    // }
+    bool Push(size_t producer_id, const T& data) {
+        return qs[producer_id].PushOne(data);
     }
 
     bool Pop(T* out) {
@@ -37,6 +46,16 @@ struct MPSC {
         }
         return false;
     }
+    // bool Pop(std::vector<std::byte>& payload) {
+    //     for (size_t i = 0; i < P; ++i) {
+    //         const size_t idx = (start_ + i) & (P - 1);
+    //         if (qs[idx].Pop(payload)) {
+    //             start_ = (idx + 1) & (P - 1);
+    //             return true;
+    //         }
+    //     }
+    //     return false;
+    // }
 
     // Sweep every sub-queue once, invoking callback for each item drained.
     // Returns the total number of items processed.
@@ -50,6 +69,15 @@ struct MPSC {
                 ++total;
             }
         }
+        // std::vector<std::byte> item;
+        // //T item;
+        // for (size_t i = 0; i < P; ++i) {
+        //     while (qs[i].Pop(item)) {
+        //         callback(item);
+        //         ++total;
+        //         item.clear();
+        //     }
+        // }
         return total;
     }
 

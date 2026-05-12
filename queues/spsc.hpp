@@ -8,7 +8,7 @@
 #include "../config.hpp"
 
 /*
-Single-producer single-consumer queue that stores variable length byte payloads.
+Single-producer single-consumer queue that stores fixed length byte payloads.
 Each message is laid out as: [size_t payload_size][payload bytes...].
 The read/write counters grow monotonically; indices into the buffer are derived
 with modulo arithmetic so wrap-around is handled transparently.
@@ -39,6 +39,21 @@ struct SPSCQueue {
         return true;
     }
 
+    // template<typename F>
+    // bool PushOne(const T& data, F&& copy_func) {
+    //     const size_t write = write_idx.load(std::memory_order_relaxed);
+    //     const size_t read = read_idx.load(std::memory_order_acquire);
+
+    //     const size_t used = write - read;
+    //     if (used + 1 > N) return false;  // not enough capacity (element count)
+
+    //     const size_t offset = write & (N - 1);
+    //     copy_func(&buffer[offset]); // copies data into the buffer
+
+    //     write_idx.fetch_add(1, std::memory_order_release);
+    //     return true;
+    // }
+
     // Slot-claim API: producer reserves the next slot, writes into it
     // directly (avoiding the local-then-memcpy overhead of PushOne), then
     // publishes via CommitWrite. Returns nullptr if the queue is full.
@@ -62,7 +77,7 @@ struct SPSCQueue {
         
         // Copy elements one by one, handling wrap-around
         const size_t offset = write & (N - 1);
-        CopyIn(buffer, N, offset, data.data(), data.size() * sizeof(T));
+        Queues::CopyIn(buffer, N, offset, data.data(), data.size() * sizeof(T));
 
         write_idx.fetch_add(data.size(), std::memory_order_release);
         return true;
@@ -91,7 +106,7 @@ struct SPSCQueue {
         // Copy elements one by one, handling wrap-around
         std::vector<T> payload(num_elements);
         const size_t offset = read & (N - 1);
-        CopyOut(buffer, N, offset, payload.data(), num_elements * sizeof(T));
+        Queues::CopyOut(buffer, N, offset, payload.data(), num_elements * sizeof(T));
 
         read_idx.fetch_add(num_elements, std::memory_order_release);
         return payload;

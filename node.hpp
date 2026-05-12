@@ -36,6 +36,7 @@ Persistence:
 #include "rpc/event_loop.hpp"
 #include "rpc/payloads.hpp"
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <functional>
@@ -74,6 +75,7 @@ public:
 
     // Spawns N worker threads, each running an EventLoop. Returns
     // immediately; threads run until stop() or the dtor.
+    // main thread runs in a loop, waiting for election timeout
     void start();
 
     // Signals every loop to exit, joins all worker threads.
@@ -123,18 +125,18 @@ private:
     bool                                           running_ = false;
 
     // ---- raft state ----
-    std::mutex                state_mu_;              // since multiple event loop threads could modify state concurrently
-    int                       current_term  = 0;
-    int                       voted_for     = -1;
-    std::vector<LogEntry>     log;
-    int                       commit_index  = 0;
-    int                       last_applied  = 0;
-    std::vector<int>          next_index;             // leader-only, per peer
-    std::vector<int>          match_index;            // leader-only, per peer
-    bool                      leader        = false;
+    std::mutex                             state_mu_;              // since multiple event loop threads could modify state concurrently
+    int                                    current_term  = 0;
+    int                                    voted_for     = -1;
+    std::vector<LogEntry>                  log;
+    int                                    commit_index  = 0;
+    int                                    last_applied  = 0;
+    // std::vector<int>                       next_index;             // leader-only, per peer
+    // std::vector<int>                       match_index;            // leader-only, per peer
+    std::atomic<bool>                      leader        = false;
 
     // Election timeout, randomized at construction.
-    std::chrono::milliseconds timeout_;
+    std::chrono::milliseconds election_timeout_;
 
     std::vector<PeerInfo> peers_;
 
@@ -185,14 +187,12 @@ inline Node<N>::Node() {
         peers_.push_back(PeerInfo{id, ip_sv.data(), SERVER_PORT});
         ++id;
     }
-    next_index.assign(peers_.size(), 0);
-    match_index.assign(peers_.size(), 0);
 
     // Randomized election timeout per Raft spec.
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> distrib(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
-    timeout_ = std::chrono::milliseconds(distrib(gen));
+    std::uniform_int_distribution<> distrib(MIN_ELECTION_TIMEOUT_MS, MAX_ELECTION_TIMEOUT_MS);
+    election_timeout_ = std::chrono::milliseconds(distrib(gen));
 
     for (uint i = 0; i < N; ++i) listen_fds_[i] = -1;
     setup_listen_sockets();
@@ -293,6 +293,9 @@ inline void Node<N>::start() {
     for (uint i = 0; i < N; ++i) {
         threads_[i] = std::thread([this, i] { loops_[i]->Run(); });
     }
+
+    // if timeout occurs, start an election
+    // ...
 }
 
 template <uint N>
@@ -353,10 +356,11 @@ inline void Node<N>::send_heartbeats(std::function<void(AppendEntriesRespPayload
 
 void Node<N>::tick_peer(NodeID peer_id) {
     AppendEntriesReqPayload payload{}; // heartbeat message == empty AE message
-    {
-        std::lock_guard<std::mutex> lk(state_mu_);
-        if (!leader) return;                                      // not leader: nothing to send
-    }
+    // {
+    //     std::lock_guard<std::mutex> lk(state_mu_);
+    //     if (!leader) return;                                      // not leader: nothing to send
+    // }
+    if (!leader.load(std::memory_order_acquire_release);) return; // not leader; nothing to send
     // Enqueue lands in this peer's owning loop's inbox.
     // g_loop_producer_id is set because we're on a loop thread.
     loops_[peer_id % N]->EnqueueAE(
@@ -371,15 +375,25 @@ inline void Node<N>::on_leader_elected() {
     // loop. The Enqueue path routes through the inbox so the
     // timerfd_settime syscall happens on the owning loop's thread, not
     // on whichever loop detected the election win.
-    for (const auto& p : peers_) {
-        loops_[p.id % N]->EnqueueArmTimer(p.id, HEARTBEAT_INTERVAL);
+    // for (const auto& p : peers_) {
+    //     loops_[p.id % N]->EnqueueArmTimer(p.id, HEARTBEAT_INTERVAL);
+    // }
+    for (auto& loop : loops_) {
+        for (auto& [id, pc] : loop->peer_conns) {
+            loop->EnqueueArmTimer(id, HEARTBEAT_INTERVAL);
+        }
     }
 }
 
 template <uint N>
 inline void Node<N>::on_leader_demoted() {
-    for (const auto& p : peers_) {
-        loops_[p.id % N]->EnqueueDisarmTimer(p.id);
+    // for (const auto& p : peers_) {
+    //     loops_[p.id % N]->EnqueueDisarmTimer(p.id);
+    // }
+    for (auto& loop : loops_) {
+        for (auto& [id, pc] : loop->peer_conns) {
+            loop->EnqueueDisarmTimer(id, HEARTBEAT_INTERVAL);
+        }
     }
 }
 
@@ -400,7 +414,7 @@ inline AppendEntriesRespPayload Node<N>::handle_append_entries(
     if (static_cast<int>(req.term) > current_term) {
         current_term = static_cast<int>(req.term);
         voted_for    = -1;
-        leader       = false;
+        leader.store(false, std::memory_order_release);
     }
     // TODO: log matching, append, leader_commit advancement.
     return AppendEntriesRespPayload{static_cast<uint32_t>(current_term), 1};

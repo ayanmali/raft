@@ -269,15 +269,18 @@ inline EventLoop<N>::EventLoop(FD listen_fd_,
         pc.peer_id = pe.id;
         pc.ip      = pe.ip;
         pc.port    = pe.port;
+        pc.next_index = 0;
+        pc.match_index = 0;
+
+        pc.timer_fd = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+        if (pc.timer_fd < 0) throw std::runtime_error("timerfd_create");
+        register_fd(pc.timer_fd, EPOLLIN);
+        peer_timer_to_id[pc.timer_fd] = pe.id;
+
         peer_conns.emplace(pe.id, std::move(pc));
+
     }
 
-    for (auto& [id, p] : peer_conns) {
-        p.timer_fd = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-        if (p.timer_fd < 0) throw std::runtime_error("timerfd_create");
-        register_fd(p.timer_fd, EPOLLIN);
-        peer_timer_to_id[p.timer_fd] = id;
-    }
 }
 
 template <size_t N>
@@ -343,7 +346,7 @@ inline void EventLoop<N>::modify_client_interest(ClientConn& c, uint32_t events)
     ev.data.fd = c.fd;
     if (::epoll_ctl(epoll_fd, EPOLL_CTL_MOD, c.fd, &ev) < 0) {
         CloseClient(c);
-        return;
+        throw std::runtime_error("Error modifying events for client fd");
     }
     c.epoll_events = events;
 }
@@ -356,7 +359,7 @@ inline void EventLoop<N>::modify_peer_interest(PeerConn& p, uint32_t events) {
     ev.data.fd = p.fd;
     if (::epoll_ctl(epoll_fd, EPOLL_CTL_MOD, p.fd, &ev) < 0) {
         DropPeer(p);
-        return;
+        throw std::runtime_error("Error modifying epoll events for peer fd");
     }
     p.epoll_events = events;
 }
@@ -422,6 +425,9 @@ inline void EventLoop<N>::Run() {
 template <size_t N>
 inline void EventLoop<N>::Accept() {
     for (;;) {
+        ClientConn* c = client_slab.Acquire();
+        if (!c) continue;
+            
         sockaddr_in peer{};
         socklen_t   plen = sizeof(peer);
         FD fd = ::accept4(listen_fd, reinterpret_cast<sockaddr*>(&peer),
@@ -435,12 +441,6 @@ inline void EventLoop<N>::Accept() {
         int yes = 1;
         ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
-        ClientConn* c = client_slab.Acquire();
-        if (!c) {
-            // Hard cap: refuse the connection rather than allocate.
-            ::close(fd);
-            continue;
-        }
         c->fd = fd;
         c->id = next_conn_id++;
         c->epoll_events = EPOLLIN | EPOLLRDHUP | EPOLLET;
@@ -562,21 +562,21 @@ inline void EventLoop<N>::StartConnect(PeerConn& p) {
 
     addrinfo* res = nullptr;
     if (::getaddrinfo(p.ip, p.port, &hints, &res) != 0 || res == nullptr) {
-        return; // peer endpoint unresolvable; leave Disconnected, drop pending
+        throw std::runtime_error("Error getting address info for peer")
     }
     std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> guard(res, &::freeaddrinfo);
 
     FD fd = ::socket(res->ai_family,
                      res->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC,
                      res->ai_protocol);
-    if (fd < 0) return;
+    if (fd < 0) throw std::runtime_error("Failed to start socket");
 
     int yes = 1;
     ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
     int rc = ::connect(fd, res->ai_addr, res->ai_addrlen);
 
-    if (rc < 0 && errno != EINPROGRESS) { ::close(fd); return; }
+    if (rc < 0 && errno != EINPROGRESS) { ::close(fd); throw std::runtime_error("Failed to connect socket"); }
 
     p.fd            = fd;
     p.state         = PeerConn::State::Connecting;
@@ -606,7 +606,7 @@ inline void EventLoop<N>::OnPeerWritable(PeerConn& p) {
         }
         p.state = PeerConn::State::Connected;
         modify_peer_interest(p, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET);
-        if (p.fd < 0) return; // DropPeer ran inside modify_peer_interest
+        // if (p.fd < 0) return; // DropPeer ran inside modify_peer_interest
     }
 
     while (p.wbuf_offset < p.wbuf.size()) {
@@ -701,24 +701,17 @@ inline void EventLoop<N>::DrainInbox() {
     wake_armed.store(false, std::memory_order_release);
 
     inbox_.DrainAll([this](Outbound* out) {
-        if constexpr (out->kind == Kind::Rpc) {
-            handle_rpc_outbound(out);
-        } else if constexpr (out->kind == Kind::ArmTimer) {
-            arm_peer_timer(out->peer_id, out->period);
-        } else {
-            disarm_peer_timer(out->peer_id);
+        switch (out->kind) {
+            case Kind::Rpc:
+                handle_rpc_outbound(*out);
+                break;
+            case Kind::ArmTimer:
+                arm_peer_timer(out->peer_id, out->period);
+                break;
+            case Kind::DisarmTimer:
+                disarm_peer_timer(out->peer_id);
+                break;
         }
-        // switch (out->kind) {
-        //     case Kind::Rpc:
-        //         handle_rpc_outbound(*out);
-        //         break;
-        //     case Kind::ArmTimer:
-        //         arm_peer_timer(out->peer_id, out->period);
-        //         break;
-        //     case Kind::DisarmTimer:
-        //         disarm_peer_timer(out->peer_id);
-        //         break;
-        // }
         delete out;
     });
 }
