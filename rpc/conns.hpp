@@ -16,20 +16,18 @@ Buffering convention (used by both flavors):
             send. Once wbuf_offset == wbuf.size(), the buffer is reset and
             EPOLLOUT is disarmed.
 */
-#include "./payloads.hpp"
+#include "./protocol/utils.hpp"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
-#include <functional>
 #include <sys/types.h>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-using NodeID = uint;
-using FD = int;
+using NodeID = uint64_t;
 using ClientID = uint64_t;
+using FD = int;
 
 // Peer endpoints in stable storage. Indexed by NodeID.
 struct PeerInfo {
@@ -42,28 +40,42 @@ struct PeerInfo {
 // reply parser knows which deserialize_*_resp to run. Replies do not
 // carry an id byte (see protocol.hpp), so the caller maintains its own
 // FIFO of pending request kinds and matches them to incoming replies.
-enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot };
+enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot, ArmTimer, DisarmTimer };
+
+// Messages that are sent from Raft layer to an event loop to send RPCs to peers.
+struct Outbound {
+    RpcMessage data;
+    // std::vector<std::byte> data; // serialized bytes
+    // PendingReply           reply;
+    // F on_reply;
+
+    // // only used for ArmTimer messages
+    // std::chrono::nanoseconds period{0};
+    // RpcKind kind;
+    // Routing key (target loop = peer_id % N). Always meaningful.
+    NodeID peer_id = 0;
+};
 
 // One slot in a peer's in-flight queue. Exactly one of `on_ae`/`on_rv`/
 // `on_is` is populated based on `kind`. The EventLoop pops the head of the
 // queue when a complete reply arrives and invokes the matching callback.
 // template <typename AEF, typename RVF, typename ISF>
-struct PendingReply {
-    RpcKind kind;
-    /* One of these functions will be called when the response comes back from the peer */
+// struct PendingReply {
+//     RpcKind kind;
+//     /* One of these functions will be called when the response comes back from the peer */
 
-    std::function<void(AppendEntriesRespPayload)>   on_ae;
-    std::function<void(RequestVoteRespPayload)>     on_rv;
-    std::function<void(InstallSnapshotRespPayload)> on_is;
-    // AEF on_ae;
-    // RVF on_rv;
-    // ISF on_is;
-};
+//     std::function<void(AppendEntriesRespPayload)>   on_ae;
+//     std::function<void(RequestVoteRespPayload)>     on_rv;
+//     std::function<void(InstallSnapshotRespPayload)> on_is;
+//     // AEF on_ae;
+//     // RVF on_rv;
+//     // ISF on_is;
+// };
 
 struct ClientConn {
     std::vector<std::byte> rbuf;
     std::vector<std::byte> wbuf;
-    size_t wbuf_offset = 0;
+    size_t wbuf_offset = 0; // to track how much of the wbuf has been sent (for chunked sends)
 
     ClientConn* next_free = nullptr; // freelist link, valid only when free
 
@@ -73,13 +85,15 @@ struct ClientConn {
     // Reserved: when request handlers run on a worker pool, this counts
     // outstanding tasks for the connection so we can defer reaping a
     // closed conn until all completions land. With synchronous Raft
-    // handlers (current state) this stays 0.
-    int      pending_tasks = 0;
+    // // handlers (current state) this stays 0.
+    // int      pending_tasks = 0;
 
-    bool     closing       = false;
-    bool     want_write    = false;
+    // bool     closing       = false;
+    // bool     want_write    = false;
     uint32_t epoll_events  = 0;
-    uint32_t next_seq      = 0;
+    // uint32_t next_seq      = 0;
+
+    void write_reply(RpcReply& reply);;
 };
 
 /*
@@ -186,11 +200,11 @@ struct ClientConnSlab {
         c->wbuf_offset = 0;
         c->fd = -1;
         c->id = 0;
-        c->pending_tasks = 0;
-        c->closing = false;
-        c->want_write = false;
+        // c->pending_tasks = 0;
+        // c->closing = false;
+        // c->want_write = false;
         c->epoll_events = 0;
-        c->next_seq = 0;
+        // c->next_seq = 0;
         slab.Release(c);
     }
 };
@@ -216,6 +230,13 @@ In-flight tracking:
   to invoke. `inflight_handlers` carries the response callbacks in the
   same order.
 */
+struct InflightRPC {
+    RpcKind kind;
+    std::vector<std::byte> req;
+    std::vector<std::byte> reply;
+    size_t bytes_sent; // for chunked sends
+};
+
 struct PeerConn {
     enum class State : uint8_t { Disconnected, Connecting, Connected };
 
@@ -230,14 +251,13 @@ struct PeerConn {
     uint32_t epoll_events = 0;
 
     // Buffering, mirroring ClientConn's layout.
-    std::vector<std::byte> rbuf;
-    std::vector<std::byte> wbuf;
-    size_t wbuf_offset = 0;
+    // std::vector<std::byte> rbuf;
+    // std::vector<std::byte> wbuf;
 
     // Reply matching: pending replies in send order. The head is the
     // currently-arriving reply. Entry includes both the kind (drives the
     // deserializer) and the user callback to invoke on completion.
-    std::deque<PendingReply> inflight;
+    std::deque<InflightRPC> outbox;
 
     FD timer_fd = -1;
     std::chrono::steady_clock::time_point next_due; // for diagnostics

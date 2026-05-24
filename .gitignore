@@ -1,2 +1,10 @@
 *config.hpp
 idk.cpp
+rpc/client/
+rpc/server/
+rpc/server1/
+rpc/event_loop.hpp
+rpc/proto.hpp
+rpc/protocol.hpp
+rpc/serde.hpp
+thread_pool/*

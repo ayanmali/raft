@@ -1,6 +1,6 @@
 #pragma once
 #include <cstddef>
-#include <type_traits>
+//#include <type_traits>
 
 #include "./spsc.hpp"
 
@@ -17,7 +17,10 @@ Constraints:
 */
 template <typename T, size_t N, size_t P>
 struct MPSC {
-    static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
+    //static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
+    static_assert(std::is_nothrow_move_constructible_v<T> &&
+        std::is_nothrow_move_assignable_v<T>,
+        "T must be nothrow-movable");
     static_assert(N > 0 && (N & (N - 1)) == 0, "N must be a power of 2");
     static_assert(P > 0 && (P & (P - 1)) == 0, "P must be a power of 2");
 
@@ -34,6 +37,10 @@ struct MPSC {
     // }
     bool Push(size_t producer_id, const T& data) {
         return qs[producer_id].PushOne(data);
+    }
+
+    bool Push(size_t producer_id, T&& data) {
+        return qs[producer_id].PushOne(std::forward(data));
     }
 
     bool Pop(T* out) {
@@ -62,10 +69,10 @@ struct MPSC {
     template <typename F>
     size_t DrainAll(F&& callback) {
         size_t total = 0;
-        T item;
         for (size_t i = 0; i < P; ++i) {
+            T item;
             while (qs[i].PopOne(&item)) {
-                callback(item);
+                callback(std::move(item));
                 ++total;
             }
         }

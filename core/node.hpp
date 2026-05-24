@@ -31,15 +31,15 @@ Persistence:
     - nextIndex[]
     - matchIndex[]
 */
-#include "./config.hpp"
-#include "rpc/conns.hpp"
-#include "rpc/event_loop.hpp"
-#include "rpc/payloads.hpp"
+#include "../config.hpp"
+#include "../rpc/conns.hpp"
+#include "../rpc/event_loop_v2.hpp"
+#include "../rpc/protocol/payloads.hpp"
+#include "../rpc/protocol/utils.hpp"
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <netdb.h>
@@ -54,7 +54,6 @@ Persistence:
 #include <unistd.h>
 #include <utility>
 #include <vector>
-#include <ranges>
 
 struct LogEntry {
     std::vector<std::byte> data;
@@ -84,20 +83,14 @@ public:
     // Outbound RPC entry points. Resolve the owning loop by
     // peer_id % N and post the request into its inbox. The reply
     // callback fires on that loop's thread.
-    void send_append_entries_rpc(
-        NodeID peer_id,
-        AppendEntriesReqPayload payload,
-        std::function<void(AppendEntriesRespPayload)> on_reply);
-    void send_request_vote_rpc(
-        NodeID peer_id,
-        RequestVoteReqPayload payload,
-        std::function<void(RequestVoteRespPayload)> on_reply);
-    void send_install_snapshot_rpc(
-        NodeID peer_id,
-        InstallSnapshotReqPayload payload,
-        std::function<void(InstallSnapshotRespPayload)> on_reply);
+    void send_rpc(AppendEntriesReqPayload&& payload, NodeID peer_id);
+    void send_rpc(RequestVoteReqPayload&& payload, NodeID peer_id);
+    void send_rpc(InstallSnapshotReqPayload&& payload, NodeID peer_id);
+    void send_heartbeats();
 
-    void send_heartbeats(std::function<void(AppendEntriesRespPayload)> on_reply);
+    void send_arm_timers(); // upon leader promotion
+    void send_disarm_timers(); // upon leader demotion
+    void post_inbox(std::unique_ptr<Outbound>);
 
     // Raft leadership transitions. Both must run on an event-loop thread
     // (i.e. as part of a state-machine reaction to an inbound RPC, reply,
@@ -108,14 +101,25 @@ public:
     // Each peer's heartbeat timer is armed on the loop that owns that
     // peer (peer.id % N), via an inbox-routed control message. The
     // owning loop performs timerfd_settime; no cross-loop syscalls.
-    void on_leader_elected();
-    void on_leader_demoted();
+    // void on_leader_elected();
+    // void on_leader_demoted();
 
     // Inbound handlers. Locked under state_mu_; called by event loops
     // when they finish parsing one full request frame from a client.
-    AppendEntriesRespPayload     handle_append_entries(const AppendEntriesReqPayload&);
-    RequestVoteRespPayload       handle_request_vote(const RequestVoteReqPayload&);
-    InstallSnapshotRespPayload   handle_install_snapshot(const InstallSnapshotReqPayload&);
+
+    // RpcReply handle_request(const RpcMessage& message);
+
+    // AppendEntriesRespPayload     handle_append_entries(const AppendEntriesReqPayload&);
+    // RequestVoteRespPayload       handle_request_vote(const RequestVoteReqPayload&);
+    // InstallSnapshotRespPayload   handle_install_snapshot(const InstallSnapshotReqPayload&);
+    std::expected<RpcReply, const char*> handle_request(const RpcMessage& req, uint8_t rpc_id);
+    void handle_reply(const AppendEntriesRespPayload& reply);
+    void handle_reply(const RequestVoteRespPayload& reply);
+    void handle_reply(const InstallSnapshotRespPayload& reply);
+
+    void handle_append_entries_reply(const RpcReply& reply);
+    void handle_request_vote_reply(const RpcReply& reply);
+    void handle_install_snapshot_reply(const RpcReply& reply);
 
 private:
     // ---- transport ----
@@ -125,15 +129,15 @@ private:
     bool                                           running_ = false;
 
     // ---- raft state ----
-    std::mutex                             state_mu_;              // since multiple event loop threads could modify state concurrently
-    int                                    current_term  = 0;
-    int                                    voted_for     = -1;
-    std::vector<LogEntry>                  log;
-    int                                    commit_index  = 0;
-    int                                    last_applied  = 0;
-    // std::vector<int>                       next_index;             // leader-only, per peer
-    // std::vector<int>                       match_index;            // leader-only, per peer
-    std::atomic<bool>                      leader        = false;
+    std::mutex                                     state_mu_;              // since multiple event loop threads could modify state concurrently
+    uint32_t                                       current_term  = 0;
+    uint32_t                                       voted_for     = -1;
+    std::vector<LogEntry>                          log;
+    uint32_t                                       commit_index  = 0;
+    uint32_t                                       last_applied  = 0;
+    // std::vector<int>                            next_index;             // leader-only, per peer
+    // std::vector<int>                            match_index;            // leader-only, per peer
+    std::atomic<bool>                              leader        = false;
 
     // Election timeout, randomized at construction.
     std::chrono::milliseconds election_timeout_;
@@ -151,9 +155,13 @@ private:
 
     // Constructs the RpcHandlers struct (member-fn lambdas) the loops
     // dispatch to on inbound requests.
-    RpcHandlers make_handlers();
+    // RpcHandlers make_handlers();
 
     void tick_peer(NodeID peer_id);
+
+    std::expected<RpcReply, const char*> handle_append_entries_req(const RpcMessage& message);
+    std::expected<RpcReply, const char*> handle_request_vote_req(const RpcMessage& message);
+    std::expected<RpcReply, const char*> handle_install_snapshot_req(const RpcMessage& message);
 };
 
 // =============================================================================
@@ -245,27 +253,11 @@ inline void Node<N>::setup_listen_sockets() {
     }
 }
 
-template <uint N>
-inline auto Node<N>::peer_subset_for(uint i) const {
-    auto subset = peers_ | std::views::filter([i](PeerInfo& pi) { return pi.id % N == i; });
-    return subset;
-}
-
-template <uint N>
-inline RpcHandlers Node<N>::make_handlers() {
-    RpcHandlers h;
-    h.on_ae_req = [this](const AppendEntriesReqPayload& p) {
-        return handle_append_entries(p);
-    };
-    h.on_rv_req = [this](const RequestVoteReqPayload& p) {
-        return handle_request_vote(p);
-    };
-    h.on_is_req = [this](const InstallSnapshotReqPayload& p) {
-        return handle_install_snapshot(p);
-    };
-    h.on_peer_tick = [this](NodeID peer_id) { tick_peer(peer_id); };
-    return h;
-}
+// template <uint N>
+// inline auto Node<N>::peer_subset_for(uint i) const {
+//     auto subset = peers_ | std::views::filter([i](PeerInfo& pi) { return pi.id % N == i; });
+//     return subset;
+// }
 
 template <uint N>
 inline void Node<N>::start() {
@@ -314,145 +306,118 @@ inline void Node<N>::stop() {
 // ---- outbound shims --------------------------------------------------------
 
 template <uint N>
-inline void Node<N>::send_append_entries_rpc(
-    NodeID peer_id,
-    AppendEntriesReqPayload payload,
-    std::function<void(AppendEntriesRespPayload)> on_reply) {
-    const auto i = peer_id % N;
-    if (!loops_[i]) throw std::runtime_error("Node not started");
-    loops_[i]->EnqueueAE(peer_id, std::move(payload), std::move(on_reply));
+inline void Node<N>::send_rpc(
+    AppendEntriesReqPayload&& payload, NodeID peer_id) {
+    auto outbound = std::make_unique<Outbound>(Outbound{.data = payload, .peer_id = peer_id});
+    post_inbox(std::move(outbound));
 }
 
 template <uint N>
-inline void Node<N>::send_request_vote_rpc(
-    NodeID peer_id,
-    RequestVoteReqPayload payload,
-    std::function<void(RequestVoteRespPayload)> on_reply) {
-    const auto i = peer_id % N;
-    if (!loops_[i]) throw std::runtime_error("Node not started");
-    loops_[i]->EnqueueRV(peer_id, std::move(payload), std::move(on_reply));
+inline void Node<N>::send_rpc(RequestVoteReqPayload&& payload, NodeID peer_id) {
+    auto outbound = std::make_unique<Outbound>(Outbound{.data = payload, .peer_id = peer_id});
+    post_inbox(std::move(outbound));
 }
 
 template <uint N>
-inline void Node<N>::send_install_snapshot_rpc(
-    NodeID peer_id,
-    InstallSnapshotReqPayload payload,
-    std::function<void(InstallSnapshotRespPayload)> on_reply) {
-    const auto i = peer_id % N;
-    if (!loops_[i]) throw std::runtime_error("Node not started");
-    loops_[i]->EnqueueIS(peer_id, std::move(payload), std::move(on_reply));
+inline void Node<N>::send_rpc(
+    InstallSnapshotReqPayload&& payload, NodeID peer_id) {
+    auto outbound = std::make_unique<Outbound>(Outbound{.data = payload, .peer_id = peer_id});
+    post_inbox(std::move(outbound));
 }
 
 template <uint N>
-inline void Node<N>::send_heartbeats(std::function<void(AppendEntriesRespPayload)> on_reply) {
+inline void Node<N>::send_heartbeats() {
+    if (!leader.load(std::memory_order_acquire)) return; // not leader; nothing to send
     // for each event loop, call send_append_entries_rpc() on each peer
     for (auto& el : loops_) {
         for (auto& p : el->peer_conns) {
-            send_append_entries_rpc(p.id, {}, on_reply);
+            send_append_entries_rpc(p.id, AppendEntriesReqPayload{current_term});
         }
     }
-
 }
 
-void Node<N>::tick_peer(NodeID peer_id) {
-    AppendEntriesReqPayload payload{}; // heartbeat message == empty AE message
-    // {
-    //     std::lock_guard<std::mutex> lk(state_mu_);
-    //     if (!leader) return;                                      // not leader: nothing to send
-    // }
-    if (!leader.load(std::memory_order_acquire_release);) return; // not leader; nothing to send
-    // Enqueue lands in this peer's owning loop's inbox.
-    // g_loop_producer_id is set because we're on a loop thread.
-    loops_[peer_id % N]->EnqueueAE(
-        peer_id, std::move(payload),
-        [this, peer_id](AppendEntriesRespPayload r) { on_ae_reply(peer_id, r); });
-}
-
+/* Runs upon winning an election */
 template <uint N>
-inline void Node<N>::on_leader_elected() {
-    // Caller has already snapshotted state under state_mu_ and decided
-    // we're now leader. Arm every peer's heartbeat timer on its owning
-    // loop. The Enqueue path routes through the inbox so the
-    // timerfd_settime syscall happens on the owning loop's thread, not
-    // on whichever loop detected the election win.
-    // for (const auto& p : peers_) {
-    //     loops_[p.id % N]->EnqueueArmTimer(p.id, HEARTBEAT_INTERVAL);
-    // }
-    for (auto& loop : loops_) {
-        for (auto& [id, pc] : loop->peer_conns) {
-            loop->EnqueueArmTimer(id, HEARTBEAT_INTERVAL);
+inline void Node<N>::send_arm_timers() {
+    if (!leader.load(std::memory_order_acquire)) return; // not leader; don't send
+    for (auto& el : loops_) {
+        for (auto& p : el->peer_conns) {
+            auto out = std::make_unique<Outbound>
+                (Outbound{
+                    .data = ArmTimerPayload{.period = HEARTBEAT_INTERVAL},
+                    .peer_id = p.peer_id
+                });
+            post_inbox(out);
         }
     }
 }
 
 template <uint N>
-inline void Node<N>::on_leader_demoted() {
-    // for (const auto& p : peers_) {
-    //     loops_[p.id % N]->EnqueueDisarmTimer(p.id);
-    // }
-    for (auto& loop : loops_) {
-        for (auto& [id, pc] : loop->peer_conns) {
-            loop->EnqueueDisarmTimer(id, HEARTBEAT_INTERVAL);
+/* Runs upon leader demotion */
+inline void Node<N>::send_disarm_timers() {
+    if (leader.load(std::memory_order_acquire)) return; // leader; don't run
+    for (auto& el : loops_) {
+        for (auto& p : el->peer_conns) {
+            auto out = std::make_unique<Outbound>
+                (Outbound{
+                    .data = DisarmTimerPayload{},
+                    .peer_id = p.peer_id
+                });
+            post_inbox(out);
         }
     }
 }
 
-// ---- inbound handlers ------------------------------------------------------
-//
-// Stubs for now -- full Raft state machine logic (log matching,
-// commit advancement, vote rules, snapshot install) is out of scope
-// for this commit. Each handler acquires state_mu_, makes the
-// minimal term-bumping decision, and returns a wire-formed reply.
-
 template <uint N>
-inline AppendEntriesRespPayload Node<N>::handle_append_entries(
-    const AppendEntriesReqPayload& req) {
-    std::lock_guard<std::mutex> lk(state_mu_);
-    if (static_cast<int>(req.term) < current_term) {
-        return AppendEntriesRespPayload{static_cast<uint32_t>(current_term), 0};
-    }
-    if (static_cast<int>(req.term) > current_term) {
-        current_term = static_cast<int>(req.term);
-        voted_for    = -1;
-        leader.store(false, std::memory_order_release);
-    }
-    // TODO: log matching, append, leader_commit advancement.
-    return AppendEntriesRespPayload{static_cast<uint32_t>(current_term), 1};
+inline void Node<N>::post_inbox(std::unique_ptr<Outbound> out) {
+    NodeID peer_id = out->peer_id;
+    auto l = loops_[peer_id % N];
+    if (!l) throw std::runtime_error("Node not started");
+    EventLoop<N>* loop = l.get();
+    loop->inbox_.Push(peer_id, std::move(out));
 }
 
-template <uint N>
-inline RequestVoteRespPayload Node<N>::handle_request_vote(
-    const RequestVoteReqPayload& req) {
-    std::lock_guard<std::mutex> lk(state_mu_);
-    if (static_cast<int>(req.term) < current_term) {
-        return RequestVoteRespPayload{static_cast<uint32_t>(current_term), 0};
-    }
-    if (static_cast<int>(req.term) > current_term) {
-        current_term = static_cast<int>(req.term);
-        voted_for    = -1;
-        leader       = false;
-    }
-    uint8_t granted = 0;
-    if (voted_for == -1 || voted_for == static_cast<int>(req.candidate_id)) {
-        // TODO: log up-to-date check (last_log_idx/last_log_term).
-        voted_for = static_cast<int>(req.candidate_id);
-        granted   = 1;
-    }
-    return RequestVoteRespPayload{static_cast<uint32_t>(current_term), granted};
-}
+// template <uint N>
+// void Node<N>::tick_peer(NodeID peer_id) {
+//     AppendEntriesReqPayload payload{}; // heartbeat message == empty AE message
+//     // {
+//     //     std::lock_guard<std::mutex> lk(state_mu_);
+//     //     if (!leader) return;                                      // not leader: nothing to send
+//     // }
+//     if (!leader.load(std::memory_order_acquire)) return; // not leader; nothing to send
+//     // Enqueue lands in this peer's owning loop's inbox.
+//     // g_loop_producer_id is set because we're on a loop thread.
+//     // loops_[peer_id % N]->EnqueueAE(
+//     //     peer_id, std::move(payload),
+//     //     [this, peer_id](AppendEntriesRespPayload r) { on_ae_reply(peer_id, r); });
 
-template <uint N>
-inline InstallSnapshotRespPayload Node<N>::handle_install_snapshot(
-    const InstallSnapshotReqPayload& req) {
-    std::lock_guard<std::mutex> lk(state_mu_);
-    if (static_cast<int>(req.term) < current_term) {
-        return InstallSnapshotRespPayload{static_cast<uint32_t>(current_term)};
-    }
-    if (static_cast<int>(req.term) > current_term) {
-        current_term = static_cast<int>(req.term);
-        voted_for    = -1;
-        leader       = false;
-    }
-    // TODO: chunk reassembly, install snapshot to state machine.
-    return InstallSnapshotRespPayload{static_cast<uint32_t>(current_term)};
-}
+// }
+
+// template <uint N>
+// inline void Node<N>::on_leader_elected() {
+//     // Caller has already snapshotted state under state_mu_ and decided
+//     // we're now leader. Arm every peer's heartbeat timer on its owning
+//     // loop. The Enqueue path routes through the inbox so the
+//     // timerfd_settime syscall happens on the owning loop's thread, not
+//     // on whichever loop detected the election win.
+//     // for (const auto& p : peers_) {
+//     //     loops_[p.id % N]->EnqueueArmTimer(p.id, HEARTBEAT_INTERVAL);
+//     // }
+//     for (auto& loop : loops_) {
+//         for (auto& [id, pc] : loop->peer_conns) {
+//             loop->EnqueueArmTimer(id, HEARTBEAT_INTERVAL);
+//         }
+//     }
+// }
+
+// template <uint N>
+// inline void Node<N>::on_leader_demoted() {
+//     // for (const auto& p : peers_) {
+//     //     loops_[p.id % N]->EnqueueDisarmTimer(p.id);
+//     // }
+//     for (auto& loop : loops_) {
+//         for (auto& [id, pc] : loop->peer_conns) {
+//             loop->EnqueueDisarmTimer(id, HEARTBEAT_INTERVAL);
+//         }
+//     }
+// }
