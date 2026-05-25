@@ -9,4 +9,10 @@ constexpr size_t INBOX_RING_CAP = 64; // per producer; must be power of 2
 template <uint N>
 using NodeReplyInbox = MPSC<RpcReply, INBOX_RING_CAP, N>;
 
+template <uint N>
+using NodeRequestInbox = MPSC<RpcMessage, INBOX_RING_CAP, N>;
+
+template <uint N>
 struct ReplyHandlerVisitor;
+template <uint N>
+struct RequestHandlerVisitor;

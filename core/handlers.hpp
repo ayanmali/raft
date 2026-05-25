@@ -2,7 +2,6 @@
 // ---- inbound handlers ------------------------------------------------------
 #include "node.hpp"
 #include "../rpc/protocol/utils.hpp"
-#include <mutex>
 
 // template <uint N>
 // inline RpcHandlers Node<N>::make_handlers() {
@@ -26,43 +25,30 @@
 // minimal term-bumping decision, and returns a wire-formed reply.
 
 template <uint N>
-std::expected<RpcReply, const char*> Node<N>::handle_append_entries_req(const RpcMessage& message) {
-    try {
-        const AppendEntriesReqPayload req{std::get<AppendEntriesReqPayload>(message)};
+struct RequestHandlerVisitor {
+    public:
+    RequestHandlerVisitor(Node<N>* node_) : node{node_} {}
 
-        std::lock_guard<std::mutex> lk(state_mu_);
-
-        if (req.term < current_term) {
-            return AppendEntriesRespPayload{current_term, 0};
+    void operator()(const AppendEntriesReqPayload& req) {
+        if (req.term < node->current_term) {
+            return AppendEntriesRespPayload{node->current_term, 0};
         }
 
-        if (req.term > current_term) {
-            current_term = req.term;
-            voted_for    = -1;
-            leader.store(false, std::memory_order_release);
+        if (req.term > node->current_term) {
+            node->current_term = req.term;
+            node->voted_for    = -1;
+            node->leader.store(false, std::memory_order_release);
         }
-
-        // TODO: log matching, append, leader_commit advancement.
-        return AppendEntriesRespPayload{static_cast<uint32_t>(current_term), 1};
     }
-    catch (std::exception&) {
-        return std::unexpected("failed to get AE payload from variant");
-    }
-}
 
-template <uint N>
-inline std::expected<RpcReply, const char*> Node<N>::handle_request_vote_req(const RpcMessage& message) {
-    try {
-        const RequestVoteReqPayload req{std::get<RequestVoteReqPayload>(message)};
+    void operator()(const RequestVoteReqPayload& req) {
 
-        std::lock_guard<std::mutex> lk(state_mu_);
-
-        if (req.term < current_term) {
-            return RequestVoteRespPayload{current_term, 0};
+        if (req.term < node->current_term) {
+            return RequestVoteRespPayload{node->current_term, 0};
         }
-        if (req.term > current_term) {
-            current_term = req.term;
-            leader       = false;
+        if (req.term > node->current_term) {
+            node->current_term = req.term;
+            node->leader       = false;
         }
 
         uint8_t granted = 0;
@@ -72,41 +58,36 @@ inline std::expected<RpcReply, const char*> Node<N>::handle_request_vote_req(con
         //     granted   = 1;
         // }
 
-        return RequestVoteRespPayload{current_term, granted};
+        return RequestVoteRespPayload{node->current_term, granted};
     }
-    catch (std::exception&) {
-        return std::unexpected("failed to get RV payload from variant");
-    }
-}
 
-template <uint N>
-inline std::expected<RpcReply, const char*> Node<N>::handle_install_snapshot_req(const RpcMessage& message) {
-    InstallSnapshotReqPayload req;
-    try {
-        const InstallSnapshotReqPayload req{std::get<InstallSnapshotReqPayload>(message)};
-
-        std::lock_guard<std::mutex> lk(state_mu_);
-
-        if (req.term < current_term) {
+    void operator()(const InstallSnapshotReqPayload& req) {
+        if (req.term < node->current_term) {
             return InstallSnapshotRespPayload{static_cast<uint32_t>(current_term)};
         }
 
-        if (req.term > current_term) {
-            current_term = req.term;
-            leader       = false;
+        if (req.term > node->current_term) {
+            node->current_term = req.term;
+            node->leader       = false;
         }
 
         // TODO: chunk reassembly, install snapshot to state machine.
-        return InstallSnapshotRespPayload{current_term};
+        return InstallSnapshotRespPayload{node->current_term};
     }
-    catch (std::exception&) {
-        return std::unexpected("failed to get IS payload from variant");
-    }
+    // these should be unreachable
+    void operator()(const ArmTimerPayload& req) {}
+    void operator()(const DisarmTimerPayload& req) {}
 
-}
+    private:
+    Node<N>* node;
+};
 
 // TODO
+template <uint N>
 struct ReplyHandlerVisitor {
+    public:
+    ReplyHandlerVisitor(Node<N>* node_) : node{node_} {};
+
     void operator()(const AppendEntriesRespPayload& reply) {
 
     }
@@ -118,29 +99,16 @@ struct ReplyHandlerVisitor {
     void operator()(const InstallSnapshotRespPayload& reply) {
 
     }
+    private:
+    Node<N>* node;
 };
 
 template <uint N>
-constexpr std::array<HandlerFunc, 4> make_req_handler_table() {
-    std::array<HandlerFunc, 4> table{};
-    table[1] = Node<N>::handle_append_entries_req;
-    table[2] = Node<N>::handle_request_vote_req;
-    table[3] = Node<N>::handle_install_snapshot_req;
-
-    return table;
-}
-
-
-template <uint N>
-constexpr auto REQ_HANDLER_TABLE = make_req_handler_table<N>();
-
-template <uint N>
-inline std::expected<RpcReply, const char*> Node<N>::handle_request(const RpcMessage& req, uint8_t rpc_id) {
-    return REQ_HANDLER_TABLE<N>[rpc_id](req);
+inline std::expected<RpcReply, const char*> Node<N>::handle_request(const RpcMessage& req) {
+    std::visit(RequestHandlerVisitor{this}, req);
 }
 
 template <uint N>
-inline void handle_reply(const RpcReply& reply, uint8_t rpc_id) {
-    std::visit(ReplyHandlerVisitor{}, reply);
-    // return REPLY_HANDLER_TABLE<N>[rpc_id](reply);
+inline void Node<N>::handle_reply(const RpcReply& reply) {
+    std::visit(ReplyHandlerVisitor{this}, reply);
 }

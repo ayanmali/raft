@@ -114,7 +114,9 @@ public:
     // AppendEntriesRespPayload     handle_append_entries(const AppendEntriesReqPayload&);
     // RequestVoteRespPayload       handle_request_vote(const RequestVoteReqPayload&);
     // InstallSnapshotRespPayload   handle_install_snapshot(const InstallSnapshotReqPayload&);
-    std::expected<RpcReply, const char*> handle_request(const RpcMessage& req, uint8_t rpc_id);
+    std::expected<RpcReply, const char*> handle_request(const RpcMessage& req);
+    void handle_reply(const RpcReply& reply);
+    
     void handle_reply(const AppendEntriesRespPayload& reply);
     void handle_reply(const RequestVoteRespPayload& reply);
     void handle_reply(const InstallSnapshotRespPayload& reply);
@@ -131,6 +133,7 @@ private:
     bool                                           running_ = false;
 
     NodeReplyInbox<N>& reply_inbox;
+    NodeRequestInbox<N>& request_inbox;
 
     // ---- raft state ----
     std::mutex                                     state_mu_;              // since multiple event loop threads could modify state concurrently
@@ -163,9 +166,9 @@ private:
 
     void tick_peer(NodeID peer_id);
 
-    std::expected<RpcReply, const char*> handle_append_entries_req(const RpcMessage& message);
-    std::expected<RpcReply, const char*> handle_request_vote_req(const RpcMessage& message);
-    std::expected<RpcReply, const char*> handle_install_snapshot_req(const RpcMessage& message);
+    // std::expected<RpcReply, const char*> handle_append_entries_req(const RpcMessage& message);
+    // std::expected<RpcReply, const char*> handle_request_vote_req(const RpcMessage& message);
+    // std::expected<RpcReply, const char*> handle_install_snapshot_req(const RpcMessage& message);
 
 };
 
@@ -303,6 +306,10 @@ inline void Node<N>::main_loop() {
         // TODO: implement handlers
         reply_inbox.DrainAll([](RpcReply&& reply){
             handle_reply<N>(reply);
+        });
+
+        request_inbox.DrainAll([](RpcMessage&& req){
+            handle_request<N>(req);
         });
 
         
