@@ -1,9 +1,9 @@
 #pragma once
 
-#include "../queues/mpsc.hpp"
 #include "./protocol/client.hpp"
 #include "conns.hpp"
 #include "protocol/payloads.hpp"
+#include "../cross_thread.hpp"
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
@@ -15,8 +15,7 @@
 #include <unordered_map>
 
 constexpr int EPOLL_BATCH = 64; // max # of fds processed per loop iteration
-constexpr size_t RECV_CHUNK = 4096;
-constexpr size_t INBOX_RING_CAP = 64; // per producer; must be power of 2
+constexpr int MAX_ATTEMPTS = 10;
 
 /*
 One event loop runs on one thread.
@@ -24,7 +23,7 @@ One event loop runs on one thread.
 template <size_t P>
 struct EventLoop {
     public:
-    EventLoop(FD listen_fd, size_t inbound_cap);
+    EventLoop(FD listen_fd, size_t inbound_cap, NodeReplyInbox<P>& node_reply_inbox_);
     ~EventLoop();
     EventLoop(const EventLoop&) = delete;
     EventLoop& operator=(const EventLoop&) = delete;
@@ -57,6 +56,7 @@ struct EventLoop {
     ClientID next_conn_id = 1;
 
     // Outbound
+    NodeReplyInbox<P> node_reply_inbox;
     std::unordered_map<NodeID, PeerConn> peer_conns;
     std::unordered_map<FD, NodeID> peer_fd_to_id;
     std::unordered_map<FD, NodeID> peer_timer_fd_to_id; // for heartbeats
@@ -93,11 +93,14 @@ struct EventLoop {
     void OnEventFd();
     void wake_eventfd_unconditional();
 
+    bool post_node_req_inbox(RpcMessage& req);   // to pass incoming RPC requests to the Raft layer
+    bool post_node_reply_inbox(RpcReply& reply); // to pass incoming RPC replies to the Raft layer
+
 };
 
 template <size_t P>
-inline EventLoop<P>::EventLoop(FD listen_fd, size_t inbound_cap) 
-: listen_fd(listen_fd), client_slab(inbound_cap) {
+inline EventLoop<P>::EventLoop(FD listen_fd, size_t inbound_cap, NodeReplyInbox<P>& node_reply_inbox_) 
+: listen_fd(listen_fd), client_slab(inbound_cap), node_reply_inbox(node_reply_inbox_) {
     epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0) throw std::runtime_error("epoll_create1 failed");
 
@@ -459,7 +462,8 @@ inline void EventLoop<P>::OnPeerReadable(PeerConn& p) {
         }
         RpcReply& reply = reply_raw.value();
         // TODO how should this be called?
-        handle_reply<N>(reply);
+        handle_reply<N>(reply, head.kind);
+        post_node_reply_inbox(reply);
 
         p.outbox.pop_front();
     }
@@ -703,4 +707,19 @@ inline void EventLoop<N>::OnEventFd() {
         break;
     }
     DrainInbox();
+}
+
+template <size_t P>
+inline bool EventLoop<P>::post_node_req_inbox(RpcMessage& req) {};
+
+// to pass incoming RPC replies to the Raft layer
+template <size_t P>
+inline bool EventLoop<P>::post_node_reply_inbox(RpcReply& reply){
+    int counter = 0;
+    while (counter < MAX_ATTEMPTS) {
+        bool res = node_reply_inbox.Push(reply);
+        ++counter;
+        if (res) return true;
+    }
+    return false;
 }

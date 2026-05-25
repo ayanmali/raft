@@ -66,7 +66,7 @@ N - the number of threads running an event loop
 template <uint N>
 struct Node {
 public:
-    Node();
+    Node(NodeReplyInbox<N>& reply_inbox);
     ~Node();
 
     Node(const Node&)            = delete;
@@ -80,6 +80,8 @@ public:
     // Signals every loop to exit, joins all worker threads.
     void stop();
 
+    void main_loop();
+
     // Outbound RPC entry points. Resolve the owning loop by
     // peer_id % N and post the request into its inbox. The reply
     // callback fires on that loop's thread.
@@ -90,7 +92,7 @@ public:
 
     void send_arm_timers(); // upon leader promotion
     void send_disarm_timers(); // upon leader demotion
-    void post_inbox(std::unique_ptr<Outbound>);
+    void post_loop_inbox(std::unique_ptr<Outbound>);
 
     // Raft leadership transitions. Both must run on an event-loop thread
     // (i.e. as part of a state-machine reaction to an inbound RPC, reply,
@@ -128,6 +130,8 @@ private:
     std::array<std::thread, N>                     threads_;
     bool                                           running_ = false;
 
+    NodeReplyInbox<N>& reply_inbox;
+
     // ---- raft state ----
     std::mutex                                     state_mu_;              // since multiple event loop threads could modify state concurrently
     uint32_t                                       current_term  = 0;
@@ -162,6 +166,7 @@ private:
     std::expected<RpcReply, const char*> handle_append_entries_req(const RpcMessage& message);
     std::expected<RpcReply, const char*> handle_request_vote_req(const RpcMessage& message);
     std::expected<RpcReply, const char*> handle_install_snapshot_req(const RpcMessage& message);
+
 };
 
 // =============================================================================
@@ -169,7 +174,8 @@ private:
 // =============================================================================
 
 template <uint N>
-inline Node<N>::Node() {
+inline Node<N>::Node(NodeReplyInbox<N>& reply_inbox_)
+: reply_inbox{reply_inbox_} {
     static_assert(N > 0 && (N & (N - 1)) == 0,
                   "Node<N>: N must be a power of 2 (MPSC inbox requires it)");
 
@@ -291,6 +297,19 @@ inline void Node<N>::start() {
 }
 
 template <uint N>
+inline void Node<N>::main_loop() {
+    while (true) {
+        // check the reply inbox for new replies that have arrived
+        // TODO: implement handlers
+        reply_inbox.DrainAll([](RpcReply&& reply){
+            handle_reply<N>(reply);
+        });
+
+        
+    }
+}
+
+template <uint N>
 inline void Node<N>::stop() {
     if (!running_) return;
     running_ = false;
@@ -309,20 +328,20 @@ template <uint N>
 inline void Node<N>::send_rpc(
     AppendEntriesReqPayload&& payload, NodeID peer_id) {
     auto outbound = std::make_unique<Outbound>(Outbound{.data = payload, .peer_id = peer_id});
-    post_inbox(std::move(outbound));
+    post_loop_inbox(std::move(outbound));
 }
 
 template <uint N>
 inline void Node<N>::send_rpc(RequestVoteReqPayload&& payload, NodeID peer_id) {
     auto outbound = std::make_unique<Outbound>(Outbound{.data = payload, .peer_id = peer_id});
-    post_inbox(std::move(outbound));
+    post_loop_inbox(std::move(outbound));
 }
 
 template <uint N>
 inline void Node<N>::send_rpc(
     InstallSnapshotReqPayload&& payload, NodeID peer_id) {
     auto outbound = std::make_unique<Outbound>(Outbound{.data = payload, .peer_id = peer_id});
-    post_inbox(std::move(outbound));
+    post_loop_inbox(std::move(outbound));
 }
 
 template <uint N>
@@ -347,7 +366,7 @@ inline void Node<N>::send_arm_timers() {
                     .data = ArmTimerPayload{.period = HEARTBEAT_INTERVAL},
                     .peer_id = p.peer_id
                 });
-            post_inbox(out);
+            post_loop_inbox(out);
         }
     }
 }
@@ -363,13 +382,13 @@ inline void Node<N>::send_disarm_timers() {
                     .data = DisarmTimerPayload{},
                     .peer_id = p.peer_id
                 });
-            post_inbox(out);
+            post_loop_inbox(out);
         }
     }
 }
 
 template <uint N>
-inline void Node<N>::post_inbox(std::unique_ptr<Outbound> out) {
+inline void Node<N>::post_loop_inbox(std::unique_ptr<Outbound> out) {
     NodeID peer_id = out->peer_id;
     auto l = loops_[peer_id % N];
     if (!l) throw std::runtime_error("Node not started");

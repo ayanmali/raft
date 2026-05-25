@@ -105,49 +105,20 @@ inline std::expected<RpcReply, const char*> Node<N>::handle_install_snapshot_req
 
 }
 
-template <uint N>
-inline void Node<N>::handle_append_entries_reply(const RpcReply& reply_raw) {
-    try {
-        const AppendEntriesRespPayload reply{std::get<AppendEntriesRespPayload>(reply_raw)};
-        
-        std::lock_guard<std::mutex> lk(state_mu_);
+// TODO
+struct ReplyHandlerVisitor {
+    void operator()(const AppendEntriesRespPayload& reply) {
 
-        // TODO
     }
-    catch (std::exception&) {
-        return;
+
+    void operator()(const RequestVoteRespPayload& reply) {
+
     }
-}
 
+    void operator()(const InstallSnapshotRespPayload& reply) {
 
-template <uint N>
-inline void Node<N>::handle_request_vote_reply(const RpcReply& reply_raw) {
-    try {
-        const RequestVoteRespPayload reply{std::get<RequestVoteRespPayload>(reply_raw)};
-        
-        std::lock_guard<std::mutex> lk(state_mu_);
-
-        // TODO
     }
-    catch (std::exception&) {
-        return;
-    }
-}
-
-
-template <uint N>
-inline void Node<N>::handle_install_snapshot_reply(const RpcReply& reply_raw) {
-    try {
-        const InstallSnapshotRespPayload reply{std::get<InstallSnapshotRespPayload>(reply_raw)};
-        
-        std::lock_guard<std::mutex> lk(state_mu_);
-
-        // TODO
-    }
-    catch (std::exception&) {
-        return;
-    }
-}
+};
 
 template <uint N>
 constexpr std::array<HandlerFunc, 4> make_req_handler_table() {
@@ -159,21 +130,9 @@ constexpr std::array<HandlerFunc, 4> make_req_handler_table() {
     return table;
 }
 
-template <uint N>
-constexpr std::array<HandlerFunc, 4> make_reply_handler_table() {
-    std::array<HandlerFunc, 4> table{};
-    table[1] = Node<N>::handle_append_entries_reply;
-    table[2] = Node<N>::handle_request_vote_reply;
-    table[3] = Node<N>::handle_install_snapshot_reply;
-
-    return table;
-}
 
 template <uint N>
 constexpr auto REQ_HANDLER_TABLE = make_req_handler_table<N>();
-
-template <uint N>
-constexpr auto REPLY_HANDLER_TABLE = make_reply_handler_table<N>();
 
 template <uint N>
 inline std::expected<RpcReply, const char*> Node<N>::handle_request(const RpcMessage& req, uint8_t rpc_id) {
@@ -182,5 +141,6 @@ inline std::expected<RpcReply, const char*> Node<N>::handle_request(const RpcMes
 
 template <uint N>
 inline void handle_reply(const RpcReply& reply, uint8_t rpc_id) {
-    return REPLY_HANDLER_TABLE<N>[rpc_id](reply);
+    std::visit(ReplyHandlerVisitor{}, reply);
+    // return REPLY_HANDLER_TABLE<N>[rpc_id](reply);
 }
