@@ -9,11 +9,12 @@
 static constexpr uint32_t MAX_VECTOR_SIZE_SANITY = 8192;
 struct ByteReader;
 
-using RpcMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimerPayload, DisarmTimerPayload>; // nanoseconds used for arm timer messages
+using RpcRequest = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimerPayload, DisarmTimerPayload>;
 using RpcReply = std::variant<AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload>;
+using RpcMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimerPayload, DisarmTimerPayload, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload>;
 
-using ParserFunc = std::expected<RpcMessage, const char*>(*)(ByteReader&);
-using HandlerFunc = std::expected<RpcReply, const char*>(*)(const RpcMessage& message);
+using ParserFunc = std::expected<RpcRequest, const char*>(*)(ByteReader&);
+using HandlerFunc = std::expected<RpcReply, const char*>(*)(const RpcRequest& message);
 using ReplyParserFunc = std::expected<RpcReply, const char*>(*)(ByteReader&);
 
 struct ByteReader {
@@ -103,5 +104,3 @@ struct ByteReader {
     }
 
 };
-
-struct ClientReplyVisitor;

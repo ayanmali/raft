@@ -24,10 +24,9 @@
 // for this commit. Each handler acquires state_mu_, makes the
 // minimal term-bumping decision, and returns a wire-formed reply.
 
-template <uint N>
 struct RequestHandlerVisitor {
     public:
-    RequestHandlerVisitor(Node<N>* node_) : node{node_} {}
+    RequestHandlerVisitor(Node* node_) : node{node_} {}
 
     void operator()(const AppendEntriesReqPayload& req) {
         if (req.term < node->current_term) {
@@ -79,7 +78,7 @@ struct RequestHandlerVisitor {
     void operator()(const DisarmTimerPayload& req) {}
 
     private:
-    Node<N>* node;
+    Node* node;
 };
 
 // TODO
@@ -104,7 +103,7 @@ struct ReplyHandlerVisitor {
 };
 
 template <uint N>
-inline std::expected<RpcReply, const char*> Node<N>::handle_request(const RpcMessage& req) {
+inline std::expected<RpcReply, const char*> Node<N>::handle_request(const RpcRequest& req) {
     std::visit(RequestHandlerVisitor{this}, req);
 }
 

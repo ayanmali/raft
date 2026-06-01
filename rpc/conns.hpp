@@ -42,7 +42,7 @@ struct PeerInfo {
 // FIFO of pending request kinds and matches them to incoming replies.
 enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot, ArmTimer, DisarmTimer };
 
-// Messages that are sent from Raft layer to an event loop to send RPCs to peers.
+// Messages that are sent from Raft layer to an event loop to send RPCs/replies to peers/clients.
 struct Outbound {
     RpcMessage data;
     // std::vector<std::byte> data; // serialized bytes
@@ -53,7 +53,7 @@ struct Outbound {
     // std::chrono::nanoseconds period{0};
     // RpcKind kind;
     // Routing key (target loop = peer_id % N). Always meaningful.
-    NodeID peer_id = 0;
+    NodeID node_id = 0;
 };
 
 // One slot in a peer's in-flight queue. Exactly one of `on_ae`/`on_rv`/

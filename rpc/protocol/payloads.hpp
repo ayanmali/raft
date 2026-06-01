@@ -10,6 +10,9 @@ static constexpr uint8_t AE_RPC_ID = 1;
 static constexpr uint8_t RV_RPC_ID = 2;
 static constexpr uint8_t IS_RPC_ID = 3;
 static constexpr uint8_t SH_RPC_ID = 4;
+static constexpr uint8_t AE_REPLY_ID = 5;
+static constexpr uint8_t RV_REPLY_ID = 6;
+static constexpr uint8_t IS_REPLY_ID = 7;
 
 struct AppendEntriesReqPayload {
     std::vector<std::byte> entries;
