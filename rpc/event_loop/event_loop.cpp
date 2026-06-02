@@ -3,8 +3,7 @@
 
 EventLoop::EventLoop(FD listen_fd, 
                     size_t inbound_cap, 
-                    NodeInbox& node_inbox_, 
-                    size_t this_id_) 
+                    NodeInbox& node_inbox_, size_t this_id_) 
 : listen_fd(listen_fd),
   client_slab(inbound_cap),
   node_inbox(node_inbox_),

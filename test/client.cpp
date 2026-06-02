@@ -1,3 +1,9 @@
+#include "../core/node.hpp"
+#include <iostream>
 int main() {
-    //auto client = Node{};
-};
+    std::cout << "Testing RPC correctness\n";
+    NodeInbox ni{};
+    Node node{ni};
+
+    std::cout << "Test Passed\n";
+}

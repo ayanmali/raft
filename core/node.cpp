@@ -27,6 +27,7 @@ Node::Node(NodeInbox& inbox_)
     // Build peer table. setup_peers() returns null-terminated string
     // literals (constexpr static storage), so .data() pointers stay
     // valid for the lifetime of the process.
+    // TODO: delete or move this
     auto init_peers = setup_peers();
     peers_.reserve(init_peers.size());
     NodeID id = 0;
@@ -52,7 +53,9 @@ Node::Node(NodeInbox& inbox_)
         loops_[i] = std::make_unique<EventLoop>(
             listen_fds_[i],
             MAX_SERVER_CONNS,
-            inbox);
+            inbox,
+            i);
+        
     }
 
     // spawn the worker threads.
