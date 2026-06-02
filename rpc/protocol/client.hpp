@@ -53,13 +53,13 @@ constexpr std::array<ParserFunc, 4> make_parser_table() {
 
 constexpr auto PARSER_TABLE = make_parser_table();
 
-inline std::pair<std::expected<RpcRequest, const char*>, uint8_t> parse_rbuf(ClientConn& c) {
-    if (c.rbuf.size() < sizeof(uint32_t)) return {std::unexpected("not enough data to read"), 0}; // need to see message size first
+inline std::pair<std::expected<RpcRequest, const char*>, uint8_t> parse_rbuf(ClientConn* c) {
+    if (c->rbuf.size() < sizeof(uint32_t)) return {std::unexpected("not enough data to read"), 0}; // need to see message size first
     uint32_t message_size;
-    std::memcpy(&message_size, c.rbuf.data(), sizeof(message_size));
+    std::memcpy(&message_size, c->rbuf.data(), sizeof(message_size));
     message_size = ntohl(message_size);
 
-    ByteReader byte_reader(std::span<std::byte>(c.rbuf.begin(), c.rbuf.begin() + message_size));
+    ByteReader byte_reader(std::span<std::byte>(c->rbuf.begin(), c->rbuf.begin() + message_size));
     uint8_t rpc_id;
 
     if (!byte_reader.read(rpc_id)) return {std::unexpected("failed to parse RPC id"), 0};
@@ -67,6 +67,6 @@ inline std::pair<std::expected<RpcRequest, const char*>, uint8_t> parse_rbuf(Cli
     auto func = PARSER_TABLE[rpc_id];
     if (!func) return {std::unexpected("invalid RPC id"), 0};
 
-    c.rbuf.erase(c.rbuf.begin(), c.rbuf.begin() + sizeof(message_size) + sizeof(rpc_id));
+    c->rbuf.erase(c->rbuf.begin(), c->rbuf.begin() + sizeof(message_size) + sizeof(rpc_id));
     return {func(byte_reader), rpc_id};
 }

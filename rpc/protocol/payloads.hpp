@@ -2,6 +2,7 @@
 /*
 RPC request/response payload structs.
 */
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <vector>

@@ -1,5 +1,8 @@
 #include "./event_loop.hpp"
+#include <netdb.h>
+#include <netinet/tcp.h>
 #include "../protocol/peer.hpp"
+#include <sys/timerfd.h>
 
 void EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
     if (p.epoll_events == events) return;
@@ -21,7 +24,7 @@ void EventLoop::StartConnect(PeerConn& p) {
 
     addrinfo* res = nullptr;
     if (::getaddrinfo(p.ip, p.port, &hints, &res) != 0 || res == nullptr) {
-        throw std::runtime_error("Error getting address info for peer")
+        throw std::runtime_error("Error getting address info for peer");
     }
     std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> guard(res, &::freeaddrinfo);
 
@@ -107,7 +110,7 @@ void EventLoop::OnPeerWritable(PeerConn& p) {
             out.req.data() + out.bytes_sent, 
             out.req.size() - out.bytes_sent,
             MSG_NOSIGNAL);
-        if (n > 0) { p.wbuf_offset += static_cast<size_t>(n); continue; }
+        if (n > 0) { out.bytes_sent += static_cast<size_t>(n); continue; }
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
         DropPeer(p);
@@ -129,13 +132,11 @@ void EventLoop::DropPeer(PeerConn& p) {
     }
     p.state        = PeerConn::State::Disconnected;
     p.epoll_events = 0;
-    p.wbuf.clear();
-    p.wbuf_offset  = 0;
-    p.rbuf.clear();
-    // In-flight handlers are stranded; their callbacks won't fire. A future
+    p.outbox.clear();
+    // TODO: In-flight handlers are stranded; their callbacks won't fire. A future
     // pass can either invoke them with a synthetic failure response or
     // implement automatic reconnect + retry.
-    p.inflight.clear();
+    // DLQ?
 }
 
 /* Enqueue functions post a new message to the back of the destination peer struct's outbox queue. */
@@ -191,7 +192,7 @@ void EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID peer_id) 
     if (p.state == PeerConn::State::Disconnected) {
         StartConnect(p);
     }
-    else if (p.state == PeerConn:State::Connected) {
+    else if (p.state == PeerConn::State::Connected) {
         modify_peer_interest(p, p.epoll_events | EPOLLOUT);
     }
 }
@@ -210,7 +211,7 @@ void EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID peer_id) {
     if (p.state == PeerConn::State::Disconnected) {
         StartConnect(p);
     }
-    else if (p.state == PeerConn:State::Connected) {
+    else if (p.state == PeerConn::State::Connected) {
         modify_peer_interest(p, p.epoll_events | EPOLLOUT);
     }
 }
@@ -229,7 +230,7 @@ void EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeID peer_id
     if (p.state == PeerConn::State::Disconnected) {
         StartConnect(p);
     }
-    else if (p.state == PeerConn:State::Connected) {
+    else if (p.state == PeerConn::State::Connected) {
         modify_peer_interest(p, p.epoll_events | EPOLLOUT);
     }
 }
@@ -265,43 +266,43 @@ void EventLoop::disarm_peer_timer(NodeID peer_id) {
 }
 
 void EventLoop::post_reply(AppendEntriesRespPayload& payload, NodeID client_id) {
-    auto it = client_conns.find(out->node_id);
+    auto it = client_conns.find(client_id);
     if (it == client_conns.end()) return; // message gets dropped
-    ClientConn& c = it->second;
+    ClientConn* c = it->second;
     //++c.pending_tasks;
 
-    ByteWriter writer{c.wbuf};
+    ByteWriter writer{c->wbuf};
     writer.serialize(payload);
 
-    if (c.wbuf_offset < c.wbuf.size()) {
-        modify_client_interest(c, c.epoll_events | EPOLLOUT);
+    if (c->wbuf_offset < c->wbuf.size()) {
+        modify_client_interest(c, c->epoll_events | EPOLLOUT);
     }
 }
 
 void EventLoop::post_reply(RequestVoteRespPayload& payload, NodeID client_id) {
-    auto it = client_conns.find(out->node_id);
+    auto it = client_conns.find(client_id);
     if (it == client_conns.end()) return; // message gets dropped
-    ClientConn& c = it->second;
+    ClientConn* c = it->second;
     //++c.pending_tasks;
     
-    ByteWriter writer{c.wbuf};
+    ByteWriter writer{c->wbuf};
     writer.serialize(payload);
 
-    if (c.wbuf_offset < c.wbuf.size()) {
-        modify_client_interest(c, c.epoll_events | EPOLLOUT);
+    if (c->wbuf_offset < c->wbuf.size()) {
+        modify_client_interest(c, c->epoll_events | EPOLLOUT);
     }
 }
 
 void EventLoop::post_reply(InstallSnapshotRespPayload& payload, NodeID client_id) {
-    auto it = client_conns.find(out->node_id);
+    auto it = client_conns.find(client_id);
     if (it == client_conns.end()) return; // message gets dropped
-    ClientConn& c = it->second;
+    ClientConn* c = it->second;
     //++c.pending_tasks;
     
-    ByteWriter writer{c.wbuf};
+    ByteWriter writer{c->wbuf};
     writer.serialize(payload);
 
-    if (c.wbuf_offset < c.wbuf.size()) {
-        modify_client_interest(c, c.epoll_events | EPOLLOUT);
+    if (c->wbuf_offset < c->wbuf.size()) {
+        modify_client_interest(c, c->epoll_events | EPOLLOUT);
     }
 }

@@ -9,6 +9,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <unordered_map>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
 
 constexpr int EPOLL_BATCH = 64; // max # of fds processed per loop iteration
 constexpr int MAX_ATTEMPTS = 10;
@@ -61,7 +63,7 @@ struct EventLoop {
     // ---- helpers ----
     static void set_nonblocking(FD fd);
     void register_fd(FD fd, uint32_t events);
-    void modify_client_interest(ClientConn& c, uint32_t events);
+    void modify_client_interest(ClientConn* c, uint32_t events);
     void modify_peer_interest(PeerConn& p, uint32_t events);
 
     void post_inflight(AppendEntriesReqPayload& payload, NodeID peer_id);
@@ -74,10 +76,10 @@ struct EventLoop {
 
     // inbound messaging
     void Accept();
-    void OnClientReadable(ClientConn& c);
-    void OnClientWritable(ClientConn& c);
-    void CloseClient(ClientConn& c);
-    void ReapClient(ClientConn& c);
+    void OnClientReadable(ClientConn* c);
+    void OnClientWritable(ClientConn* c);
+    void CloseClient(ClientConn* c);
+    void ReapClient(ClientConn* c);
 
     // outbound messaging
     void OnPeerWritable(PeerConn& p);

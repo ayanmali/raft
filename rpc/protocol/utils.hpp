@@ -2,9 +2,14 @@
 #include "payloads.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
+#include <netinet/in.h>
 #include <span>
 #include <variant>
+
+#define ntohll(x) (((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
+#define htonll(x) (((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))   
 
 static constexpr uint32_t MAX_VECTOR_SIZE_SANITY = 8192;
 struct ByteReader;
@@ -63,16 +68,6 @@ struct ByteReader {
     }
 
     bool read(uint64_t& out) {
-        if (remaining() < sizeof(out)) return false;
-
-        std::memcpy(&out, ptr, sizeof(out));
-        out = ntohll(out);
-        ptr += sizeof(out);
-
-        return true;
-    }
-
-    bool read(size_t& out) {
         if (remaining() < sizeof(out)) return false;
 
         std::memcpy(&out, ptr, sizeof(out));

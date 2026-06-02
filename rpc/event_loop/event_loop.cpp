@@ -1,5 +1,6 @@
 #include "./event_loop.hpp"
 #include <cstddef>
+#include <fcntl.h>
 
 EventLoop::EventLoop(FD listen_fd, 
                     size_t inbound_cap, 
@@ -84,16 +85,16 @@ void EventLoop::register_fd(FD fd, uint32_t events) {
     }
 }
 
-void EventLoop::modify_client_interest(ClientConn& c, uint32_t events) {
-    if (c.epoll_events == events) return;
+void EventLoop::modify_client_interest(ClientConn* c, uint32_t events) {
+    if (c->epoll_events == events) return;
     epoll_event ev{};
     ev.events  = events;
-    ev.data.fd = c.fd;
-    if (::epoll_ctl(epoll_fd, EPOLL_CTL_MOD, c.fd, &ev) < 0) {
+    ev.data.fd = c->fd;
+    if (::epoll_ctl(epoll_fd, EPOLL_CTL_MOD, c->fd, &ev) < 0) {
         CloseClient(c);
         throw std::runtime_error("Error modifying events for client fd");
     }
-    c.epoll_events = events;
+    c->epoll_events = events;
 }
 
 void EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
@@ -127,7 +128,7 @@ void EventLoop::Run() {
             if (fd == event_fd) { OnEventFd(); continue; }
 
             if (auto it = client_fd_to_id.find(fd); it != client_fd_to_id.end()) {
-                ClientConn& c = client_conns.at(it->second);
+                ClientConn* c = client_conns.at(it->second);
                 if (e & EPOLLERR | EPOLLHUP | EPOLLRDHUP) {
                     CloseClient(c);
                     continue;
@@ -148,7 +149,7 @@ void EventLoop::Run() {
                 continue;
             }
 
-            if (auto it = peer_timer_to_id.find(fd); it != peer_timer_fd_to_id.end()) {
+            if (auto it = peer_timer_fd_to_id.find(fd); it != peer_timer_fd_to_id.end()) {
                 PeerConn& p = peer_conns.at(it->second);
                 if (e & EPOLLIN) OnPeerTimer(p);
             }
@@ -165,34 +166,32 @@ void EventLoop::DrainInbox() {
     // counted up and we'll come right back. No lost items.
     wake_armed.store(false, std::memory_order_release);
 
-    outbound_inbox.DrainAll([](std::unique_ptr<RaftMessage>&& out) {
-        std::visit([](auto&& payload)
-        {
+    std::unique_ptr<RaftMessage> out;
+    bool flag = outbound_inbox.PopOne(&out);
+    while (flag) {
+        std::visit([&out, this](auto&& payload) {
             using T = std::decay_t<decltype(payload)>;
 
-            if constexpr (std::is_same_v<T, AppendEntriesReqPayload>)
-            || constexpr (std::is_same_v<T, RequestVoteReqPayload>)
-            || constexpr (std::is_same_v<T, InstallSnapshotReqPayload>) {
-                post_inflight(payload, node_id);
+            if constexpr (std::is_same_v<T, AppendEntriesReqPayload> || std::is_same_v<T, RequestVoteReqPayload> || std::is_same_v<T, InstallSnapshotReqPayload>) {
+                post_inflight(payload, out->node_id);
             }
 
-            else if constexpr (std::is_same_v<T, AppendEntriesRespPayload>)
-            || constexpr (std::is_same_v<T, RequestVoteRespPayload>)
-            || constexpr (std::is_same_v<T, InstallSnapshotRespPayload>) {
-                post_reply(payload, node_id);
+            else if constexpr (std::is_same_v<T, AppendEntriesRespPayload> || std::is_same_v<T, RequestVoteRespPayload> || std::is_same_v<T, InstallSnapshotRespPayload>) {
+                post_reply(payload, out->node_id);
             }
             
             else if constexpr (std::is_same_v<T, ArmTimerPayload>) {
-                arm_peer_timer(payload, node_id);
+                arm_peer_timer(payload, out->node_id);
             }
                 
             else if constexpr (std::is_same_v<T, DisarmTimerPayload>) {
-                disarm_peer_timer(payload, node_id);
+                disarm_peer_timer(out->node_id);
             }
             
             else static_assert(false, "non-exhaustive visitor!");
         }, out->data);
-    });
+        flag = outbound_inbox.PopOne(&out);
+    }
     
 }
 

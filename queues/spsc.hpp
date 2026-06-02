@@ -57,4 +57,30 @@ struct SPSCQueue {
         return true;
     }
 
+    bool PopOne() {
+        const size_t read  = read_idx.load(std::memory_order_relaxed);
+        const size_t write = write_idx.load(std::memory_order_acquire);
+        if (read == write) return false;
+        T out = std::move(buffer[read & (N - 1)]);
+        // buffer[offset] is now in a valid-but-moved-from state (e.g. null
+        // unique_ptr). Next producer overwrites it via move-assign above.
+        read_idx.fetch_add(1, std::memory_order_release);
+        return true;
+    }
+
+
+    // Sweep every sub-queue once, invoking callback for each item drained.
+    // Returns the total number of items processed.
+    template <typename F>
+    size_t DrainAll(F&& callback) {
+        size_t total = 0;
+        T item;
+        while (PopOne(&item)) {
+            callback(std::move(item));
+            ++total;
+        }
+        
+        return total;
+    }
+
 };

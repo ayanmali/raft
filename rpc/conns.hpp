@@ -20,6 +20,7 @@ Buffering convention (used by both flavors):
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <sys/types.h>
 #include <type_traits>
 #include <utility>
