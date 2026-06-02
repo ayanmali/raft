@@ -20,8 +20,8 @@ struct EventLoop {
     public:
     EventLoop(FD listen_fd,
               size_t inbound_cap,
-              NodeRequestInbox& node_req_inbox_,
-              NodeReplyInbox& node_reply_inbox_);
+              NodeInbox& node_inbox_,
+              size_t this_id_);
     ~EventLoop();
     EventLoop(const EventLoop&) = delete;
     EventLoop& operator=(const EventLoop&) = delete;
@@ -30,7 +30,7 @@ struct EventLoop {
     void Stop(); // event loop can be stopped via a signal on the event fd
     void Wake();
     
-    SPSCQueue<std::unique_ptr<Outbound>, INBOX_RING_CAP> outbound_inbox{};
+    SPSCQueue<std::unique_ptr<RaftMessage>, INBOX_RING_CAP> outbound_inbox{};
 
     std::unordered_map<NodeID, PeerConn> peer_conns;
 
@@ -43,13 +43,14 @@ struct EventLoop {
     FD event_fd = -1;
     
     // Inbound
-    NodeRequestInbox& node_req_inbox; // incoming requests
-    NodeReplyInbox& node_reply_inbox; // incoming replies from RPCs
+    NodeInbox& node_inbox; // incoming messages
 
     ClientConnSlab client_slab;
     std::unordered_map<ClientID, ClientConn*> client_conns;
     std::unordered_map<FD, ClientID> client_fd_to_id;
     ClientID next_conn_id = 1;
+
+    size_t this_id;
 
     // Outbound
 
@@ -92,6 +93,6 @@ struct EventLoop {
     void OnEventFd();
     void wake_eventfd_unconditional();
 
-    bool post_node_req_inbox(RpcRequest& req);   // to pass incoming RPC requests to the Raft thread
-    bool post_node_reply_inbox(RpcReply& reply); // to pass incoming RPC replies to the Raft thread
+    bool post_node_inbox(RpcRequest& req, NodeID client_id);
+    bool post_node_inbox(RpcReply& req, NodeID peer_id);
 };

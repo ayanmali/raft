@@ -43,7 +43,7 @@ struct PeerInfo {
 enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot, ArmTimer, DisarmTimer };
 
 // Messages that are sent from Raft layer to an event loop to send RPCs/replies to peers/clients.
-struct Outbound {
+struct RaftMessage {
     RpcMessage data;
     // std::vector<std::byte> data; // serialized bytes
     // PendingReply           reply;
@@ -86,9 +86,9 @@ struct ClientConn {
     // outstanding tasks for the connection so we can defer reaping a
     // closed conn until all completions land. With synchronous Raft
     // // handlers (current state) this stays 0.
-    // int      pending_tasks = 0;
+    //int      pending_tasks = 0;
 
-    // bool     closing       = false;
+    bool     closing       = false;
     // bool     want_write    = false;
     uint32_t epoll_events  = 0;
     // uint32_t next_seq      = 0;
@@ -200,8 +200,8 @@ struct ClientConnSlab {
         c->wbuf_offset = 0;
         c->fd = -1;
         c->id = 0;
-        // c->pending_tasks = 0;
-        // c->closing = false;
+        //c->pending_tasks = 0;
+        c->closing = false;
         // c->want_write = false;
         c->epoll_events = 0;
         // c->next_seq = 0;

@@ -3,11 +3,12 @@
 // =============================================================================
 
 #include "node.hpp"
+#include <atomic>
 #include <csignal>
 #include <random>
 
-Node::Node(NodeRequestInbox& request_inbox_, NodeReplyInbox& reply_inbox_)
-: request_inbox(request_inbox_), reply_inbox{reply_inbox_} {
+Node::Node(NodeInbox& inbox_)
+: inbox(inbox_) {
     static_assert(EVENT_LOOP_THREADS > 0 && (EVENT_LOOP_THREADS & (EVENT_LOOP_THREADS - 1)) == 0,
                   "Node: EVENT_LOOP_THREADS must be a power of 2 (MPSC inbox requires it)");
 
@@ -51,8 +52,7 @@ Node::Node(NodeRequestInbox& request_inbox_, NodeReplyInbox& reply_inbox_)
         loops_[i] = std::make_unique<EventLoop>(
             listen_fds_[i],
             MAX_SERVER_CONNS,
-            request_inbox,
-        reply_inbox);
+            inbox);
     }
 
     // spawn the worker threads.
@@ -110,18 +110,93 @@ void Node::main_loop() {
     while (true) {
         // check the reply inbox for new replies that have arrived
         // TODO: implement handlers
-        reply_inbox.DrainAll([this](RpcReply&& reply){
-            handle_reply(reply);
-        });
+        inbox.DrainAll([this](std::unique_ptr<RaftMessage>&& message) {
+            std::visit([this, &message](auto&& payload) {
+                using T = std::decay_t<decltype(payload)>;
+                auto client_id = message->node_id;
+                auto& el_inbox = loops_[client_id % EVENT_LOOP_THREADS]->outbound_inbox;
 
-        request_inbox.DrainAll([this](RpcRequest&& req){
-            std::expected<RpcReply, const char*> reply_raw = handle_request(req);
-            if (!reply_raw) {
-                // TODO: handle error
-            }
-        });
+                if constexpr (std::is_same_v<T, AppendEntriesReqPayload>) {
+                    if (current_term > payload.term) {
+                        el_inbox.PushOne(
+                            std::make_unique<RaftMessage>(
+                                AppendEntriesRespPayload{.term = current_term, .success = 0}, client_id
+                            )
+                        );
+                    }
+                    if (current_term < payload.term) {
+                        current_term = payload.term;
+                        voted_for = -1;
+                        leader.store(false, std::memory_order_release);
+                        el_inbox.PushOne(
+                            std::make_unique<RaftMessage>(
+                            AppendEntriesRespPayload{}, client_id
+                            )
+                        );
+                    }
+                }
 
+                else if constexpr (std::is_same_v<T, RequestVoteReqPayload>) {
+                    if (payload.term < current_term) {
+                        el_inbox.PushOne(
+                            std::make_unique<RaftMessage>(
+                                RequestVoteRespPayload{current_term, 0}, client_id
+                            )
+                        );
+                    }
+                    if (payload.term > current_term) {
+                        current_term = payload.term;
+                        leader.store(false, std::memory_order_release);
+                    }
+            
+                    uint8_t granted = 0;
+                    // if (voted_for == req.candidate_id) {
+                    //     // TODO: log up-to-date check (last_log_idx/last_log_term).
+                    //     voted_for = req.candidate_id;
+                    //     granted   = 1;
+                    // }
+            
+                    el_inbox.PushOne(
+                        std::make_unique<RaftMessage>(
+                        RequestVoteRespPayload{current_term, granted}, client_id
+                        )
+                    );
+                }
+
+                else if constexpr (std::is_same_v<T, InstallSnapshotReqPayload>) {
+                    if (payload.term < current_term) {
+                        el_inbox.PushOne(
+                            std::make_unique<RaftMessage>(
+                            InstallSnapshotRespPayload{current_term}, client_id)
+                        );
+                    }
+            
+                    if (payload.term > current_term) {
+                        current_term = payload.term;
+                        leader.store(false, std::memory_order_release);
+                    }
+            
+                    // TODO: chunk reassembly, install snapshot to state machine.
+                    el_inbox.PushOne(
+                        std::make_unique<RaftMessage>(
+                        InstallSnapshotRespPayload{current_term}, client_id)
+                    );
+                }
+
+                else if constexpr (std::is_same_v<T, AppendEntriesRespPayload>) {
         
+                }
+                else if constexpr (std::is_same_v<T, RequestVoteRespPayload>) {
+        
+                }
+                else if constexpr (std::is_same_v<T, InstallSnapshotRespPayload>) {
+                    
+                }
+                else {
+                    // static_assert(false, "non-exhaustive visitor");
+                }
+            }, message->data);
+        });
     }
 }
 
@@ -141,22 +216,22 @@ inline void Node::stop() {
 
 void Node::send_rpc(AppendEntriesReqPayload&& payload, NodeID peer_id) {
     auto& el = loops_[peer_id % EVENT_LOOP_THREADS];
-    el->outbound_inbox.EmplaceOne(
-        std::make_unique<Outbound>(payload, peer_id)
+    el->outbound_inbox.PushOne(
+        std::make_unique<RaftMessage>(payload, peer_id)
     );
 }
 
 void Node::send_rpc(RequestVoteReqPayload&& payload, NodeID peer_id) {
     auto& el = loops_[peer_id % EVENT_LOOP_THREADS];
-    el->outbound_inbox.EmplaceOne(
-        std::make_unique<Outbound>(payload, peer_id)
+    el->outbound_inbox.PushOne(
+        std::make_unique<RaftMessage>(payload, peer_id)
     );
 }
 
 void Node::send_rpc(InstallSnapshotReqPayload&& payload, NodeID peer_id) {
     auto& el = loops_[peer_id % EVENT_LOOP_THREADS];
-    el->outbound_inbox.EmplaceOne(
-        std::make_unique<Outbound>(payload, peer_id)
+    el->outbound_inbox.PushOne(
+        std::make_unique<RaftMessage>(payload, peer_id)
     );
 }
 
@@ -176,12 +251,11 @@ void Node::send_arm_timers() {
     for (auto& el : loops_) {
         for (auto& [id, conn] : el->peer_conns) {
             auto& el = loops_[id % EVENT_LOOP_THREADS];
-            el->outbound_inbox.EmplaceOne(
-                std::make_unique<Outbound>(
+            el->outbound_inbox.PushOne(
+                std::make_unique<RaftMessage>(
                     ArmTimerPayload{
                         .period = HEARTBEAT_INTERVAL
-                    },
-                    id
+                    }, id
                 )
             );
         }
@@ -194,10 +268,9 @@ inline void Node::send_disarm_timers() {
     for (auto& el : loops_) {
         for (auto& [id, conn] : el->peer_conns) {
             auto& el = loops_[id % EVENT_LOOP_THREADS];
-            el->outbound_inbox.EmplaceOne(
-                std::make_unique<Outbound>(
-                    DisarmTimerPayload{},
-                    id
+            el->outbound_inbox.PushOne(
+                std::make_unique<RaftMessage>(
+                    DisarmTimerPayload{}, id
                 )
             );
         }

@@ -4,10 +4,6 @@
 
 /* Inbound */
 
-// inline std::pair<size_t, AppendEntriesReqPayload> parse_ae(const std::byte* in);
-// inline std::pair<size_t, RequestVoteReqPayload> parse_rv(const std::byte* in);
-// inline std::pair<size_t, InstallSnapshotReqPayload> parse_is(const std::byte* in);
-
 inline std::expected<RpcRequest, const char*> parse_ae_req(ByteReader& byte_reader) {
     AppendEntriesReqPayload message;
 
@@ -21,7 +17,6 @@ inline std::expected<RpcRequest, const char*> parse_ae_req(ByteReader& byte_read
     return message;
 }
 
-
 inline std::expected<RpcRequest, const char*> parse_rv_req(ByteReader& byte_reader) {
     RequestVoteReqPayload message;
 
@@ -32,7 +27,6 @@ inline std::expected<RpcRequest, const char*> parse_rv_req(ByteReader& byte_read
 
     return message;
 }
-
 
 inline std::expected<RpcRequest, const char*> parse_is_req(ByteReader& byte_reader) {
     InstallSnapshotReqPayload message;

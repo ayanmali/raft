@@ -35,13 +35,11 @@ Persistence:
 #include "../rpc/conns.hpp"
 #include "../rpc/event_loop/event_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
-#include "../rpc/protocol/utils.hpp"
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <memory>
-#include <mutex>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -58,7 +56,7 @@ struct LogEntry {
 
 struct Node {
 public:
-    Node(NodeRequestInbox& req_inbox, NodeReplyInbox& reply_inbox);
+    Node(NodeInbox& inbox_);
     ~Node();
 
     Node(const Node&)            = delete;
@@ -100,8 +98,6 @@ public:
     // AppendEntriesRespPayload     handle_append_entries(const AppendEntriesReqPayload&);
     // RequestVoteRespPayload       handle_request_vote(const RequestVoteReqPayload&);
     // InstallSnapshotRespPayload   handle_install_snapshot(const InstallSnapshotReqPayload&);
-    std::expected<RpcReply, const char*> handle_request(const RpcRequest& req);
-    void handle_reply(const RpcReply& reply);
 
 private:
     // ---- transport ----
@@ -110,11 +106,9 @@ private:
     std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
     bool                                                            running_ = false;
 
-    NodeReplyInbox& reply_inbox;
-    NodeRequestInbox& request_inbox;
+    NodeInbox& inbox;
 
     // ---- raft state ----
-    std::mutex                                     state_mu_;              // since multiple event loop threads could modify state concurrently
     uint32_t                                       current_term  = 0;
     uint32_t                                       voted_for     = -1;
     std::vector<LogEntry>                          log;

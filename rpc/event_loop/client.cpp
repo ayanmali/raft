@@ -1,0 +1,124 @@
+#include "./event_loop.hpp"
+#include "../protocol/client.hpp"
+
+void EventLoop::modify_client_interest(ClientConn& c, uint32_t events) {
+    if (c.epoll_events == events) return;
+    epoll_event ev{};
+    ev.events  = events;
+    ev.data.fd = c.fd;
+    if (::epoll_ctl(epoll_fd, EPOLL_CTL_MOD, c.fd, &ev) < 0) {
+        CloseClient(c);
+        throw std::runtime_error("Error modifying events for client fd");
+    }
+    c.epoll_events = events;
+}
+
+void EventLoop::Accept() {
+    for (;;) {
+        ClientConn* c = client_slab.Acquire();
+        if (!c) continue;
+            
+        sockaddr_in peer{};
+        socklen_t   plen = sizeof(peer);
+        FD fd = ::accept4(listen_fd, reinterpret_cast<sockaddr*>(&peer),
+                          &plen, SOCK_NONBLOCK | SOCK_CLOEXEC);
+        if (fd < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+            if (errno == EINTR) continue;
+            return; // transient errors: drop and try again on next epoll wake
+        }
+
+        int yes = 1;
+        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+
+        c->fd = fd;
+        c->id = next_conn_id++;
+        c->epoll_events = EPOLLIN | EPOLLRDHUP | EPOLLET;
+
+        try {
+            register_fd(fd, c->epoll_events);
+        } catch (const std::exception&) {
+            ::close(fd);
+            client_slab.Release(c);
+            continue;
+        }
+        client_fd_to_id[fd] = c->id;
+        client_conns.emplace(c->id, c);
+    }
+}
+
+void EventLoop::OnClientWritable(ClientConn& c) {
+    while (c.wbuf_offset < c.wbuf.size()) {
+        ssize_t n = ::send(
+            c.fd,
+            c.wbuf.data() + c.wbuf_offset,
+            c.wbuf.size() - c.wbuf_offset,
+            MSG_NOSIGNAL);
+        if (n > 0) { c.wbuf_offset += static_cast<size_t>(n); continue; }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        CloseClient(c);
+        return;
+    }
+    c.wbuf.clear();
+    c.wbuf_offset = 0;
+    modify_client_interest(c, c.epoll_events & ~EPOLLOUT);
+    // if (c.closing && c.pending_tasks == 0) ReapClient(c);
+    if (c.closing) ReapClient(c);
+}
+
+void EventLoop::OnClientReadable(ClientConn& c) {
+    // TODO: if latency is too high here, replace c.rbuf w a ring buffer, or use readv
+    for (;;) {
+        size_t old = c.rbuf.size();
+        c.rbuf.resize(old + RECV_CHUNK);
+        ssize_t n = ::recv(c.fd, c.rbuf.data() + old, RECV_CHUNK, 0);
+
+        if (n > 0) { c.rbuf.resize(old + n); continue; }
+        if (n == 0) { c.rbuf.resize(old); CloseClient(c); return; }
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+
+        CloseClient(c);
+        return;
+    }
+
+    // drain as many complete request frames as the buffer can hold
+    while (!c.closing && !c.rbuf.empty()) {
+        size_t before = c.rbuf.size();
+        
+        auto [request_raw, rpc_id] = parse_rbuf(c); // erases the read bytes in rbuf
+        if (!request_raw) {
+            //CloseClient(c);
+            break;
+        }
+        RpcRequest& req = request_raw.value();
+        post_node_inbox(req, c.id);
+
+        if (c.rbuf.size() == before) break; // need more bytes
+    }
+
+}
+
+void EventLoop::CloseClient(ClientConn& c) {
+    if (c.closing) return;
+    c.closing = true;
+
+    if (c.fd >= 0) {
+        ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, c.fd, nullptr);
+        ::close(c.fd);
+        client_fd_to_id.erase(c.fd);
+        c.fd = -1;
+    }
+    c.epoll_events = 0;
+
+    ReapClient(c);
+    //if (c.pending_tasks == 0) ReapClient(c);
+}
+
+void EventLoop::ReapClient(ClientConn& c) {
+    const ClientID id = c.id;
+    ClientConn* ptr = &c;
+    client_conns.erase(id);
+    client_slab.Release(ptr);
+}
