@@ -40,7 +40,7 @@ struct MPSC {
     }
 
     bool Push(size_t producer_id, T&& data) {
-        return qs[producer_id].PushOne(std::forward(data));
+        return qs[producer_id].PushOne(std::forward<T>(data));
     }
 
     bool Pop(T* out) {

@@ -123,6 +123,19 @@ void EventLoop::OnPeerWritable(PeerConn& p) {
     // leave this message in the queue for now; its now awaiting a reply
 }
 
+void EventLoop::OnPeerTimer(PeerConn& p) {
+    uint64_t expirations = 0;
+    ssize_t n = ::read(p.timer_fd, &expirations, sizeof(expirations));
+    if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return;
+        return;
+    }
+    if (n != sizeof(expirations) || expirations == 0) return;
+
+    RpcRequest req = HeartbeatTimeoutPayload{};
+    post_node_inbox(req, p.peer_id);
+}
+
 void EventLoop::DropPeer(PeerConn& p) {
     if (p.fd >= 0) {
         ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, p.fd, nullptr);

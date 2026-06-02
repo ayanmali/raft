@@ -28,13 +28,13 @@ Node::Node(NodeInbox& inbox_)
     // literals (constexpr static storage), so .data() pointers stay
     // valid for the lifetime of the process.
     // TODO: delete or move this
-    auto init_peers = setup_peers();
-    peers_.reserve(init_peers.size());
-    NodeID id = 0;
-    for (const auto& ip_sv : init_peers) {
-        peers_.push_back(PeerInfo{id, ip_sv.data(), SERVER_PORT});
-        ++id;
-    }
+    // auto init_peers = setup_peers();
+    // peers_.reserve(init_peers.size());
+    // NodeID id = 0;
+    // for (const auto& ip_sv : init_peers) {
+    //     peers_.push_back(PeerInfo{id, ip_sv.data(), SERVER_PORT});
+    //     ++id;
+    // }
 
     // Randomized election timeout per Raft spec.
     std::random_device rd;
@@ -55,7 +55,7 @@ Node::Node(NodeInbox& inbox_)
             MAX_SERVER_CONNS,
             inbox,
             i);
-        
+
     }
 
     // spawn the worker threads.
@@ -151,14 +151,14 @@ void Node::main_loop() {
                         current_term = payload.term;
                         leader.store(false, std::memory_order_release);
                     }
-            
+
                     uint8_t granted = 0;
                     // if (voted_for == req.candidate_id) {
                     //     // TODO: log up-to-date check (last_log_idx/last_log_term).
                     //     voted_for = req.candidate_id;
                     //     granted   = 1;
                     // }
-            
+
                     el_inbox.PushOne(
                         std::make_unique<RaftMessage>(
                         RequestVoteRespPayload{current_term, granted}, client_id
@@ -173,12 +173,12 @@ void Node::main_loop() {
                             InstallSnapshotRespPayload{current_term}, client_id)
                         );
                     }
-            
+
                     if (payload.term > current_term) {
                         current_term = payload.term;
                         leader.store(false, std::memory_order_release);
                     }
-            
+
                     // TODO: chunk reassembly, install snapshot to state machine.
                     el_inbox.PushOne(
                         std::make_unique<RaftMessage>(
@@ -187,16 +187,24 @@ void Node::main_loop() {
                 }
 
                 else if constexpr (std::is_same_v<T, AppendEntriesRespPayload>) {
-        
+
                 }
                 else if constexpr (std::is_same_v<T, RequestVoteRespPayload>) {
-        
+
                 }
                 else if constexpr (std::is_same_v<T, InstallSnapshotRespPayload>) {
-                    
+
+                }
+                else if constexpr (std::is_same_v<T, HeartbeatTimeoutPayload>) {
+                    if (leader.load(std::memory_order_acquire)) {
+                        send_rpc(AppendEntriesReqPayload{current_term}, client_id);
+                    }
+                }
+                else if constexpr (std::is_same_v<T, ArmTimerPayload> || std::is_same_v<T, DisarmTimerPayload>) {
+                    // These are control messages sent to event loops, not handled by Node.
                 }
                 else {
-                    // static_assert(false, "non-exhaustive visitor");
+                    static_assert(false, "non-exhaustive visitor");
                 }
             }, message->data);
         });

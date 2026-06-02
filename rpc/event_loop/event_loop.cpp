@@ -2,9 +2,9 @@
 #include <cstddef>
 #include <fcntl.h>
 
-EventLoop::EventLoop(FD listen_fd, 
-                    size_t inbound_cap, 
-                    NodeInbox& node_inbox_, size_t this_id_) 
+EventLoop::EventLoop(FD listen_fd,
+                    size_t inbound_cap,
+                    NodeInbox& node_inbox_, size_t this_id_)
 : listen_fd(listen_fd),
   client_slab(inbound_cap),
   node_inbox(node_inbox_),
@@ -85,30 +85,6 @@ void EventLoop::register_fd(FD fd, uint32_t events) {
     }
 }
 
-void EventLoop::modify_client_interest(ClientConn* c, uint32_t events) {
-    if (c->epoll_events == events) return;
-    epoll_event ev{};
-    ev.events  = events;
-    ev.data.fd = c->fd;
-    if (::epoll_ctl(epoll_fd, EPOLL_CTL_MOD, c->fd, &ev) < 0) {
-        CloseClient(c);
-        throw std::runtime_error("Error modifying events for client fd");
-    }
-    c->epoll_events = events;
-}
-
-void EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
-    if (p.epoll_events == events) return;
-    epoll_event ev{};
-    ev.events  = events;
-    ev.data.fd = p.fd;
-    if (::epoll_ctl(epoll_fd, EPOLL_CTL_MOD, p.fd, &ev) < 0) {
-        DropPeer(p);
-        throw std::runtime_error("Error modifying epoll events for peer fd");
-    }
-    p.epoll_events = events;
-}
-
 void EventLoop::Run() {
     epoll_event evs[EPOLL_BATCH];
     while (!stopped.load(std::memory_order_acquire)) {
@@ -179,20 +155,24 @@ void EventLoop::DrainInbox() {
             else if constexpr (std::is_same_v<T, AppendEntriesRespPayload> || std::is_same_v<T, RequestVoteRespPayload> || std::is_same_v<T, InstallSnapshotRespPayload>) {
                 post_reply(payload, out->node_id);
             }
-            
+
             else if constexpr (std::is_same_v<T, ArmTimerPayload>) {
                 arm_peer_timer(payload, out->node_id);
             }
-                
+
             else if constexpr (std::is_same_v<T, DisarmTimerPayload>) {
                 disarm_peer_timer(out->node_id);
             }
-            
+
+            else if constexpr (std::is_same_v<T, HeartbeatTimeoutPayload>) {
+                // This payload is only sent from EventLoop to Node.
+            }
+
             else static_assert(false, "non-exhaustive visitor!");
         }, out->data);
         flag = outbound_inbox.PopOne(&out);
     }
-    
+
 }
 
 // drains this event loop's MPSC inbox
@@ -211,12 +191,12 @@ void EventLoop::OnEventFd() {
 
 bool EventLoop::post_node_inbox(RpcRequest& req, NodeID client_id) {
     int counter = 0;
-    auto ptr = std::make_unique<RaftMessage>(std::visit([](auto&& payload) -> RpcMessage {
-        return payload;
-    }, req), client_id);
+
 
     while (counter < MAX_ATTEMPTS) {
-        bool res = node_inbox.Push(this_id, ptr);
+        bool res = node_inbox.Push(this_id, std::make_unique<RaftMessage>(std::visit([](auto&& payload) -> RpcMessage {
+            return payload;
+        }, req), client_id));
         ++counter;
         if (res) return true;
     }
@@ -225,12 +205,11 @@ bool EventLoop::post_node_inbox(RpcRequest& req, NodeID client_id) {
 
 bool EventLoop::post_node_inbox(RpcReply& reply, NodeID peer_id) {
     int counter = 0;
-    auto ptr = std::make_unique<RaftMessage>(visit([](auto&& payload) -> RpcMessage {
-        return payload;
-    }, reply), peer_id);
-    
+
     while (counter < MAX_ATTEMPTS) {
-        bool res = node_inbox.Push(this_id, ptr);
+        bool res = node_inbox.Push(this_id, std::make_unique<RaftMessage>(std::visit([](auto&& payload) -> RpcMessage {
+            return payload;
+        }, reply), peer_id));
         ++counter;
         if (res) return true;
     }

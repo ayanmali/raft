@@ -61,6 +61,8 @@ public:
 
     Node(const Node&)            = delete;
     Node& operator=(const Node&) = delete;
+    Node(Node&&)                 = delete;
+    Node& operator=(Node&&)      = delete;
 
     // Signals every loop to exit, joins all worker threads.
     void stop();

@@ -144,3 +144,5 @@ struct ArmTimerPayload {
 };
 
 struct DisarmTimerPayload {};
+
+struct HeartbeatTimeoutPayload {};
