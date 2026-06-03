@@ -4,19 +4,19 @@
 #include "../protocol/peer.hpp"
 #include <sys/timerfd.h>
 
-void EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
+VoidExpected EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
     if (p.epoll_events == events) return;
     epoll_event ev{};
     ev.events  = events;
     ev.data.fd = p.fd;
     if (::epoll_ctl(epoll_fd, EPOLL_CTL_MOD, p.fd, &ev) < 0) {
         DropPeer(p);
-        throw std::runtime_error("Error modifying epoll events for peer fd");
+        return Unexpected("Error modifying epoll events for peer fd");
     }
     p.epoll_events = events;
 }
 
-void EventLoop::StartConnect(PeerConn& p) {
+VoidExpected EventLoop::StartConnect(PeerConn& p) {
     addrinfo hints{};
     hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -24,42 +24,41 @@ void EventLoop::StartConnect(PeerConn& p) {
 
     addrinfo* res = nullptr;
     if (::getaddrinfo(p.ip, p.port, &hints, &res) != 0 || res == nullptr) {
-        throw std::runtime_error("Error getting address info for peer");
+        return Unexpected("Error getting address info for peer");
     }
     std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> guard(res, &::freeaddrinfo);
 
     FD fd = ::socket(res->ai_family,
                      res->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC,
                      res->ai_protocol);
-    if (fd < 0) throw std::runtime_error("Failed to start socket");
+    if (fd < 0) return Unexpected("Failed to start socket");
 
     int yes = 1;
     ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
     int rc = ::connect(fd, res->ai_addr, res->ai_addrlen);
 
-    if (rc < 0 && errno != EINPROGRESS) { ::close(fd); throw std::runtime_error("Failed to connect socket"); }
+    if (rc < 0 && errno != EINPROGRESS) { ::close(fd); return Unexpected("Failed to connect socket"); }
 
     p.fd            = fd;
-    p.peer_id       = p.peer_id > 0 ? p.peer_id : next_peer_id++; // if this peer is already apart of the configuration, keep its ID the same. If it's new, assign it an ID.  
+    p.peer_id       = p.peer_id > 0 ? p.peer_id : next_peer_id++; // if this peer is already apart of the configuration, keep its ID the same. If it's new, assign it an ID.
     p.state         = PeerConn::State::Connecting;
     p.epoll_events  = EPOLLOUT | EPOLLRDHUP | EPOLLET;
 
-    try {
-        register_fd(fd, p.epoll_events);
-    } catch (std::exception&) {
+    VoidExpected peer_fd_ok = register_fd(fd, p.epoll_events);
+    if (!peer_fd_ok) {
         ::close(fd);
         p.fd = -1;
         p.state = PeerConn::State::Disconnected;
         p.epoll_events = 0;
-        return;
+        return peer_fd_ok;
     }
     peer_fd_to_id[fd] = p.peer_id;
     // TODO: configure per-peer hearbeat timer fds
     // peer_timer_to_id[p.timer_fd] = p.peer_id;
 }
 
-void EventLoop::OnPeerReadable(PeerConn& p) {
+VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
     // get last sent RPC
     InflightRPC& out = p.outbox.front();
 
@@ -74,7 +73,7 @@ void EventLoop::OnPeerReadable(PeerConn& p) {
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) break;
         DropPeer(p);
-        return;
+        return Unexpected("unexpected error attempting to read from peer socket\n");
     }
 
     while (!p.outbox.empty()) {
@@ -82,7 +81,7 @@ void EventLoop::OnPeerReadable(PeerConn& p) {
         std::expected<RpcReply, const char*> reply_raw = parse_reply_buffer(head);
         if (!reply_raw) {
             // TODO: handle error
-            break;
+            return Unexpected(reply_raw.error());
         }
         RpcReply& reply = reply_raw.value();
         post_node_inbox(reply, p.peer_id);
@@ -92,43 +91,46 @@ void EventLoop::OnPeerReadable(PeerConn& p) {
 
 }
 
-void EventLoop::OnPeerWritable(PeerConn& p) {
+VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
     if (p.state == PeerConn::State::Connecting) {
         int err = 0;
         socklen_t l = sizeof(err);
         if (::getsockopt(p.fd, SOL_SOCKET, SO_ERROR, &err, &l) < 0 || err != 0) {
             DropPeer(p);
-            return;
+            return Unexpected("error attempting to write to peer socket\n");
         }
         p.state = PeerConn::State::Connected;
-        modify_peer_interest(p, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET);
+        VoidExpected modify_ok = modify_peer_interest(p, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET);
+        if (!modify_ok) {
+            return modify_ok;
+        }
     }
-    
+
     InflightRPC& out = p.outbox.front();
     while (out.bytes_sent < out.req.size()) {
-        ssize_t n = ::send(p.fd, 
-            out.req.data() + out.bytes_sent, 
+        ssize_t n = ::send(p.fd,
+            out.req.data() + out.bytes_sent,
             out.req.size() - out.bytes_sent,
             MSG_NOSIGNAL);
         if (n > 0) { out.bytes_sent += static_cast<size_t>(n); continue; }
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
         DropPeer(p);
-        return;
+        return Unexpected("unknown error after writing to peer socket\n");
     }
     // done sending; clean up
     out.req.clear();
     out.bytes_sent = 0;
-    modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
+    VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
+    return modify_ok;
     // leave this message in the queue for now; its now awaiting a reply
 }
 
-void EventLoop::OnPeerTimer(PeerConn& p) {
+VoidExpected EventLoop::OnPeerTimer(PeerConn& p) {
     uint64_t expirations = 0;
     ssize_t n = ::read(p.timer_fd, &expirations, sizeof(expirations));
-    if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return;
-        return;
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+        return Unexpected("error attempting to read peer timer fd\n");
     }
     if (n != sizeof(expirations) || expirations == 0) return;
 
@@ -191,7 +193,7 @@ void EventLoop::DropPeer(PeerConn& p) {
 // }
 
 /* called when draining the messages in the event loop's MPSC inbox. */
-void EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID peer_id) {
+VoidExpected EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID peer_id) {
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end()) return; // message gets dropped
     PeerConn& p = it->second;
@@ -203,14 +205,20 @@ void EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID peer_id) 
     p.outbox.push_back(rpc);
 
     if (p.state == PeerConn::State::Disconnected) {
-        StartConnect(p);
+        VoidExpected connect_ok = StartConnect(p);
+        if (!connect_ok) {
+            return connect_ok;
+        }
     }
     else if (p.state == PeerConn::State::Connected) {
-        modify_peer_interest(p, p.epoll_events | EPOLLOUT);
+        VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
+        if (!modify_ok) {
+            return modify_ok;
+        }
     }
 }
 
-void EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID peer_id) {
+VoidExpected EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID peer_id) {
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end()) return; // message gets dropped
     PeerConn& p = it->second;
@@ -222,14 +230,20 @@ void EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID peer_id) {
     p.outbox.push_back(rpc);
 
     if (p.state == PeerConn::State::Disconnected) {
-        StartConnect(p);
+        VoidExpected connect_ok = StartConnect(p);
+        if (!connect_ok) {
+            return connect_ok;
+        }
     }
     else if (p.state == PeerConn::State::Connected) {
-        modify_peer_interest(p, p.epoll_events | EPOLLOUT);
+        VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
+        if (!modify_ok) {
+            return modify_ok;
+        }
     }
 }
 
-void EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeID peer_id) {
+VoidExpected EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeID peer_id) {
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end()) return; // message gets dropped
     PeerConn& p = it->second;
@@ -241,10 +255,16 @@ void EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeID peer_id
     p.outbox.push_back(rpc);
 
     if (p.state == PeerConn::State::Disconnected) {
-        StartConnect(p);
+        VoidExpected connect_ok = StartConnect(p);
+        if (!connect_ok) {
+            return connect_ok;
+        }
     }
     else if (p.state == PeerConn::State::Connected) {
-        modify_peer_interest(p, p.epoll_events | EPOLLOUT);
+        VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
+        if (!modify_ok) {
+            return modify_ok;
+        }
     }
 }
 
@@ -278,7 +298,7 @@ void EventLoop::disarm_peer_timer(NodeID peer_id) {
     ::timerfd_settime(p.timer_fd, 0, &zero, nullptr);
 }
 
-void EventLoop::post_reply(AppendEntriesRespPayload& payload, NodeID client_id) {
+VoidExpected EventLoop::post_reply(AppendEntriesRespPayload& payload, NodeID client_id) {
     auto it = client_conns.find(client_id);
     if (it == client_conns.end()) return; // message gets dropped
     ClientConn* c = it->second;
@@ -288,34 +308,43 @@ void EventLoop::post_reply(AppendEntriesRespPayload& payload, NodeID client_id) 
     writer.serialize(payload);
 
     if (c->wbuf_offset < c->wbuf.size()) {
-        modify_client_interest(c, c->epoll_events | EPOLLOUT);
+        VoidExpected modify_ok = modify_client_interest(c, c->epoll_events | EPOLLOUT);
+        if (!modify_ok) {
+            return modify_ok;
+        }
     }
 }
 
-void EventLoop::post_reply(RequestVoteRespPayload& payload, NodeID client_id) {
+VoidExpected EventLoop::post_reply(RequestVoteRespPayload& payload, NodeID client_id) {
     auto it = client_conns.find(client_id);
     if (it == client_conns.end()) return; // message gets dropped
     ClientConn* c = it->second;
     //++c.pending_tasks;
-    
+
     ByteWriter writer{c->wbuf};
     writer.serialize(payload);
 
     if (c->wbuf_offset < c->wbuf.size()) {
-        modify_client_interest(c, c->epoll_events | EPOLLOUT);
+        VoidExpected modify_ok = modify_client_interest(c, c->epoll_events | EPOLLOUT);
+        if (!modify_ok) {
+            return modify_ok;
+        }
     }
 }
 
-void EventLoop::post_reply(InstallSnapshotRespPayload& payload, NodeID client_id) {
+VoidExpected EventLoop::post_reply(InstallSnapshotRespPayload& payload, NodeID client_id) {
     auto it = client_conns.find(client_id);
     if (it == client_conns.end()) return; // message gets dropped
     ClientConn* c = it->second;
     //++c.pending_tasks;
-    
+
     ByteWriter writer{c->wbuf};
     writer.serialize(payload);
 
     if (c->wbuf_offset < c->wbuf.size()) {
-        modify_client_interest(c, c->epoll_events | EPOLLOUT);
+        VoidExpected modify_ok = modify_client_interest(c, c->epoll_events | EPOLLOUT);
+        if (!modify_ok) {
+            return modify_ok;
+        }
     }
 }

@@ -35,6 +35,7 @@ Persistence:
 #include "../rpc/conns.hpp"
 #include "../rpc/event_loop/event_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
+#include "../errors.hpp"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -129,7 +130,7 @@ private:
 
     // Creates N listening sockets, all bound to SERVER_PORT via
     // SO_REUSEPORT. Sockets are non-blocking, CLOEXEC, TCP_NODELAY.
-    void setup_listen_sockets();
+    VoidExpected setup_listen_sockets();
 
     // Builds the peer subset for thread `i` (peers where peer_id % N == i).
     auto peer_subset_for(uint i) const;

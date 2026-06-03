@@ -1,9 +1,9 @@
-#include "node.hpp"
+// #include "node.hpp"
 
-int main() {
-    Node node{};
-    while (true) {
-        node.loop();
-    }
+// int main() {
+//     Node node{};
+//     while (true) {
+//         node.loop();
+//     }
 
-}
+// }

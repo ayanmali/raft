@@ -6,6 +6,9 @@
 #include <atomic>
 #include <csignal>
 #include <random>
+#ifdef DEBUG
+#include <iostream>
+#endif
 
 Node::Node(NodeInbox& inbox_)
 : inbox(inbox_) {
@@ -43,7 +46,13 @@ Node::Node(NodeInbox& inbox_)
     election_timeout_ = std::chrono::milliseconds(distrib(gen));
 
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) listen_fds_[i] = -1;
-    setup_listen_sockets();
+    VoidExpected sockets_ok = setup_listen_sockets();
+    if (!sockets_ok) {
+        #ifdef DEBUG
+        std::cout << sockets_ok.error() << "\n";
+        #endif
+        return;
+    }
 
     running_ = true;
 
@@ -71,7 +80,7 @@ Node::~Node() {
     }
 }
 
-void Node::setup_listen_sockets() {
+VoidExpected Node::setup_listen_sockets() {
     addrinfo hints{};
     hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -79,13 +88,13 @@ void Node::setup_listen_sockets() {
 
     addrinfo* res = nullptr;
     if (::getaddrinfo(nullptr, SERVER_PORT, &hints, &res) != 0 || res == nullptr) {
-        throw std::runtime_error("getaddrinfo failed");
+        return Unexpected("getaddrinfo failed");
     }
     std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> guard(res, &::freeaddrinfo);
 
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
         FD fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-        if (fd < 0) throw std::runtime_error("socket failed");
+        if (fd < 0) return Unexpected("socket failed");
 
         int yes = 1;
         // SO_REUSEPORT must be set BEFORE bind() so that all N sockets
@@ -100,16 +109,19 @@ void Node::setup_listen_sockets() {
         for (p = res; p; p = p->ai_next) {
             if (::bind(fd, p->ai_addr, p->ai_addrlen) == 0) break;
         }
-        if (!p) { ::close(fd); throw std::runtime_error("bind failed"); }
+        if (!p) { ::close(fd); return Unexpected("bind failed"); }
         if (::listen(fd, SERVER_BACKLOG) != 0) {
             ::close(fd);
-            throw std::runtime_error("listen failed");
+            return Unexpected("listen failed");
         }
         listen_fds_[i] = fd;
     }
 }
 
 void Node::main_loop() {
+    #ifdef DEBUG
+    std::cout << "starting main loop\n";
+    #endif
     while (true) {
         // check the reply inbox for new replies that have arrived
         // TODO: implement handlers

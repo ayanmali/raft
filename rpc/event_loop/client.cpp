@@ -2,23 +2,27 @@
 #include <netinet/tcp.h>
 #include "../protocol/client.hpp"
 
-void EventLoop::modify_client_interest(ClientConn* c, uint32_t events) {
+#ifdef DEBUG
+#include <iostream>
+#endif
+
+VoidExpected EventLoop::modify_client_interest(ClientConn* c, uint32_t events) {
     if (c->epoll_events == events) return;
     epoll_event ev{};
     ev.events  = events;
     ev.data.fd = c->fd;
     if (::epoll_ctl(epoll_fd, EPOLL_CTL_MOD, c->fd, &ev) < 0) {
         CloseClient(c);
-        throw std::runtime_error("Error modifying events for client fd");
+        return Unexpected("Error modifying events for client fd");
     }
     c->epoll_events = events;
 }
 
-void EventLoop::Accept() {
+VoidExpected EventLoop::Accept() {
     for (;;) {
         ClientConn* c = client_slab.Acquire();
         if (!c) continue;
-            
+
         sockaddr_in peer{};
         socklen_t   plen = sizeof(peer);
         FD fd = ::accept4(listen_fd, reinterpret_cast<sockaddr*>(&peer),
@@ -36,9 +40,11 @@ void EventLoop::Accept() {
         c->id = next_conn_id++;
         c->epoll_events = EPOLLIN | EPOLLRDHUP | EPOLLET;
 
-        try {
-            register_fd(fd, c->epoll_events);
-        } catch (const std::exception&) {
+        VoidExpected client_fd_ok = register_fd(fd, c->epoll_events);
+        if (!client_fd_ok) {
+            #ifdef DEBUG
+            std::cout << client_fd_ok.error() << "\n";
+            #endif
             ::close(fd);
             client_slab.Release(c);
             continue;
@@ -63,12 +69,18 @@ void EventLoop::OnClientWritable(ClientConn* c) {
     }
     c->wbuf.clear();
     c->wbuf_offset = 0;
-    modify_client_interest(c, c->epoll_events & ~EPOLLOUT);
+    VoidExpected modify_ok = modify_client_interest(c, c->epoll_events & ~EPOLLOUT);
+    if (!modify_ok) {
+        #ifdef DEBUG
+        std::cout << modify_ok.error() << "\n";
+        #endif
+    }
     // if (c.closing && c.pending_tasks == 0) ReapClient(c);
     if (c->closing) ReapClient(c);
+    return modify_ok;
 }
 
-void EventLoop::OnClientReadable(ClientConn* c) {
+VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
     // TODO: if latency is too high here, replace c.rbuf w a ring buffer, or use readv
     for (;;) {
         size_t old = c->rbuf.size();
@@ -81,17 +93,17 @@ void EventLoop::OnClientReadable(ClientConn* c) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) break;
 
         CloseClient(c);
-        return;
+        return Unexpected("unexpected error attempting to read client message\n");
     }
 
     // drain as many complete request frames as the buffer can hold
     while (!c->closing && !c->rbuf.empty()) {
         size_t before = c->rbuf.size();
-        
+
         auto [request_raw, rpc_id] = parse_rbuf(c); // erases the read bytes in rbuf
         if (!request_raw) {
             //CloseClient(c);
-            break;
+            return request_raw;
         }
         RpcRequest& req = request_raw.value();
         post_node_inbox(req, c->id);

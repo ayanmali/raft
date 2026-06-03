@@ -1,6 +1,9 @@
 #include "./event_loop.hpp"
 #include <cstddef>
 #include <fcntl.h>
+#ifdef DEBUG
+#include <iostream>
+#endif
 
 EventLoop::EventLoop(FD listen_fd,
                     size_t inbound_cap,
@@ -68,40 +71,62 @@ void EventLoop::wake_eventfd_unconditional() {
              // will pick up the inbox on its next wake.
 }
 
-void EventLoop::set_nonblocking(FD fd) {
+VoidExpected EventLoop::set_nonblocking(FD fd) {
     int flags = ::fcntl(fd, F_GETFL, 0);
-    if (flags < 0) throw std::runtime_error("fcntl F_GETFL failed");
+    if (flags < 0) return Unexpected("fcntl F_GETFL failed");
     if (::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        throw std::runtime_error("fcntl F_SETFL O_NONBLOCK failed");
+        return Unexpected("fcntl F_SETFL O_NONBLOCK failed");
     }
 }
 
-void EventLoop::register_fd(FD fd, uint32_t events) {
+VoidExpected EventLoop::register_fd(FD fd, uint32_t events) {
     epoll_event ev{};
     ev.events  = events;
     ev.data.fd = fd;
     if (::epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
-        throw std::runtime_error("epoll_ctl ADD failed");
+        return Unexpected("epoll_ctl ADD failed");
     }
 }
 
-void EventLoop::Run() {
+VoidExpected EventLoop::Run() {
+    #ifdef DEBUG
+    std::cout << "starting event loop with id " << this_id << "\n";
+    #endif
     epoll_event evs[EPOLL_BATCH];
     while (!stopped.load(std::memory_order_acquire)) {
+        #ifdef DEBUG
+        std::cout << "waiting for events...\n";
+        #endif
         int n = ::epoll_wait(epoll_fd, evs, EPOLL_BATCH, -1);
 
         if (n < 0) {
             if (errno == EINTR) continue;
-            throw std::runtime_error("epoll_wait failed");
+            return Unexpected("epoll_wait failed");
         }
 
         // loop over all ready FDs
+        #ifdef DEBUG
+        std::cout << "found " << n << " ready fds\n";
+        #endif
+
         for (int i = 0; i < n; ++i) {
             const FD fd = evs[i].data.fd;
             const uint32_t e = evs[i].events;
 
-            if (fd == listen_fd) { Accept(); continue; }
-            if (fd == event_fd) { OnEventFd(); continue; }
+            if (fd == listen_fd) {
+                #ifdef DEBUG
+                std::cout << "accepting new client connection\n";
+                #endif
+                Accept();
+                continue;
+            }
+            if (fd == event_fd) {
+                #ifdef DEBUG
+                std::cout << "event fd awakened\n";
+                #endif
+                OnEventFd();
+                continue;
+            }
 
             if (auto it = client_fd_to_id.find(fd); it != client_fd_to_id.end()) {
                 ClientConn* c = client_conns.at(it->second);
@@ -109,25 +134,56 @@ void EventLoop::Run() {
                     CloseClient(c);
                     continue;
                 }
-                if (e & EPOLLIN) OnClientReadable(c);
-                if (e & EPOLLOUT) OnClientWritable(c);
+                if (e & EPOLLIN) {
+                    #ifdef DEBUG
+                    std::cout << "new client message from client " << c->id << "\n";
+                    #endif
+                    OnClientReadable(c);
+                }
+                if (e & EPOLLOUT) {
+                    #ifdef DEBUG
+                    std::cout << "ready to send reply to client " << c->id << "\n";
+                    #endif
+                    OnClientWritable(c);
+                }
                 continue;
             }
 
             if (auto it = peer_fd_to_id.find(fd); it != peer_fd_to_id.end()) {
                 PeerConn& p = peer_conns.at(it->second);
                 if (e & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+                    #ifdef DEBUG
+                    std::cout << "disconnecting peer " << p.peer_id << "\n";
+                    #endif
                     DropPeer(p);
                     continue;
                 }
-                if (e & EPOLLIN)  OnPeerReadable(p);
-                if (e & EPOLLOUT) OnPeerWritable(p);
+                if (e & EPOLLIN) {
+                    #ifdef DEBUG
+                    std::cout << "obtained reply from peer " << p.peer_id << "\n";
+                    #endif
+                    VoidExpected peer_readable_ok = OnPeerReadable(p);
+                    return peer_readable_ok;
+                }
+                if (e & EPOLLOUT) {
+                    #ifdef DEBUG
+                    std::cout << "ready to send RPC to peer " << p.peer_id << "\n";
+                    #endif
+                    VoidExpected peer_writable_ok = OnPeerWritable(p);
+                    return peer_writable_ok;
+                }
                 continue;
             }
 
             if (auto it = peer_timer_fd_to_id.find(fd); it != peer_timer_fd_to_id.end()) {
                 PeerConn& p = peer_conns.at(it->second);
-                if (e & EPOLLIN) OnPeerTimer(p);
+                if (e & EPOLLIN) {
+                    #ifdef DEBUG
+                    std::cout << "timer fd fired for peer " << p.peer_id << "\n";
+                    #endif
+                    VoidExpected peer_timer_ok = OnPeerTimer(p);
+                    return peer_timer_ok;
+                }
             }
         }
     }

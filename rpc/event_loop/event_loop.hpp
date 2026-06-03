@@ -2,6 +2,7 @@
 
 #include "../conns.hpp"
 #include "../../cross_thread.hpp"
+#include "../../errors.hpp"
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
@@ -28,10 +29,10 @@ struct EventLoop {
     EventLoop(const EventLoop&) = delete;
     EventLoop& operator=(const EventLoop&) = delete;
 
-    void Run();
+    VoidExpected Run();
     void Stop(); // event loop can be stopped via a signal on the event fd
     void Wake();
-    
+
     SPSCQueue<std::unique_ptr<RaftMessage>, INBOX_RING_CAP> outbound_inbox{};
 
     std::unordered_map<NodeID, PeerConn> peer_conns;
@@ -43,7 +44,7 @@ struct EventLoop {
     FD epoll_fd = -1;
     FD listen_fd = -1;
     FD event_fd = -1;
-    
+
     // Inbound
     NodeInbox& node_inbox; // incoming messages
 
@@ -61,18 +62,18 @@ struct EventLoop {
     NodeID next_peer_id = 1;
 
     // ---- helpers ----
-    static void set_nonblocking(FD fd);
-    void register_fd(FD fd, uint32_t events);
-    void modify_client_interest(ClientConn* c, uint32_t events);
-    void modify_peer_interest(PeerConn& p, uint32_t events);
+    static VoidExpected set_nonblocking(FD fd);
+    VoidExpected register_fd(FD fd, uint32_t events);
+    VoidExpected modify_client_interest(ClientConn* c, uint32_t events);
+    VoidExpected modify_peer_interest(PeerConn& p, uint32_t events);
 
-    void post_inflight(AppendEntriesReqPayload& payload, NodeID peer_id);
-    void post_inflight(RequestVoteReqPayload& payload, NodeID peer_id);
-    void post_inflight(InstallSnapshotReqPayload& payload, NodeID peer_id);
+    VoidExpected post_inflight(AppendEntriesReqPayload& payload, NodeID peer_id);
+    VoidExpected post_inflight(RequestVoteReqPayload& payload, NodeID peer_id);
+    VoidExpected post_inflight(InstallSnapshotReqPayload& payload, NodeID peer_id);
 
-    void post_reply(AppendEntriesRespPayload& payload, NodeID client_id);
-    void post_reply(RequestVoteRespPayload& payload, NodeID client_id);
-    void post_reply(InstallSnapshotRespPayload& payload, NodeID client_id);
+    VoidExpected post_reply(AppendEntriesRespPayload& payload, NodeID client_id);
+    VoidExpected post_reply(RequestVoteRespPayload& payload, NodeID client_id);
+    VoidExpected post_reply(InstallSnapshotRespPayload& payload, NodeID client_id);
 
     // inbound messaging
     void Accept();
@@ -82,10 +83,10 @@ struct EventLoop {
     void ReapClient(ClientConn* c);
 
     // outbound messaging
-    void OnPeerWritable(PeerConn& p);
-    void OnPeerReadable(PeerConn& p);
-    void OnPeerTimer(PeerConn& p);
-    void StartConnect(PeerConn& p);
+    VoidExpected OnPeerWritable(PeerConn& p);
+    VoidExpected OnPeerReadable(PeerConn& p);
+    VoidExpected OnPeerTimer(PeerConn& p);
+    VoidExpected StartConnect(PeerConn& p);
     void DropPeer(PeerConn& p);
 
     // wake / inbox
