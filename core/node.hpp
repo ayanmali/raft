@@ -39,8 +39,8 @@ Persistence:
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstddef>
-#include <memory>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -57,7 +57,8 @@ struct LogEntry {
 
 struct Node {
 public:
-    Node(NodeInbox& inbox_);
+    //Node(NodeInbox&);
+    static std::expected<std::unique_ptr<Node>, std::string> CreateNode(NodeInbox&);
     ~Node();
 
     Node(const Node&)            = delete;
@@ -66,16 +67,16 @@ public:
     Node& operator=(Node&&)      = delete;
 
     // Signals every loop to exit, joins all worker threads.
-    void stop();
+    void Stop();
 
-    void main_loop();
+    void MainLoop();
 
     // Outbound RPC entry points. Resolve the owning loop by
     // peer_id % N and post the request into its inbox. The reply
     // callback fires on that loop's thread.
-    void send_rpc(AppendEntriesReqPayload&& payload, NodeID peer_id);
-    void send_rpc(RequestVoteReqPayload&& payload, NodeID peer_id);
-    void send_rpc(InstallSnapshotReqPayload&& payload, NodeID peer_id);
+    void send_rpc(AppendEntriesReqPayload&&, NodeID peer_id);
+    void send_rpc(RequestVoteReqPayload&&, NodeID peer_id);
+    void send_rpc(InstallSnapshotReqPayload&&, NodeID peer_id);
     void send_heartbeats();
 
     void send_arm_timers(); // upon leader promotion
@@ -102,14 +103,14 @@ public:
     // RequestVoteRespPayload       handle_request_vote(const RequestVoteReqPayload&);
     // InstallSnapshotRespPayload   handle_install_snapshot(const InstallSnapshotReqPayload&);
 
-private:
+    private:
+    NodeInbox& inbox;
     // ---- transport ----
+    // TODO: replace AoS EventLoop w/ SoA pattern
     std::array<FD, EVENT_LOOP_THREADS>                              listen_fds_{};
     std::array<std::unique_ptr<EventLoop>, EVENT_LOOP_THREADS>      loops_;
     std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
     bool                                                            running_ = false;
-
-    NodeInbox& inbox;
 
     // ---- raft state ----
     uint32_t                                       current_term  = 0;
@@ -120,25 +121,19 @@ private:
     // std::vector<int>                            next_index;             // leader-only, per peer
     // std::vector<int>                            match_index;            // leader-only, per peer
     std::atomic<bool>                              leader        = false;
-
     // Election timeout, randomized at construction.
-    std::chrono::milliseconds election_timeout_;
-
-    std::vector<PeerInfo> peers_;
-
+    std::chrono::milliseconds                      election_timeout_;
     // ---- setup helpers ----
 
     // Creates N listening sockets, all bound to SERVER_PORT via
     // SO_REUSEPORT. Sockets are non-blocking, CLOEXEC, TCP_NODELAY.
-    VoidExpected setup_listen_sockets();
-
-    // Builds the peer subset for thread `i` (peers where peer_id % N == i).
-    auto peer_subset_for(uint i) const;
+    VoidExpected setup_listen_socket(uint idx, addrinfo*);
 
     // Constructs the RpcHandlers struct (member-fn lambdas) the loops
     // dispatch to on inbound requests.
     // RpcHandlers make_handlers();
-
+    //
+    Node(NodeInbox&);
     void tick_peer(NodeID peer_id);
 
     // std::expected<RpcReply, const char*> handle_append_entries_req(const RpcRequest& message);

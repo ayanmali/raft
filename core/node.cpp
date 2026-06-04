@@ -10,10 +10,14 @@
 #include <iostream>
 #endif
 
-Node::Node(NodeInbox& inbox_)
-: inbox(inbox_) {
+Node::Node(NodeInbox& inbox_) : inbox(inbox_) {}
+
+// Factory function
+// Node requires stable addresses (i.e. not movable)
+std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& inbox) {
     static_assert(EVENT_LOOP_THREADS > 0 && (EVENT_LOOP_THREADS & (EVENT_LOOP_THREADS - 1)) == 0,
-                  "Node: EVENT_LOOP_THREADS must be a power of 2 (MPSC inbox requires it)");
+        "Node: EVENT_LOOP_THREADS must be a power of 2 (MPSC inbox requires it)");
+    auto n = std::unique_ptr<Node>(new Node(inbox));
 
     // SIGPIPE would otherwise kill the process if a peer disappears
     // mid-send. send/recv calls also pass MSG_NOSIGNAL belt-and-
@@ -43,44 +47,8 @@ Node::Node(NodeInbox& inbox_)
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> distrib(MIN_ELECTION_TIMEOUT_MS, MAX_ELECTION_TIMEOUT_MS);
-    election_timeout_ = std::chrono::milliseconds(distrib(gen));
+    n->election_timeout_ = std::chrono::milliseconds(distrib(gen));
 
-    for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) listen_fds_[i] = -1;
-    VoidExpected sockets_ok = setup_listen_sockets();
-    if (!sockets_ok) {
-        #ifdef DEBUG
-        std::cout << sockets_ok.error() << "\n";
-        #endif
-        return;
-    }
-
-    running_ = true;
-
-    // construct every loop so all event_fds and inboxes exist
-    // before any thread starts producing.
-    for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
-        loops_[i] = std::make_unique<EventLoop>(
-            listen_fds_[i],
-            MAX_SERVER_CONNS,
-            inbox,
-            i);
-
-    }
-
-    // spawn the worker threads.
-    for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
-        threads_[i] = std::thread([this, i] { loops_[i]->Run(); });
-    }
-}
-
-Node::~Node() {
-    stop();
-    for (auto& fd : listen_fds_) {
-        if (fd >= 0) { ::close(fd); fd = -1; }
-    }
-}
-
-VoidExpected Node::setup_listen_sockets() {
     addrinfo hints{};
     hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -90,35 +58,75 @@ VoidExpected Node::setup_listen_sockets() {
     if (::getaddrinfo(nullptr, SERVER_PORT, &hints, &res) != 0 || res == nullptr) {
         return Unexpected("getaddrinfo failed");
     }
-    std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> guard(res, &::freeaddrinfo);
+    std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> res_guard(res, &::freeaddrinfo);
 
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
-        FD fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-        if (fd < 0) return Unexpected("socket failed");
-
-        int yes = 1;
-        // SO_REUSEPORT must be set BEFORE bind() so that all N sockets
-        // bound to the same port are members of the same SO_REUSEPORT
-        // group; the kernel then load-balances incoming connections
-        // across them.
-        ::setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
-        ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-
-        addrinfo* p = nullptr;
-        for (p = res; p; p = p->ai_next) {
-            if (::bind(fd, p->ai_addr, p->ai_addrlen) == 0) break;
+        VoidExpected socket_ok = n->setup_listen_socket(i, res);
+        if (!socket_ok) {
+            return UnexpectedF(
+                std::format("error setting up socket {}:\n{}\n", i, socket_ok.error())
+            );
         }
-        if (!p) { ::close(fd); return Unexpected("bind failed"); }
-        if (::listen(fd, SERVER_BACKLOG) != 0) {
-            ::close(fd);
-            return Unexpected("listen failed");
+
+        std::expected<std::unique_ptr<EventLoop>, std::string> loop_ok = EventLoop::CreateEventLoop(
+            n->listen_fds_[i],
+            MAX_SERVER_CONNS,
+            inbox,
+            i
+        );
+        if (!loop_ok){
+            return UnexpectedF(
+                std::format("error creating event loop {}:\n{}\n", i, loop_ok.error())
+            );
         }
-        listen_fds_[i] = fd;
+        n->loops_[i] = std::move(loop_ok.value());
+
+        n->threads_[i] = std::thread([&n, i] {
+            VoidExpected loop_ok = n->loops_[i]->Run();
+            #ifdef DEBUG
+            std::cout << "event loop " << i << " crashed:\n" << loop_ok.error() << "\n";
+            #endif
+        });
+    }
+
+    n->running_ = true;
+    return n;
+}
+
+Node::~Node() {
+    Stop();
+    for (int i = 0; i < EVENT_LOOP_THREADS; ++i) {
+        FD fd{listen_fds_[i]};
+        if (fd >= 0) { ::close(fd); fd = -1; }
     }
 }
 
-void Node::main_loop() {
+VoidExpected Node::setup_listen_socket(uint idx, addrinfo* res) {
+    FD fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd < 0) return Unexpected("socket failed");
+
+    int yes = 1;
+    // SO_REUSEPORT must be set BEFORE bind() so that all N sockets
+    // bound to the same port are members of the same SO_REUSEPORT
+    // group; the kernel then load-balances incoming connections
+    // across them.
+    ::setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+
+    addrinfo* p = nullptr;
+    for (p = res; p; p = p->ai_next) {
+        if (::bind(fd, p->ai_addr, p->ai_addrlen) == 0) break;
+    }
+    if (!p) { ::close(fd); return Unexpected("bind failed"); }
+    if (::listen(fd, SERVER_BACKLOG) != 0) {
+        ::close(fd);
+        return Unexpected("listen failed");
+    }
+    listen_fds_[idx] = fd;
+}
+
+void Node::MainLoop() {
     #ifdef DEBUG
     std::cout << "starting main loop\n";
     #endif
@@ -126,12 +134,19 @@ void Node::main_loop() {
         // check the reply inbox for new replies that have arrived
         // TODO: implement handlers
         inbox.DrainAll([this](std::unique_ptr<RaftMessage>&& message) {
+            #ifdef DEBUG
+            std::cout << "draining node inbox...\n";
+            #endif
             std::visit([this, &message](auto&& payload) {
                 using T = std::decay_t<decltype(payload)>;
                 auto client_id = message->node_id;
-                auto& el_inbox = loops_[client_id % EVENT_LOOP_THREADS]->outbound_inbox;
+                auto& el_inbox = loops_[client_id & (EVENT_LOOP_THREADS - 1)]->outbound_inbox;
 
                 if constexpr (std::is_same_v<T, AppendEntriesReqPayload>) {
+                    #ifdef DEBUG
+                    std::cout << "found AE RPC\n";
+                    #endif
+
                     if (current_term > payload.term) {
                         el_inbox.PushOne(
                             std::make_unique<RaftMessage>(
@@ -152,6 +167,10 @@ void Node::main_loop() {
                 }
 
                 else if constexpr (std::is_same_v<T, RequestVoteReqPayload>) {
+                    #ifdef DEBUG
+                    std::cout << "found RV RPC\n";
+                    #endif
+
                     if (payload.term < current_term) {
                         el_inbox.PushOne(
                             std::make_unique<RaftMessage>(
@@ -179,6 +198,10 @@ void Node::main_loop() {
                 }
 
                 else if constexpr (std::is_same_v<T, InstallSnapshotReqPayload>) {
+                    #ifdef DEBUG
+                    std::cout << "found IS RPC\n";
+                    #endif
+
                     if (payload.term < current_term) {
                         el_inbox.PushOne(
                             std::make_unique<RaftMessage>(
@@ -199,15 +222,24 @@ void Node::main_loop() {
                 }
 
                 else if constexpr (std::is_same_v<T, AppendEntriesRespPayload>) {
-
+                    #ifdef DEBUG
+                    std::cout << "found AE reply\n";
+                    #endif
                 }
                 else if constexpr (std::is_same_v<T, RequestVoteRespPayload>) {
-
+                    #ifdef DEBUG
+                    std::cout << "found RV reply\n";
+                    #endif
                 }
                 else if constexpr (std::is_same_v<T, InstallSnapshotRespPayload>) {
-
+                    #ifdef DEBUG
+                    std::cout << "found IS reply\n";
+                    #endif
                 }
                 else if constexpr (std::is_same_v<T, HeartbeatTimeoutPayload>) {
+                    #ifdef DEBUG
+                    std::cout << "found heartbeat timeout; sending heartbeats...\n";
+                    #endif
                     if (leader.load(std::memory_order_acquire)) {
                         send_rpc(AppendEntriesReqPayload{current_term}, client_id);
                     }
@@ -223,36 +255,34 @@ void Node::main_loop() {
     }
 }
 
-inline void Node::stop() {
+inline void Node::Stop() {
     if (!running_) return;
     running_ = false;
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
-        if (loops_[i]) loops_[i]->Stop();
-    }
-    for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
+        if (!loops_[i]->stopped.load(std::memory_order_acquire)) loops_[i]->Stop();
+        loops_[i].reset();
         if (threads_[i].joinable()) threads_[i].join();
     }
-    for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) loops_[i].reset();
 }
 
 // ---- outbound shims --------------------------------------------------------
 
 void Node::send_rpc(AppendEntriesReqPayload&& payload, NodeID peer_id) {
-    auto& el = loops_[peer_id % EVENT_LOOP_THREADS];
+    auto& el = loops_[peer_id & (EVENT_LOOP_THREADS - 1)];
     el->outbound_inbox.PushOne(
         std::make_unique<RaftMessage>(payload, peer_id)
     );
 }
 
 void Node::send_rpc(RequestVoteReqPayload&& payload, NodeID peer_id) {
-    auto& el = loops_[peer_id % EVENT_LOOP_THREADS];
+    auto& el = loops_[peer_id & (EVENT_LOOP_THREADS - 1)];
     el->outbound_inbox.PushOne(
         std::make_unique<RaftMessage>(payload, peer_id)
     );
 }
 
 void Node::send_rpc(InstallSnapshotReqPayload&& payload, NodeID peer_id) {
-    auto& el = loops_[peer_id % EVENT_LOOP_THREADS];
+    auto& el = loops_[peer_id & (EVENT_LOOP_THREADS - 1)];
     el->outbound_inbox.PushOne(
         std::make_unique<RaftMessage>(payload, peer_id)
     );
@@ -273,7 +303,7 @@ void Node::send_arm_timers() {
     if (!leader.load(std::memory_order_acquire)) return; // not leader; don't send
     for (auto& el : loops_) {
         for (auto& [id, conn] : el->peer_conns) {
-            auto& el = loops_[id % EVENT_LOOP_THREADS];
+            auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
             el->outbound_inbox.PushOne(
                 std::make_unique<RaftMessage>(
                     ArmTimerPayload{
@@ -290,7 +320,7 @@ inline void Node::send_disarm_timers() {
     if (leader.load(std::memory_order_acquire)) return; // leader; don't run
     for (auto& el : loops_) {
         for (auto& [id, conn] : el->peer_conns) {
-            auto& el = loops_[id % EVENT_LOOP_THREADS];
+            auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
             el->outbound_inbox.PushOne(
                 std::make_unique<RaftMessage>(
                     DisarmTimerPayload{}, id

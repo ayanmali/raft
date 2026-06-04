@@ -193,9 +193,13 @@ void EventLoop::DropPeer(PeerConn& p) {
 // }
 
 /* called when draining the messages in the event loop's MPSC inbox. */
-VoidExpected EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID peer_id) {
+VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID peer_id) {
     auto it = peer_conns.find(peer_id);
-    if (it == peer_conns.end()) return; // message gets dropped
+    if (it == peer_conns.end()) {
+        return UnexpectedF(
+            std::format("peer id {} not found\n", peer_id)
+        );
+    } // message gets dropped
     PeerConn& p = it->second;
 
     // serialize bytes into peer outbox
@@ -218,9 +222,13 @@ VoidExpected EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID p
     }
 }
 
-VoidExpected EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID peer_id) {
+VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID peer_id) {
     auto it = peer_conns.find(peer_id);
-    if (it == peer_conns.end()) return; // message gets dropped
+    if (it == peer_conns.end()) {
+        return UnexpectedF(
+            std::format("peer id {} not found\n", peer_id)
+        );
+    } // message gets dropped
     PeerConn& p = it->second;
 
     // serialize bytes into peer outbox
@@ -243,9 +251,13 @@ VoidExpected EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID pee
     }
 }
 
-VoidExpected EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeID peer_id) {
+VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeID peer_id) {
     auto it = peer_conns.find(peer_id);
-    if (it == peer_conns.end()) return; // message gets dropped
+    if (it == peer_conns.end()) {
+        return UnexpectedF(
+            std::format("peer id {} not found\n", peer_id)
+        );
+    } // message gets dropped
     PeerConn& p = it->second;
 
     // serialize bytes into peer outbox
@@ -298,9 +310,13 @@ void EventLoop::disarm_peer_timer(NodeID peer_id) {
     ::timerfd_settime(p.timer_fd, 0, &zero, nullptr);
 }
 
-VoidExpected EventLoop::post_reply(AppendEntriesRespPayload& payload, NodeID client_id) {
+VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload, NodeID client_id) {
     auto it = client_conns.find(client_id);
-    if (it == client_conns.end()) return; // message gets dropped
+    if (it == client_conns.end()) {
+        return UnexpectedF(
+            std::format("client id {} not found\n", client_id)
+        );
+    } // message gets dropped
     ClientConn* c = it->second;
     //++c.pending_tasks;
 
@@ -315,9 +331,13 @@ VoidExpected EventLoop::post_reply(AppendEntriesRespPayload& payload, NodeID cli
     }
 }
 
-VoidExpected EventLoop::post_reply(RequestVoteRespPayload& payload, NodeID client_id) {
+VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload, NodeID client_id) {
     auto it = client_conns.find(client_id);
-    if (it == client_conns.end()) return; // message gets dropped
+    if (it == client_conns.end()) {
+        return UnexpectedF(
+            std::format("client id {} not found\n", client_id)
+        );
+    } // message gets dropped
     ClientConn* c = it->second;
     //++c.pending_tasks;
 
@@ -332,9 +352,13 @@ VoidExpected EventLoop::post_reply(RequestVoteRespPayload& payload, NodeID clien
     }
 }
 
-VoidExpected EventLoop::post_reply(InstallSnapshotRespPayload& payload, NodeID client_id) {
+VoidExpectedF EventLoop::post_reply(InstallSnapshotRespPayload& payload, NodeID client_id) {
     auto it = client_conns.find(client_id);
-    if (it == client_conns.end()) return; // message gets dropped
+    if (it == client_conns.end()) {
+        return UnexpectedF(
+            std::format("client id {} not found\n", client_id)
+        );
+    } // message gets dropped
     ClientConn* c = it->second;
     //++c.pending_tasks;
 

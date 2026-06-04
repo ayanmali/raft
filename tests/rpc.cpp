@@ -4,8 +4,15 @@
 int main() {
     std::cout << "Testing RPC correctness\n";
     NodeInbox ni{};
-    Node node(ni);
-    node.main_loop();
+    std::expected<std::unique_ptr<Node>, std::string> n = Node::CreateNode(ni);
+    if (!n) {
+        #ifdef DEBUG
+        std::cout << n.error() << "\n";
+        #endif
+        return 1;
+    }
+    std::unique_ptr<Node> node = std::move(n.value());
+    n.value()->MainLoop();
 
     std::cout << "Test Passed\n";
 }

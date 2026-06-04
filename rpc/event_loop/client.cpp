@@ -43,7 +43,7 @@ VoidExpected EventLoop::Accept() {
         VoidExpected client_fd_ok = register_fd(fd, c->epoll_events);
         if (!client_fd_ok) {
             #ifdef DEBUG
-            std::cout << client_fd_ok.error() << "\n";
+            std::cout << "error accepting client connection:\n" << client_fd_ok.error() << "\n";
             #endif
             ::close(fd);
             client_slab.Release(c);
@@ -54,7 +54,7 @@ VoidExpected EventLoop::Accept() {
     }
 }
 
-void EventLoop::OnClientWritable(ClientConn* c) {
+VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
     while (c->wbuf_offset < c->wbuf.size()) {
         ssize_t n = ::send(
             c->fd,
@@ -88,7 +88,11 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
         ssize_t n = ::recv(c->fd, c->rbuf.data() + old, RECV_CHUNK, 0);
 
         if (n > 0) { c->rbuf.resize(old + n); continue; }
-        if (n == 0) { c->rbuf.resize(old); CloseClient(c); return; }
+        if (n == 0) {
+            c->rbuf.resize(old);
+            CloseClient(c);
+            break;
+        }
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) break;
 
@@ -103,7 +107,7 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
         auto [request_raw, rpc_id] = parse_rbuf(c); // erases the read bytes in rbuf
         if (!request_raw) {
             //CloseClient(c);
-            return request_raw;
+            return Unexpected(request_raw.error());
         }
         RpcRequest& req = request_raw.value();
         post_node_inbox(req, c->id);

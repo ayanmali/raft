@@ -79,7 +79,7 @@ struct SPSCQueue {
             callback(std::move(item));
             ++total;
         }
-        
+
         return total;
     }
 

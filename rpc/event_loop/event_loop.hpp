@@ -21,10 +21,7 @@ One event loop runs on one thread.
 */
 struct EventLoop {
     public:
-    EventLoop(FD listen_fd,
-              size_t inbound_cap,
-              NodeInbox& node_inbox_,
-              size_t this_id_);
+    static std::expected<std::unique_ptr<EventLoop>, std::string> CreateEventLoop(FD listen_fd, size_t inbound_cap, NodeInbox& node_inbox, size_t this_id_);
     ~EventLoop();
     EventLoop(const EventLoop&) = delete;
     EventLoop& operator=(const EventLoop&) = delete;
@@ -37,8 +34,10 @@ struct EventLoop {
 
     std::unordered_map<NodeID, PeerConn> peer_conns;
 
-    private:
     std::atomic<bool> stopped{false};
+
+    private:
+    EventLoop(FD listen_fd, size_t inbound_cap, NodeInbox&, size_t this_id);
     std::atomic<bool> wake_armed{false};
 
     FD epoll_fd = -1;
@@ -67,18 +66,18 @@ struct EventLoop {
     VoidExpected modify_client_interest(ClientConn* c, uint32_t events);
     VoidExpected modify_peer_interest(PeerConn& p, uint32_t events);
 
-    VoidExpected post_inflight(AppendEntriesReqPayload& payload, NodeID peer_id);
-    VoidExpected post_inflight(RequestVoteReqPayload& payload, NodeID peer_id);
-    VoidExpected post_inflight(InstallSnapshotReqPayload& payload, NodeID peer_id);
+    VoidExpectedF post_inflight(AppendEntriesReqPayload& payload, NodeID peer_id);
+    VoidExpectedF post_inflight(RequestVoteReqPayload& payload, NodeID peer_id);
+    VoidExpectedF post_inflight(InstallSnapshotReqPayload& payload, NodeID peer_id);
 
-    VoidExpected post_reply(AppendEntriesRespPayload& payload, NodeID client_id);
-    VoidExpected post_reply(RequestVoteRespPayload& payload, NodeID client_id);
-    VoidExpected post_reply(InstallSnapshotRespPayload& payload, NodeID client_id);
+    VoidExpectedF post_reply(AppendEntriesRespPayload& payload, NodeID client_id);
+    VoidExpectedF post_reply(RequestVoteRespPayload& payload, NodeID client_id);
+    VoidExpectedF post_reply(InstallSnapshotRespPayload& payload, NodeID client_id);
 
     // inbound messaging
-    void Accept();
-    void OnClientReadable(ClientConn* c);
-    void OnClientWritable(ClientConn* c);
+    VoidExpected Accept();
+    VoidExpected OnClientReadable(ClientConn* c);
+    VoidExpected OnClientWritable(ClientConn* c);
     void CloseClient(ClientConn* c);
     void ReapClient(ClientConn* c);
 

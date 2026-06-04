@@ -5,42 +5,38 @@
 #include <iostream>
 #endif
 
-EventLoop::EventLoop(FD listen_fd,
-                    size_t inbound_cap,
-                    NodeInbox& node_inbox_, size_t this_id_)
-: listen_fd(listen_fd),
-  client_slab(inbound_cap),
-  node_inbox(node_inbox_),
-  this_id(this_id_) {
-    epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
-    if (epoll_fd < 0) throw std::runtime_error("epoll_create1 failed");
+EventLoop::EventLoop(FD listen_fd, size_t inbound_cap, NodeInbox& node_inbox, size_t this_id) :
+listen_fd{listen_fd},
+client_slab{inbound_cap},
+node_inbox{node_inbox},
+this_id{this_id}
+{}
 
-    event_fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (event_fd < 0) throw std::runtime_error("eventfd failed");
+std::expected<std::unique_ptr<EventLoop>, std::string> EventLoop::CreateEventLoop(FD listen_fd, size_t inbound_cap, NodeInbox& node_inbox, size_t this_id) {
+    auto loop = std::unique_ptr<EventLoop>(new EventLoop(listen_fd, inbound_cap, node_inbox, this_id));
 
-    set_nonblocking(listen_fd);
-    register_fd(listen_fd, EPOLLIN | EPOLLET);
-    register_fd(event_fd, EPOLLIN | EPOLLET );
+    loop->epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
+    if (loop->epoll_fd < 0) return Unexpected("epoll_create1 failed");
 
-    // TODO: initialize peers in the Node constructor. move this to the EventLoop initialization in Node
-    // peer_conns.reserve(peers.size());
-    // for (const auto& pe : peers) {
-    //     PeerConn pc;
-    //     pc.peer_id = pe.id;
-    //     pc.ip      = pe.ip;
-    //     pc.port    = pe.port;
-    //     pc.next_index = 0;
-    //     pc.match_index = 0;
+    loop->event_fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (loop->event_fd < 0) return Unexpected("eventfd failed");
 
-    //     pc.timer_fd = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-    //     if (pc.timer_fd < 0) throw std::runtime_error("timerfd_create");
-    //     register_fd(pc.timer_fd, EPOLLIN);
-    //     peer_timer_to_id[pc.timer_fd] = pe.id;
+    VoidExpected non_blocking_ok = loop->set_nonblocking(loop->listen_fd);
+    if (!non_blocking_ok) return UnexpectedF(
+        std::format("error initializing event loop:\n{}\n", non_blocking_ok.error())
+    );
 
-    //     peer_conns.emplace(pe.id, std::move(pc));
+    VoidExpected register_ok = loop->register_fd(loop->listen_fd, EPOLLIN | EPOLLET);
+    if (!register_ok) return UnexpectedF(
+        std::format("error initializing event loop; listen fd registration failed:\n{}\n", register_ok.error())
+    );
 
-    // }
-};
+    register_ok = loop->register_fd(loop->event_fd, EPOLLIN | EPOLLET );
+    if (!register_ok) return UnexpectedF(
+        std::format("error initializing event loop; event fd registration failed:\n{}\n", register_ok.error())
+    );
+    return loop;
+}
 
 EventLoop::~EventLoop() {
     if (epoll_fd >= 0) ::close(epoll_fd);
@@ -117,7 +113,8 @@ VoidExpected EventLoop::Run() {
                 #ifdef DEBUG
                 std::cout << "accepting new client connection\n";
                 #endif
-                Accept();
+                VoidExpected accept_ok = Accept();
+                if (!accept_ok) std::cout << "failed to accept new client connection; skipping:\n" << accept_ok.error() << "\n";
                 continue;
             }
             if (fd == event_fd) {
@@ -131,6 +128,9 @@ VoidExpected EventLoop::Run() {
             if (auto it = client_fd_to_id.find(fd); it != client_fd_to_id.end()) {
                 ClientConn* c = client_conns.at(it->second);
                 if (e & EPOLLERR | EPOLLHUP | EPOLLRDHUP) {
+                    #ifdef DEBUG
+                    std::cout << "epoll error found for client " << it->second << ":\n";
+                    #endif
                     CloseClient(c);
                     continue;
                 }
@@ -138,13 +138,25 @@ VoidExpected EventLoop::Run() {
                     #ifdef DEBUG
                     std::cout << "new client message from client " << c->id << "\n";
                     #endif
-                    OnClientReadable(c);
+                    VoidExpected readable_ok = OnClientReadable(c);
+                    if (!readable_ok) {
+                        #ifdef DEBUG
+                        std::cout << "failed to read incoming client message:\n" << readable_ok.error() << "\n";
+                        #endif
+                        continue;
+                    }
                 }
                 if (e & EPOLLOUT) {
                     #ifdef DEBUG
                     std::cout << "ready to send reply to client " << c->id << "\n";
                     #endif
-                    OnClientWritable(c);
+                    VoidExpected writable_ok = OnClientWritable(c);
+                    if (!writable_ok) {
+                        #ifdef DEBUG
+                        std::cout << "failed to write to client socket:\n" << writable_ok.error() << "\n";
+                        #endif
+                        continue;
+                    }
                 }
                 continue;
             }
@@ -162,15 +174,25 @@ VoidExpected EventLoop::Run() {
                     #ifdef DEBUG
                     std::cout << "obtained reply from peer " << p.peer_id << "\n";
                     #endif
-                    VoidExpected peer_readable_ok = OnPeerReadable(p);
-                    return peer_readable_ok;
+                    VoidExpected readable_ok = OnPeerReadable(p);
+                    if (!readable_ok) {
+                        #ifdef DEBUG
+                        std::cout << "failed to read incoming peer reply:\n" << readable_ok.error() << "\n";
+                        #endif
+                        continue;
+                    }
                 }
                 if (e & EPOLLOUT) {
                     #ifdef DEBUG
                     std::cout << "ready to send RPC to peer " << p.peer_id << "\n";
                     #endif
-                    VoidExpected peer_writable_ok = OnPeerWritable(p);
-                    return peer_writable_ok;
+                    VoidExpected writable_ok = OnPeerWritable(p);
+                    if (!writable_ok) {
+                        #ifdef DEBUG
+                        std::cout << "failed to write RPC to peer socket:\n" << writable_ok.error() << "\n";
+                        #endif
+                        continue;
+                    }
                 }
                 continue;
             }
@@ -182,7 +204,12 @@ VoidExpected EventLoop::Run() {
                     std::cout << "timer fd fired for peer " << p.peer_id << "\n";
                     #endif
                     VoidExpected peer_timer_ok = OnPeerTimer(p);
-                    return peer_timer_ok;
+                    if (!peer_timer_ok) {
+                        #ifdef DEBUG
+                        std::cout << "failed to post heartbeat payload to node inbox:\n" << peer_timer_ok.error() << "\n";
+                        #endif
+                        continue;
+                    }
                 }
             }
         }
