@@ -5,7 +5,7 @@
 #include <sys/timerfd.h>
 
 VoidExpected EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
-    if (p.epoll_events == events) return;
+    if (p.epoll_events == events) return {};
     epoll_event ev{};
     ev.events  = events;
     ev.data.fd = p.fd;
@@ -14,6 +14,7 @@ VoidExpected EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
         return Unexpected("Error modifying epoll events for peer fd");
     }
     p.epoll_events = events;
+    return {};
 }
 
 VoidExpected EventLoop::StartConnect(PeerConn& p) {
@@ -56,6 +57,7 @@ VoidExpected EventLoop::StartConnect(PeerConn& p) {
     peer_fd_to_id[fd] = p.peer_id;
     // TODO: configure per-peer hearbeat timer fds
     // peer_timer_to_id[p.timer_fd] = p.peer_id;
+    return {};
 }
 
 VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
@@ -69,7 +71,7 @@ VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
         out.reply.resize(old + RECV_CHUNK);
         ssize_t n = ::recv(p.fd, out.reply.data() + old, RECV_CHUNK, 0);
         if (n > 0) { out.reply.resize(old + n); continue; }
-        if (n == 0) { out.reply.resize(old); DropPeer(p); return; }
+        if (n == 0) { out.reply.resize(old); return {}; }
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) break;
         DropPeer(p);
@@ -88,7 +90,7 @@ VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
 
         p.outbox.pop_front();
     }
-
+    return {};
 }
 
 VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
@@ -114,7 +116,7 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
             MSG_NOSIGNAL);
         if (n > 0) { out.bytes_sent += static_cast<size_t>(n); continue; }
         if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return {};
         DropPeer(p);
         return Unexpected("unknown error after writing to peer socket\n");
     }
@@ -132,10 +134,11 @@ VoidExpected EventLoop::OnPeerTimer(PeerConn& p) {
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
         return Unexpected("error attempting to read peer timer fd\n");
     }
-    if (n != sizeof(expirations) || expirations == 0) return;
+    if (n != sizeof(expirations) || expirations == 0) return {};
 
     RpcRequest req = HeartbeatTimeoutPayload{};
     post_node_inbox(req, p.peer_id);
+    return {};
 }
 
 void EventLoop::DropPeer(PeerConn& p) {
@@ -211,15 +214,16 @@ VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID 
     if (p.state == PeerConn::State::Disconnected) {
         VoidExpected connect_ok = StartConnect(p);
         if (!connect_ok) {
-            return connect_ok;
+            return UnexpectedF(connect_ok.error());
         }
     }
     else if (p.state == PeerConn::State::Connected) {
         VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
         if (!modify_ok) {
-            return modify_ok;
+            return UnexpectedF(modify_ok.error());
         }
     }
+    return {};
 }
 
 VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID peer_id) {
@@ -240,15 +244,16 @@ VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID pe
     if (p.state == PeerConn::State::Disconnected) {
         VoidExpected connect_ok = StartConnect(p);
         if (!connect_ok) {
-            return connect_ok;
+            return UnexpectedF(connect_ok.error());
         }
     }
     else if (p.state == PeerConn::State::Connected) {
         VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
         if (!modify_ok) {
-            return modify_ok;
+            return UnexpectedF(modify_ok.error());
         }
     }
+    return {};
 }
 
 VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeID peer_id) {
@@ -269,15 +274,16 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeI
     if (p.state == PeerConn::State::Disconnected) {
         VoidExpected connect_ok = StartConnect(p);
         if (!connect_ok) {
-            return connect_ok;
+            return UnexpectedF(connect_ok.error());
         }
     }
     else if (p.state == PeerConn::State::Connected) {
         VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
         if (!modify_ok) {
-            return modify_ok;
+            return UnexpectedF(modify_ok.error());
         }
     }
+    return {};
 }
 
 void EventLoop::arm_peer_timer(ArmTimerPayload payload,
@@ -326,9 +332,10 @@ VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload, NodeID cl
     if (c->wbuf_offset < c->wbuf.size()) {
         VoidExpected modify_ok = modify_client_interest(c, c->epoll_events | EPOLLOUT);
         if (!modify_ok) {
-            return modify_ok;
+            return UnexpectedF(modify_ok.error());
         }
     }
+    return {};
 }
 
 VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload, NodeID client_id) {
@@ -347,9 +354,10 @@ VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload, NodeID clie
     if (c->wbuf_offset < c->wbuf.size()) {
         VoidExpected modify_ok = modify_client_interest(c, c->epoll_events | EPOLLOUT);
         if (!modify_ok) {
-            return modify_ok;
+            return UnexpectedF(modify_ok.error());
         }
     }
+    return {};
 }
 
 VoidExpectedF EventLoop::post_reply(InstallSnapshotRespPayload& payload, NodeID client_id) {
@@ -368,7 +376,8 @@ VoidExpectedF EventLoop::post_reply(InstallSnapshotRespPayload& payload, NodeID 
     if (c->wbuf_offset < c->wbuf.size()) {
         VoidExpected modify_ok = modify_client_interest(c, c->epoll_events | EPOLLOUT);
         if (!modify_ok) {
-            return modify_ok;
+            return UnexpectedF(modify_ok.error());
         }
     }
+    return {};
 }

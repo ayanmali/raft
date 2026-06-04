@@ -124,6 +124,7 @@ VoidExpected Node::setup_listen_socket(uint idx, addrinfo* res) {
         return Unexpected("listen failed");
     }
     listen_fds_[idx] = fd;
+    return {};
 }
 
 void Node::MainLoop() {

@@ -7,7 +7,7 @@
 #endif
 
 VoidExpected EventLoop::modify_client_interest(ClientConn* c, uint32_t events) {
-    if (c->epoll_events == events) return;
+    if (c->epoll_events == events) return {};
     epoll_event ev{};
     ev.events  = events;
     ev.data.fd = c->fd;
@@ -16,6 +16,7 @@ VoidExpected EventLoop::modify_client_interest(ClientConn* c, uint32_t events) {
         return Unexpected("Error modifying events for client fd");
     }
     c->epoll_events = events;
+    return {};
 }
 
 VoidExpected EventLoop::Accept() {
@@ -28,9 +29,9 @@ VoidExpected EventLoop::Accept() {
         FD fd = ::accept4(listen_fd, reinterpret_cast<sockaddr*>(&peer),
                           &plen, SOCK_NONBLOCK | SOCK_CLOEXEC);
         if (fd < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return {};
             if (errno == EINTR) continue;
-            return; // transient errors: drop and try again on next epoll wake
+            return {}; // transient errors: drop and try again on next epoll wake
         }
 
         int yes = 1;
@@ -52,6 +53,7 @@ VoidExpected EventLoop::Accept() {
         client_fd_to_id[fd] = c->id;
         client_conns.emplace(c->id, c);
     }
+    return {};
 }
 
 VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
@@ -63,9 +65,9 @@ VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
             MSG_NOSIGNAL);
         if (n > 0) { c->wbuf_offset += static_cast<size_t>(n); continue; }
         if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return {};
         CloseClient(c);
-        return;
+        return {};
     }
     c->wbuf.clear();
     c->wbuf_offset = 0;
@@ -114,7 +116,7 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
 
         if (c->rbuf.size() == before) break; // need more bytes
     }
-
+    return {};
 }
 
 void EventLoop::CloseClient(ClientConn* c) {

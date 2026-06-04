@@ -73,6 +73,7 @@ VoidExpected EventLoop::set_nonblocking(FD fd) {
     if (::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
         return Unexpected("fcntl F_SETFL O_NONBLOCK failed");
     }
+    return {};
 }
 
 VoidExpected EventLoop::register_fd(FD fd, uint32_t events) {
@@ -82,6 +83,7 @@ VoidExpected EventLoop::register_fd(FD fd, uint32_t events) {
     if (::epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
         return Unexpected("epoll_ctl ADD failed");
     }
+    return {};
 }
 
 VoidExpected EventLoop::Run() {
@@ -127,7 +129,7 @@ VoidExpected EventLoop::Run() {
 
             if (auto it = client_fd_to_id.find(fd); it != client_fd_to_id.end()) {
                 ClientConn* c = client_conns.at(it->second);
-                if (e & EPOLLERR | EPOLLHUP | EPOLLRDHUP) {
+                if (e & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                     #ifdef DEBUG
                     std::cout << "epoll error found for client " << it->second << ":\n";
                     #endif
@@ -214,6 +216,7 @@ VoidExpected EventLoop::Run() {
             }
         }
     }
+    return {};
 }
 
 /* Cross-thread messaging */
