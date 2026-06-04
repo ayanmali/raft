@@ -267,4 +267,6 @@ struct PeerConn {
     // only applicable when the current node is a leader
     uint32_t next_index    = 0;
     uint32_t match_index   = 0;
+
+    PeerConn(const char* ip_, const char* port_, NodeID peer_id_) : ip{ip_}, port{port_}, peer_id{peer_id_} {}
 };

@@ -12,7 +12,7 @@ int main() {
         return 1;
     }
     std::unique_ptr<Node> node = std::move(n.value());
-    n.value()->MainLoop();
+    node->MainLoop();
 
     std::cout << "Test Passed\n";
 }

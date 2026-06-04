@@ -31,18 +31,6 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     }();
     (void)sigpipe_ignored;
 
-    // Build peer table. setup_peers() returns null-terminated string
-    // literals (constexpr static storage), so .data() pointers stay
-    // valid for the lifetime of the process.
-    // TODO: delete or move this
-    // auto init_peers = setup_peers();
-    // peers_.reserve(init_peers.size());
-    // NodeID id = 0;
-    // for (const auto& ip_sv : init_peers) {
-    //     peers_.push_back(PeerInfo{id, ip_sv.data(), SERVER_PORT});
-    //     ++id;
-    // }
-
     // Randomized election timeout per Raft spec.
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -81,8 +69,8 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         }
         n->loops_[i] = std::move(loop_ok.value());
 
-        n->threads_[i] = std::thread([&n, i] {
-            VoidExpected loop_ok = n->loops_[i]->Run();
+        n->threads_[i] = std::thread([ptr = n.get(), i] {
+            VoidExpected loop_ok = ptr->loops_[i]->Run();
             #ifdef DEBUG
             std::cout << "event loop " << i << " crashed:\n" << loop_ok.error() << "\n";
             #endif
@@ -90,6 +78,19 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     }
 
     n->running_ = true;
+
+    auto init_peers = setup_peers();
+    int i{0};
+    for (const auto& addr : init_peers) {
+        VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
+            ->AddPeer(addr, CLIENT_PORT);
+        if (!add_peer_ok) {
+            return UnexpectedF(
+                std::format("error creating node:\n{}\n", add_peer_ok.error())
+            );
+        }
+        ++i;
+    }
     return n;
 }
 

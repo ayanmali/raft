@@ -29,6 +29,7 @@ struct EventLoop {
     VoidExpected Run();
     void Stop(); // event loop can be stopped via a signal on the event fd
     void Wake();
+    VoidExpectedF AddPeer(const char* ip_addr, const char* port);
 
     SPSCQueue<std::unique_ptr<RaftMessage>, INBOX_RING_CAP> outbound_inbox{};
 
@@ -50,7 +51,7 @@ struct EventLoop {
     ClientConnSlab client_slab;
     std::unordered_map<ClientID, ClientConn*> client_conns;
     std::unordered_map<FD, ClientID> client_fd_to_id;
-    ClientID next_conn_id = 1;
+    ClientID next_conn_id = 0;
 
     size_t this_id;
 
@@ -58,7 +59,7 @@ struct EventLoop {
 
     std::unordered_map<FD, NodeID> peer_fd_to_id;
     std::unordered_map<FD, NodeID> peer_timer_fd_to_id; // for heartbeats
-    NodeID next_peer_id = 1;
+    NodeID next_peer_id = 0;
 
     // ---- helpers ----
     static VoidExpected set_nonblocking(FD fd);

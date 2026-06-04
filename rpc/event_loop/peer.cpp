@@ -17,6 +17,16 @@ VoidExpected EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
     return {};
 }
 
+VoidExpectedF EventLoop::AddPeer(const char* ip_addr, const char* port) {
+    PeerConn p1{ip_addr, port, next_peer_id};
+    peer_conns.insert({next_peer_id, PeerConn{ip_addr, port, next_peer_id}});
+    PeerConn& p = peer_conns.at(next_peer_id);
+    ++next_peer_id;
+    VoidExpected connect_ok = StartConnect(p);
+    if (!connect_ok) return UnexpectedF(std::format("error adding peer to configuration:\n{}\n", connect_ok.error()));
+    return {};
+}
+
 VoidExpected EventLoop::StartConnect(PeerConn& p) {
     addrinfo hints{};
     hints.ai_family   = AF_INET;
@@ -42,7 +52,6 @@ VoidExpected EventLoop::StartConnect(PeerConn& p) {
     if (rc < 0 && errno != EINPROGRESS) { ::close(fd); return Unexpected("Failed to connect socket"); }
 
     p.fd            = fd;
-    p.peer_id       = p.peer_id > 0 ? p.peer_id : next_peer_id++; // if this peer is already apart of the configuration, keep its ID the same. If it's new, assign it an ID.
     p.state         = PeerConn::State::Connecting;
     p.epoll_events  = EPOLLOUT | EPOLLRDHUP | EPOLLET;
 
