@@ -164,6 +164,11 @@ VoidExpected EventLoop::OnPeerTimer(PeerConn& p) {
     return {};
 }
 
+void EventLoop::OnElectionTimeout() {
+    RpcRequest req{ElectionTimeoutPayload{}};
+    post_node_inbox(req, 0);
+}
+
 void EventLoop::DropPeer(PeerConn& p) {
     if (p.fd >= 0) {
         ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, p.fd, nullptr);
@@ -318,7 +323,7 @@ void EventLoop::arm_peer_timer(NodeID peer_id) {
     // expiration lands `period` from now; subsequent ones fire at the
     // same cadence until disarmed.
     constexpr long NS_PER_SEC = 1'000'000'000;
-    const long ns = period;
+    const long ns = heartbeat_period;
     itimerspec spec{};
     spec.it_value.tv_sec  = ns / NS_PER_SEC;
     spec.it_value.tv_nsec = ns % NS_PER_SEC;

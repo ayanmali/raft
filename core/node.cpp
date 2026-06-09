@@ -3,7 +3,6 @@
 // =============================================================================
 
 #include "node.hpp"
-#include <atomic>
 #include <csignal>
 #include <random>
 #ifdef DEBUG
@@ -35,40 +34,23 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> distrib(MIN_ELECTION_TIMEOUT_MS, MAX_ELECTION_TIMEOUT_MS);
-    n->election_timeout_ = std::chrono::milliseconds(distrib(gen));
-
-    addrinfo hints{};
-    hints.ai_family   = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags    = AI_PASSIVE;
-
-    addrinfo* res = nullptr;
-    if (::getaddrinfo(nullptr, SERVER_PORT, &hints, &res) != 0 || res == nullptr) {
-        return Unexpected("getaddrinfo failed");
-    }
-    std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> res_guard(res, &::freeaddrinfo);
+    //n->election_timeout_ = std::chrono::milliseconds(distrib(gen));
+    const long election_timeout = distrib(gen);
 
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
-        VoidExpected socket_ok = n->setup_listen_socket(i, res);
-        if (!socket_ok) {
-            return UnexpectedF(
-                std::format("error setting up socket {}:\n{}\n", i, socket_ok.error())
-            );
-        }
-
-        std::expected<std::unique_ptr<EventLoop>, std::string> loop_ok = EventLoop::CreateEventLoop(
-            n->listen_fds_[i],
+        std::expected<std::unique_ptr<EventLoop>, std::string> loop_raw = EventLoop::CreateEventLoop(
             MAX_SERVER_CONNS,
             inbox,
             i,
-            HEARTBEAT_INTERVAL
+            HEARTBEAT_INTERVAL,
+            election_timeout
         );
-        if (!loop_ok){
+        if (!loop_raw){
             return UnexpectedF(
-                std::format("error creating event loop {}:\n{}\n", i, loop_ok.error())
+                std::format("error creating event loop {}:\n{}\n", i, loop_raw.error())
             );
         }
-        n->loops_[i] = std::move(loop_ok.value());
+        n->loops_[i] = std::move(loop_raw.value());
 
         n->threads_[i] = std::thread([ptr = n.get(), i] {
             VoidExpected loop_ok = ptr->loops_[i]->Run();
@@ -97,36 +79,6 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
 
 Node::~Node() {
     Stop();
-    for (int i = 0; i < EVENT_LOOP_THREADS; ++i) {
-        FD fd{listen_fds_[i]};
-        if (fd >= 0) { ::close(fd); fd = -1; }
-    }
-}
-
-VoidExpected Node::setup_listen_socket(uint idx, addrinfo* res) {
-    FD fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (fd < 0) return Unexpected("socket failed");
-
-    int yes = 1;
-    // SO_REUSEPORT must be set BEFORE bind() so that all N sockets
-    // bound to the same port are members of the same SO_REUSEPORT
-    // group; the kernel then load-balances incoming connections
-    // across them.
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-
-    addrinfo* p = nullptr;
-    for (p = res; p; p = p->ai_next) {
-        if (::bind(fd, p->ai_addr, p->ai_addrlen) == 0) break;
-    }
-    if (!p) { ::close(fd); return Unexpected("bind failed"); }
-    if (::listen(fd, SERVER_BACKLOG) != 0) {
-        ::close(fd);
-        return Unexpected("listen failed");
-    }
-    listen_fds_[idx] = fd;
-    return {};
 }
 
 void Node::MainLoop() {
@@ -246,6 +198,13 @@ void Node::MainLoop() {
                     if (leader.load(std::memory_order_acquire)) {
                         send_rpc(AppendEntriesReqPayload{current_term}, client_id);
                     }
+                }
+                else if constexpr (std::is_same_v<T, ElectionTimeoutPayload>) {
+                    #ifdef DEBUG
+                    std::cout << "found election timeout...\n";
+                    #endif
+                    // start election
+
                 }
                 else if constexpr (std::is_same_v<T, ArmTimerPayload> || std::is_same_v<T, DisarmTimerPayload>) {
                     // These are control messages sent to event loops, not handled by Node.

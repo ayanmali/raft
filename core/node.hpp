@@ -35,7 +35,6 @@ Persistence:
 #include "../rpc/conns.hpp"
 #include "../rpc/event_loop/event_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
-#include "../errors.hpp"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -107,7 +106,6 @@ public:
     NodeInbox& inbox;
     // ---- transport ----
     // TODO: replace AoS EventLoop w/ SoA pattern
-    std::array<FD, EVENT_LOOP_THREADS>                              listen_fds_{};
     std::array<std::unique_ptr<EventLoop>, EVENT_LOOP_THREADS>      loops_;
     std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
     bool                                                            running_ = false;
@@ -125,16 +123,12 @@ public:
     std::chrono::milliseconds                      election_timeout_;
     // ---- setup helpers ----
 
-    // Creates N listening sockets, all bound to SERVER_PORT via
-    // SO_REUSEPORT. Sockets are non-blocking, CLOEXEC, TCP_NODELAY.
-    VoidExpected setup_listen_socket(uint idx, addrinfo*);
-
     // Constructs the RpcHandlers struct (member-fn lambdas) the loops
     // dispatch to on inbound requests.
     // RpcHandlers make_handlers();
     //
     Node(NodeInbox&);
-    void tick_peer(NodeID peer_id);
+    //void tick_peer(NodeID peer_id);
 
     // std::expected<RpcReply, const char*> handle_append_entries_req(const RpcRequest& message);
     // std::expected<RpcReply, const char*> handle_request_vote_req(const RpcRequest& message);

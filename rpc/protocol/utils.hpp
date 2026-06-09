@@ -9,14 +9,14 @@
 #include <variant>
 
 #define ntohll(x) (((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
-#define htonll(x) (((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))   
+#define htonll(x) (((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
 
 static constexpr uint32_t MAX_VECTOR_SIZE_SANITY = 8192;
 struct ByteReader;
 
-using RpcRequest = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimerPayload, DisarmTimerPayload, HeartbeatTimeoutPayload>;
+using RpcRequest = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimerPayload, DisarmTimerPayload, HeartbeatTimeoutPayload, ElectionTimeoutPayload>;
 using RpcReply = std::variant<AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload>;
-using RpcMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimerPayload, DisarmTimerPayload, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeoutPayload>;
+using RpcMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimerPayload, DisarmTimerPayload, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeoutPayload, ElectionTimeoutPayload>;
 
 using ParserFunc = std::expected<RpcRequest, const char*>(*)(ByteReader&);
 using HandlerFunc = std::expected<RpcReply, const char*>(*)(const RpcRequest& message);
@@ -24,7 +24,7 @@ using ReplyParserFunc = std::expected<RpcReply, const char*>(*)(ByteReader&);
 
 struct ByteReader {
     public:
-    explicit ByteReader(std::span<const std::byte> bytes) 
+    explicit ByteReader(std::span<const std::byte> bytes)
         : ptr(bytes.data()), end(bytes.data() + bytes.size_bytes()) {};
 
     template <typename T>
@@ -89,7 +89,7 @@ struct ByteReader {
         ptr += size * sizeof(std::byte);
         return true;
     }
-    
+
     private:
     const std::byte* ptr;
     const std::byte* end;
@@ -142,7 +142,7 @@ struct ByteWriter {
         ptr += sizeof(net_prev_log_term);
 
         std::memcpy(buf.data() + ptr, &net_leader_commit, sizeof(net_leader_commit));
-    
+
     };
 
     void serialize(const RequestVoteReqPayload& payload) {
@@ -172,7 +172,7 @@ struct ByteWriter {
         ptr += sizeof(net_last_log_idx);
 
         std::memcpy(buf.data() + ptr, &net_last_log_term, sizeof(net_last_log_term));
-        
+
     };
 
     void serialize(const InstallSnapshotReqPayload& payload) {
@@ -185,7 +185,7 @@ struct ByteWriter {
         auto net_last_included_term = htonl(payload.last_included_term);
         auto net_offset             = htonl(payload.offset);
         auto net_done               = htons(payload.done);
-        
+
         buf.reserve(msg_size + sizeof(msg_size) + sizeof(net_id));
         size_t ptr = 0;
 
@@ -217,7 +217,7 @@ struct ByteWriter {
         ptr += sizeof(net_offset);
 
         std::memcpy(buf.data() + ptr, &net_done, sizeof(net_done));
-    
+
     };
 
     void serialize(const AppendEntriesRespPayload& payload) {
@@ -281,7 +281,7 @@ struct ByteWriter {
 
         std::memcpy(buf.data() + ptr, &net_term, sizeof(net_term));
     }
-    
+
     private:
     std::vector<std::byte>& buf;
 };

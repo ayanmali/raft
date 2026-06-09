@@ -21,7 +21,7 @@ One event loop runs on one thread.
 */
 struct EventLoop {
     public:
-    static std::expected<std::unique_ptr<EventLoop>, std::string> CreateEventLoop(FD listen_fd, size_t inbound_cap, NodeInbox& node_inbox, size_t this_id_, long period_);
+    static std::expected<std::unique_ptr<EventLoop>, std::string> CreateEventLoop(size_t inbound_cap, NodeInbox& node_inbox, size_t this_id_, long heartbeat_period_, long election_timeout_period);
     ~EventLoop();
     EventLoop(const EventLoop&) = delete;
     EventLoop& operator=(const EventLoop&) = delete;
@@ -38,19 +38,18 @@ struct EventLoop {
     std::atomic<bool> stopped{false};
 
     private:
-    EventLoop(FD listen_fd, size_t inbound_cap, NodeInbox&, size_t this_id, long period);
+    ClientConnSlab client_slab;
+    std::unordered_map<ClientID, ClientConn*> client_conns;
+    std::unordered_map<FD, ClientID> client_fd_to_id;
     std::atomic<bool> wake_armed{false};
 
     FD epoll_fd = -1;
     FD listen_fd = -1;
     FD event_fd = -1;
+    FD election_timeout_timer_fd = -1;
 
     // Inbound
     NodeInbox& node_inbox; // incoming messages
-
-    ClientConnSlab client_slab;
-    std::unordered_map<ClientID, ClientConn*> client_conns;
-    std::unordered_map<FD, ClientID> client_fd_to_id;
 
     ClientID next_conn_id = 0;
 
@@ -62,8 +61,9 @@ struct EventLoop {
     std::unordered_map<FD, NodeID> peer_timer_fd_to_id; // for heartbeats
     NodeID next_peer_id = 0;
 
-    const long period;
+    const long heartbeat_period;
 
+    EventLoop(size_t inbound_cap, NodeInbox&, size_t this_id, long period);
     // ---- helpers ----
     static VoidExpected set_nonblocking(FD fd);
     VoidExpected register_fd(FD fd, uint32_t events);
@@ -79,6 +79,7 @@ struct EventLoop {
     VoidExpectedF post_reply(InstallSnapshotRespPayload& payload, NodeID client_id);
 
     // inbound messaging
+    VoidExpected setup_listen_socket();
     VoidExpected Accept();
     VoidExpected OnClientReadable(ClientConn* c);
     VoidExpected OnClientWritable(ClientConn* c);
@@ -97,6 +98,7 @@ struct EventLoop {
     void disarm_peer_timer(NodeID peer_id);
     void DrainInbox();
     void OnEventFd();
+    void OnElectionTimeout();
     void wake_eventfd_unconditional();
 
     bool post_node_inbox(RpcRequest& req, NodeID client_id);

@@ -1,52 +1,83 @@
 #include "./event_loop.hpp"
 #include <cstddef>
 #include <fcntl.h>
+#include <netdb.h>
+#include <netinet/tcp.h>
+#include <sys/timerfd.h>
 #ifdef DEBUG
 #include <iostream>
 #endif
 
-EventLoop::EventLoop(FD listen_fd, size_t inbound_cap, NodeInbox& node_inbox, size_t this_id, long period) :
-listen_fd{listen_fd},
+EventLoop::EventLoop(size_t inbound_cap, NodeInbox& node_inbox, size_t this_id, long heartbeat_period) :
 client_slab{inbound_cap},
 node_inbox{node_inbox},
 this_id{this_id},
-period{period}
+heartbeat_period{heartbeat_period}
 {}
 
-std::expected<std::unique_ptr<EventLoop>, std::string> EventLoop::CreateEventLoop(FD listen_fd, size_t inbound_cap, NodeInbox& node_inbox, size_t this_id, long period) {
-    auto loop = std::unique_ptr<EventLoop>(new EventLoop(listen_fd, inbound_cap, node_inbox, this_id, period));
+std::expected<std::unique_ptr<EventLoop>, std::string> EventLoop::CreateEventLoop(size_t inbound_cap, NodeInbox& node_inbox, size_t this_id, long heartbeat_period, long election_timeout_period) {
+    auto loop = std::unique_ptr<EventLoop>(new EventLoop(inbound_cap, node_inbox, this_id, heartbeat_period));
 
+    // Epoll fd
     loop->epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
     if (loop->epoll_fd < 0) return Unexpected("epoll_create1 failed");
 
-    loop->event_fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (loop->event_fd < 0) return Unexpected("eventfd failed");
-
+    // Listening socket
+    VoidExpected listen_ok = loop->setup_listen_socket();
+    if (!listen_ok) return Unexpected("listen socket could not be set up");
     VoidExpected non_blocking_ok = loop->set_nonblocking(loop->listen_fd);
     if (!non_blocking_ok) return UnexpectedF(
         std::format("error initializing event loop:\n{}\n", non_blocking_ok.error())
     );
-
     VoidExpected register_ok = loop->register_fd(loop->listen_fd, EPOLLIN | EPOLLET);
     if (!register_ok) return UnexpectedF(
         std::format("error initializing event loop; listen fd registration failed:\n{}\n", register_ok.error())
     );
 
-    register_ok = loop->register_fd(loop->event_fd, EPOLLIN | EPOLLET );
+    // Cross-thread event fd
+    loop->event_fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (loop->event_fd < 0) return Unexpected("eventfd failed");
+    register_ok = loop->register_fd(loop->event_fd, EPOLLIN | EPOLLET);
     if (!register_ok) return UnexpectedF(
         std::format("error initializing event loop; event fd registration failed:\n{}\n", register_ok.error())
     );
+
+    // only the event loop w/ ID = 0 handles election timeout logic.
+    if (this_id != 0) {
+        return {};
+    }
+
+    loop->election_timeout_timer_fd = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+    if (loop->election_timeout_timer_fd < 0) return Unexpected("timerfd_create failed");
+    register_ok = loop->register_fd(loop->election_timeout_timer_fd, EPOLLIN | EPOLLET);
+    if (!register_ok) return UnexpectedF(
+        std::format("error initializing event loop; election timeout timer fd registration failed:\n{}\n", register_ok.error())
+    );
+    // arm the timer
+
+    // Periodic timer: it_value == it_interval == period. The first
+    // expiration lands `period` from now; subsequent ones fire at the
+    // same cadence until disarmed.
+    constexpr long NS_PER_SEC = 1'000'000'000;
+    const long ns = election_timeout_period;
+    itimerspec spec{};
+    spec.it_value.tv_sec  = ns / NS_PER_SEC;
+    spec.it_value.tv_nsec = ns % NS_PER_SEC;
+    spec.it_interval      = spec.it_value;
+
+    ::timerfd_settime(loop->election_timeout_timer_fd, 0, &spec, nullptr);
+
     return loop;
 }
 
 EventLoop::~EventLoop() {
+    if (listen_fd >= 0) ::close(listen_fd);
     if (epoll_fd >= 0) ::close(epoll_fd);
     if (event_fd >= 0) ::close(event_fd);
     // Per-peer fds: close anything still live.
     for (auto& [id, p] : peer_conns) {
         if (p.fd >= 0) ::close(p.fd);
     }
-    // Listen fd is owned by Node.
 
 };
 
@@ -83,6 +114,43 @@ VoidExpected EventLoop::register_fd(FD fd, uint32_t events) {
     ev.data.fd = fd;
     if (::epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
         return Unexpected("epoll_ctl ADD failed");
+    }
+    return {};
+}
+
+VoidExpected EventLoop::setup_listen_socket() {
+    addrinfo hints{};
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags    = AI_PASSIVE;
+
+    addrinfo* res = nullptr;
+    // TODO: fix this?
+    if (::getaddrinfo(nullptr, SERVER_PORT, &hints, &res) != 0 || res == nullptr) {
+        return Unexpected("getaddrinfo failed");
+    }
+    std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> res_guard(res, &::freeaddrinfo);
+
+    listen_fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (listen_fd < 0) return Unexpected("socket failed");
+
+    int yes = 1;
+    // SO_REUSEPORT must be set BEFORE bind() so that all N sockets
+    // bound to the same port are members of the same SO_REUSEPORT
+    // group; the kernel then load-balances incoming connections
+    // across them.
+    ::setsockopt(listen_fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+    ::setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    ::setsockopt(listen_fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+
+    addrinfo* p = nullptr;
+    for (p = res; p; p = p->ai_next) {
+        if (::bind(listen_fd, p->ai_addr, p->ai_addrlen) == 0) break;
+    }
+    if (!p) { ::close(listen_fd); return Unexpected("bind failed"); }
+    if (::listen(listen_fd, SERVER_BACKLOG) != 0) {
+        ::close(listen_fd);
+        return Unexpected("listen failed");
     }
     return {};
 }
@@ -251,7 +319,7 @@ void EventLoop::DrainInbox() {
                 disarm_peer_timer(out->node_id);
             }
 
-            else if constexpr (std::is_same_v<T, HeartbeatTimeoutPayload>) {
+            else if constexpr (std::is_same_v<T, HeartbeatTimeoutPayload> || std::is_same_v<T, ElectionTimeoutPayload>) {
                 // This payload is only sent from EventLoop to Node.
             }
 
@@ -278,7 +346,6 @@ void EventLoop::OnEventFd() {
 
 bool EventLoop::post_node_inbox(RpcRequest& req, NodeID client_id) {
     int counter = 0;
-
 
     while (counter < MAX_ATTEMPTS) {
         bool res = node_inbox.Push(this_id, std::make_unique<RaftMessage>(std::visit([](auto&& payload) -> RpcMessage {
