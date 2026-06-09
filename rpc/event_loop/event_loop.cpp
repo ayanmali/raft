@@ -5,15 +5,16 @@
 #include <iostream>
 #endif
 
-EventLoop::EventLoop(FD listen_fd, size_t inbound_cap, NodeInbox& node_inbox, size_t this_id) :
+EventLoop::EventLoop(FD listen_fd, size_t inbound_cap, NodeInbox& node_inbox, size_t this_id, long period) :
 listen_fd{listen_fd},
 client_slab{inbound_cap},
 node_inbox{node_inbox},
-this_id{this_id}
+this_id{this_id},
+period{period}
 {}
 
-std::expected<std::unique_ptr<EventLoop>, std::string> EventLoop::CreateEventLoop(FD listen_fd, size_t inbound_cap, NodeInbox& node_inbox, size_t this_id) {
-    auto loop = std::unique_ptr<EventLoop>(new EventLoop(listen_fd, inbound_cap, node_inbox, this_id));
+std::expected<std::unique_ptr<EventLoop>, std::string> EventLoop::CreateEventLoop(FD listen_fd, size_t inbound_cap, NodeInbox& node_inbox, size_t this_id, long period) {
+    auto loop = std::unique_ptr<EventLoop>(new EventLoop(listen_fd, inbound_cap, node_inbox, this_id, period));
 
     loop->epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
     if (loop->epoll_fd < 0) return Unexpected("epoll_create1 failed");
@@ -243,7 +244,7 @@ void EventLoop::DrainInbox() {
             }
 
             else if constexpr (std::is_same_v<T, ArmTimerPayload>) {
-                arm_peer_timer(payload, out->node_id);
+                arm_peer_timer(out->node_id);
             }
 
             else if constexpr (std::is_same_v<T, DisarmTimerPayload>) {

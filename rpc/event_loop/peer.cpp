@@ -3,6 +3,9 @@
 #include <netinet/tcp.h>
 #include "../protocol/peer.hpp"
 #include <sys/timerfd.h>
+#ifdef DEBUG
+#include <iostream>
+#endif
 
 VoidExpected EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
     if (p.epoll_events == events) return {};
@@ -18,12 +21,16 @@ VoidExpected EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
 }
 
 VoidExpectedF EventLoop::AddPeer(const char* ip_addr, const char* port) {
-    PeerConn p1{ip_addr, port, next_peer_id};
     peer_conns.insert({next_peer_id, PeerConn{ip_addr, port, next_peer_id}});
     PeerConn& p = peer_conns.at(next_peer_id);
     ++next_peer_id;
     VoidExpected connect_ok = StartConnect(p);
-    if (!connect_ok) return UnexpectedF(std::format("error adding peer to configuration:\n{}\n", connect_ok.error()));
+    if (!connect_ok) {
+        #ifdef DEBUG
+        std::cout << "error adding peer to configuration: " << connect_ok.error() << "\n";
+        #endif
+        return {};
+    }
     return {};
 }
 
@@ -39,33 +46,40 @@ VoidExpected EventLoop::StartConnect(PeerConn& p) {
     }
     std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> guard(res, &::freeaddrinfo);
 
-    FD fd = ::socket(res->ai_family,
+    p.fd = ::socket(res->ai_family,
                      res->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC,
                      res->ai_protocol);
-    if (fd < 0) return Unexpected("Failed to start socket");
+    if (p.fd < 0) return Unexpected("Failed to start socket");
 
     int yes = 1;
-    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+    ::setsockopt(p.fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
-    int rc = ::connect(fd, res->ai_addr, res->ai_addrlen);
+    int rc = ::connect(p.fd, res->ai_addr, res->ai_addrlen);
 
-    if (rc < 0 && errno != EINPROGRESS) { ::close(fd); return Unexpected("Failed to connect socket"); }
+    if (rc < 0 && errno != EINPROGRESS) { ::close(p.fd); return Unexpected("Failed to connect socket"); }
 
-    p.fd            = fd;
     p.state         = PeerConn::State::Connecting;
     p.epoll_events  = EPOLLOUT | EPOLLRDHUP | EPOLLET;
+    p.timer_fd      = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
 
-    VoidExpected peer_fd_ok = register_fd(fd, p.epoll_events);
+    VoidExpected peer_fd_ok = register_fd(p.fd, p.epoll_events);
     if (!peer_fd_ok) {
-        ::close(fd);
+        ::close(p.fd);
         p.fd = -1;
         p.state = PeerConn::State::Disconnected;
         p.epoll_events = 0;
         return peer_fd_ok;
     }
-    peer_fd_to_id[fd] = p.peer_id;
-    // TODO: configure per-peer hearbeat timer fds
-    // peer_timer_to_id[p.timer_fd] = p.peer_id;
+    peer_fd_to_id[p.fd] = p.peer_id;
+    VoidExpected timer_fd_ok = register_fd(p.timer_fd, EPOLLIN | EPOLLET);
+    if (!timer_fd_ok) {
+        ::close(p.timer_fd);
+        p.timer_fd = -1;
+        p.state = PeerConn::State::Disconnected;
+        p.epoll_events = 0;
+        return timer_fd_ok;
+    }
+    peer_timer_fd_to_id[p.timer_fd] = p.peer_id;
     return {};
 }
 
@@ -145,7 +159,7 @@ VoidExpected EventLoop::OnPeerTimer(PeerConn& p) {
     }
     if (n != sizeof(expirations) || expirations == 0) return {};
 
-    RpcRequest req = HeartbeatTimeoutPayload{};
+    RpcRequest req{HeartbeatTimeoutPayload{}};
     post_node_inbox(req, p.peer_id);
     return {};
 }
@@ -295,8 +309,7 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeI
     return {};
 }
 
-void EventLoop::arm_peer_timer(ArmTimerPayload payload,
-                                         NodeID peer_id) {
+void EventLoop::arm_peer_timer(NodeID peer_id) {
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end() || it->second.timer_fd < 0) return;
     PeerConn& p = it->second;
@@ -305,7 +318,7 @@ void EventLoop::arm_peer_timer(ArmTimerPayload payload,
     // expiration lands `period` from now; subsequent ones fire at the
     // same cadence until disarmed.
     constexpr long NS_PER_SEC = 1'000'000'000;
-    const long ns = static_cast<long>(payload.period.count());
+    const long ns = period;
     itimerspec spec{};
     spec.it_value.tv_sec  = ns / NS_PER_SEC;
     spec.it_value.tv_nsec = ns % NS_PER_SEC;

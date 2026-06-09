@@ -6,7 +6,6 @@
 #include <span>
 #include <cassert>
 
-#include "./utils.hpp"
 #include "../config.hpp"
 
 /*
@@ -56,7 +55,7 @@ struct SPMCQueue {
 
         const uint64_t used = write - read;
         if (used + data.size() > N) return false;  // not enough capacity
-        
+
         // Copy elements one by one, handling wrap-around
         const uint64_t offset = write & (N - 1);
         CopyIn(buffer, N, offset, data.data(), data.size() * sizeof(T));

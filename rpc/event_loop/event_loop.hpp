@@ -21,7 +21,7 @@ One event loop runs on one thread.
 */
 struct EventLoop {
     public:
-    static std::expected<std::unique_ptr<EventLoop>, std::string> CreateEventLoop(FD listen_fd, size_t inbound_cap, NodeInbox& node_inbox, size_t this_id_);
+    static std::expected<std::unique_ptr<EventLoop>, std::string> CreateEventLoop(FD listen_fd, size_t inbound_cap, NodeInbox& node_inbox, size_t this_id_, long period_);
     ~EventLoop();
     EventLoop(const EventLoop&) = delete;
     EventLoop& operator=(const EventLoop&) = delete;
@@ -38,7 +38,7 @@ struct EventLoop {
     std::atomic<bool> stopped{false};
 
     private:
-    EventLoop(FD listen_fd, size_t inbound_cap, NodeInbox&, size_t this_id);
+    EventLoop(FD listen_fd, size_t inbound_cap, NodeInbox&, size_t this_id, long period);
     std::atomic<bool> wake_armed{false};
 
     FD epoll_fd = -1;
@@ -51,15 +51,18 @@ struct EventLoop {
     ClientConnSlab client_slab;
     std::unordered_map<ClientID, ClientConn*> client_conns;
     std::unordered_map<FD, ClientID> client_fd_to_id;
+
     ClientID next_conn_id = 0;
 
-    size_t this_id;
+    const size_t this_id;
 
     // Outbound
 
     std::unordered_map<FD, NodeID> peer_fd_to_id;
     std::unordered_map<FD, NodeID> peer_timer_fd_to_id; // for heartbeats
     NodeID next_peer_id = 0;
+
+    const long period;
 
     // ---- helpers ----
     static VoidExpected set_nonblocking(FD fd);
@@ -90,7 +93,7 @@ struct EventLoop {
     void DropPeer(PeerConn& p);
 
     // wake / inbox
-    void arm_peer_timer(ArmTimerPayload payload, NodeID peer_id);
+    void arm_peer_timer(NodeID peer_id);
     void disarm_peer_timer(NodeID peer_id);
     void DrainInbox();
     void OnEventFd();

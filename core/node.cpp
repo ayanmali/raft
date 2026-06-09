@@ -60,7 +60,8 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
             n->listen_fds_[i],
             MAX_SERVER_CONNS,
             inbox,
-            i
+            i,
+            HEARTBEAT_INTERVAL
         );
         if (!loop_ok){
             return UnexpectedF(
@@ -130,7 +131,7 @@ VoidExpected Node::setup_listen_socket(uint idx, addrinfo* res) {
 
 void Node::MainLoop() {
     #ifdef DEBUG
-    std::cout << "starting main loop\n";
+    std::cout << "starting node loop (main thread)\n";
     #endif
     while (true) {
         // check the reply inbox for new replies that have arrived
@@ -308,9 +309,7 @@ void Node::send_arm_timers() {
             auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
             el->outbound_inbox.PushOne(
                 std::make_unique<RaftMessage>(
-                    ArmTimerPayload{
-                        .period = HEARTBEAT_INTERVAL
-                    }, id
+                    ArmTimerPayload{}, id
                 )
             );
         }
