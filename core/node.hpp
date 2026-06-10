@@ -118,7 +118,8 @@ public:
     uint32_t                                       last_applied  = 0;
     // std::vector<int>                            next_index;             // leader-only, per peer
     // std::vector<int>                            match_index;            // leader-only, per peer
-    std::atomic<bool>                              leader        = false;
+    enum class NodeState { Follower, Candidate, Leader };
+    std::atomic<NodeState>                         state         = NodeState::Follower;
     // Election timeout, randomized at construction.
     std::chrono::milliseconds                      election_timeout_;
     // ---- setup helpers ----

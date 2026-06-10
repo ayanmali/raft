@@ -112,7 +112,7 @@ void Node::MainLoop() {
                     if (current_term < payload.term) {
                         current_term = payload.term;
                         voted_for = -1;
-                        leader.store(false, std::memory_order_release);
+                        state.store(NodeState::Follower, std::memory_order_release);
                         el_inbox.PushOne(
                             std::make_unique<RaftMessage>(
                             AppendEntriesRespPayload{}, client_id
@@ -135,7 +135,7 @@ void Node::MainLoop() {
                     }
                     if (payload.term > current_term) {
                         current_term = payload.term;
-                        leader.store(false, std::memory_order_release);
+                        state.store(NodeState::Follower, std::memory_order_release);
                     }
 
                     uint8_t granted = 0;
@@ -166,7 +166,7 @@ void Node::MainLoop() {
 
                     if (payload.term > current_term) {
                         current_term = payload.term;
-                        leader.store(false, std::memory_order_release);
+                        state.store(NodeState::Follower, std::memory_order_release);
                     }
 
                     // TODO: chunk reassembly, install snapshot to state machine.
@@ -195,7 +195,7 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found heartbeat timeout; sending heartbeats...\n";
                     #endif
-                    if (leader.load(std::memory_order_acquire)) {
+                    if (state.load(std::memory_order_acquire) == NodeState::Leader) {
                         send_rpc(AppendEntriesReqPayload{current_term}, client_id);
                     }
                 }
@@ -251,7 +251,7 @@ void Node::send_rpc(InstallSnapshotReqPayload&& payload, NodeID peer_id) {
 }
 
 void Node::send_heartbeats() {
-    if (!leader.load(std::memory_order_acquire)) return; // not leader; nothing to send
+    if (state.load(std::memory_order_acquire) != NodeState::Leader) return; // not leader; nothing to send
     // for each event loop, call send_append_entries_rpc() on each peer
     for (auto& el : loops_) {
         for (auto& [id, conn] : el->peer_conns) {
@@ -262,7 +262,7 @@ void Node::send_heartbeats() {
 
 /* Runs upon winning an election */
 void Node::send_arm_timers() {
-    if (!leader.load(std::memory_order_acquire)) return; // not leader; don't send
+    if (state.load(std::memory_order_acquire) != NodeState::Leader) return; // don't send
     for (auto& el : loops_) {
         for (auto& [id, conn] : el->peer_conns) {
             auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
@@ -277,7 +277,7 @@ void Node::send_arm_timers() {
 
 /* Runs upon leader demotion */
 inline void Node::send_disarm_timers() {
-    if (leader.load(std::memory_order_acquire)) return; // leader; don't run
+    if (state.load(std::memory_order_acquire) == NodeState::Leader) return; // leader; don't run
     for (auto& el : loops_) {
         for (auto& [id, conn] : el->peer_conns) {
             auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
