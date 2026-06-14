@@ -15,7 +15,7 @@ this_id{this_id},
 heartbeat_period{heartbeat_period}
 {}
 
-std::expected<std::unique_ptr<EventLoop>, std::string> EventLoop::CreateEventLoop(size_t inbound_cap, NodeInbox& node_inbox, size_t this_id, long heartbeat_period, long election_timeout_period) {
+std::expected<std::unique_ptr<EventLoop>, std::string> EventLoop::CreateEventLoop(size_t inbound_cap, NodeInbox& node_inbox, size_t this_id, long heartbeat_period) {
     auto loop = std::unique_ptr<EventLoop>(new EventLoop(inbound_cap, node_inbox, this_id, heartbeat_period));
 
     // Epoll fd
@@ -42,31 +42,6 @@ std::expected<std::unique_ptr<EventLoop>, std::string> EventLoop::CreateEventLoo
         std::format("error initializing event loop; event fd registration failed:\n{}\n", register_ok.error())
     );
 
-    // only the event loop w/ ID = 0 handles election timeout logic.
-    if (this_id != 0) {
-        return {};
-    }
-
-    loop->election_timeout_timer_fd = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
-    if (loop->election_timeout_timer_fd < 0) return Unexpected("timerfd_create failed");
-    register_ok = loop->register_fd(loop->election_timeout_timer_fd, EPOLLIN | EPOLLET);
-    if (!register_ok) return UnexpectedF(
-        std::format("error initializing event loop; election timeout timer fd registration failed:\n{}\n", register_ok.error())
-    );
-    // arm the timer
-
-    // Periodic timer: it_value == it_interval == period. The first
-    // expiration lands `period` from now; subsequent ones fire at the
-    // same cadence until disarmed.
-    constexpr long NS_PER_SEC = 1'000'000'000;
-    const long ns = election_timeout_period;
-    itimerspec spec{};
-    spec.it_value.tv_sec  = ns / NS_PER_SEC;
-    spec.it_value.tv_nsec = ns % NS_PER_SEC;
-    spec.it_interval      = spec.it_value;
-
-    ::timerfd_settime(loop->election_timeout_timer_fd, 0, &spec, nullptr);
-
     return loop;
 }
 
@@ -90,6 +65,7 @@ void EventLoop::Wake() {
     if (!wake_armed.exchange(true, std::memory_order_acq_rel)) {
         wake_eventfd_unconditional();
     }
+
 }
 
 void EventLoop::wake_eventfd_unconditional() {
@@ -311,15 +287,15 @@ void EventLoop::DrainInbox() {
                 post_reply(payload, out->node_id);
             }
 
-            else if constexpr (std::is_same_v<T, ArmTimerPayload>) {
-                arm_peer_timer(out->node_id);
+            else if constexpr (std::is_same_v<T, ArmTimer>) {
+                arm_heartbeat_timer(out->node_id);
             }
 
-            else if constexpr (std::is_same_v<T, DisarmTimerPayload>) {
-                disarm_peer_timer(out->node_id);
+            else if constexpr (std::is_same_v<T, DisArmTimer>) {
+                disarm_heartbeat_timer(out->node_id);
             }
 
-            else if constexpr (std::is_same_v<T, HeartbeatTimeoutPayload> || std::is_same_v<T, ElectionTimeoutPayload>) {
+            else if constexpr (std::is_same_v<T, HeartbeatTimeoutPayload>) {
                 // This payload is only sent from EventLoop to Node.
             }
 

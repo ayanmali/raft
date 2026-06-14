@@ -41,7 +41,7 @@ struct PeerInfo {
 // reply parser knows which deserialize_*_resp to run. Replies do not
 // carry an id byte (see protocol.hpp), so the caller maintains its own
 // FIFO of pending request kinds and matches them to incoming replies.
-enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot, ArmTimer, DisarmTimer };
+enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot };
 
 // Messages that are sent from Raft layer to an event loop to send RPCs/replies to peers/clients.
 struct RaftMessage {

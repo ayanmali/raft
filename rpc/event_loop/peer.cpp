@@ -20,10 +20,9 @@ VoidExpected EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
     return {};
 }
 
-VoidExpectedF EventLoop::AddPeer(const char* ip_addr, const char* port) {
-    peer_conns.insert({next_peer_id, PeerConn{ip_addr, port, next_peer_id}});
-    PeerConn& p = peer_conns.at(next_peer_id);
-    ++next_peer_id;
+VoidExpectedF EventLoop::AddPeer(NodeID id, const char* ip_addr, const char* port) {
+    peer_conns.insert({id, PeerConn{ip_addr, port, id}});
+    PeerConn& p = peer_conns.at(id);
     VoidExpected connect_ok = StartConnect(p);
     if (!connect_ok) {
         #ifdef DEBUG
@@ -164,10 +163,6 @@ VoidExpected EventLoop::OnPeerTimer(PeerConn& p) {
     return {};
 }
 
-void EventLoop::OnElectionTimeout() {
-    RpcRequest req{ElectionTimeoutPayload{}};
-    post_node_inbox(req, 0);
-}
 
 void EventLoop::DropPeer(PeerConn& p) {
     if (p.fd >= 0) {
@@ -314,7 +309,7 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeI
     return {};
 }
 
-void EventLoop::arm_peer_timer(NodeID peer_id) {
+void EventLoop::arm_heartbeat_timer(NodeID peer_id) {
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end() || it->second.timer_fd < 0) return;
     PeerConn& p = it->second;
@@ -332,7 +327,7 @@ void EventLoop::arm_peer_timer(NodeID peer_id) {
     ::timerfd_settime(p.timer_fd, 0, &spec, nullptr);
 }
 
-void EventLoop::disarm_peer_timer(NodeID peer_id) {
+void EventLoop::disarm_heartbeat_timer(NodeID peer_id) {
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end() || it->second.timer_fd < 0) return;
     PeerConn& p = it->second;

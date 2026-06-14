@@ -36,7 +36,6 @@ Persistence:
 #include "../rpc/event_loop/event_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstddef>
@@ -47,11 +46,12 @@ Persistence:
 #include <sys/types.h>
 #include <thread>
 #include <unistd.h>
+#include <unordered_set>
 #include <vector>
 
 struct LogEntry {
     std::vector<std::byte> data;
-    int term;
+    uint32_t term;
 };
 
 struct Node {
@@ -76,8 +76,6 @@ public:
     void send_rpc(AppendEntriesReqPayload&&, NodeID peer_id);
     void send_rpc(RequestVoteReqPayload&&, NodeID peer_id);
     void send_rpc(InstallSnapshotReqPayload&&, NodeID peer_id);
-    void send_heartbeats();
-
     void send_arm_timers(); // upon leader promotion
     void send_disarm_timers(); // upon leader demotion
 
@@ -106,9 +104,12 @@ public:
     NodeInbox& inbox;
     // ---- transport ----
     // TODO: replace AoS EventLoop w/ SoA pattern
+    std::vector<NodeID> node_ids;
+    std::unordered_set<NodeID> voters;
     std::array<std::unique_ptr<EventLoop>, EVENT_LOOP_THREADS>      loops_;
     std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
     bool                                                            running_ = false;
+    std::chrono::steady_clock::time_point                           last_leader_contact;
 
     // ---- raft state ----
     uint32_t                                       current_term  = 0;
@@ -119,9 +120,12 @@ public:
     // std::vector<int>                            next_index;             // leader-only, per peer
     // std::vector<int>                            match_index;            // leader-only, per peer
     enum class NodeState { Follower, Candidate, Leader };
-    std::atomic<NodeState>                         state         = NodeState::Follower;
+    NodeState                                      state         = NodeState::Follower;
     // Election timeout, randomized at construction.
     std::chrono::milliseconds                      election_timeout_;
+    // ---- election state ----
+    uint32_t votes_received;
+
     // ---- setup helpers ----
 
     // Constructs the RpcHandlers struct (member-fn lambdas) the loops

@@ -14,9 +14,9 @@
 static constexpr uint32_t MAX_VECTOR_SIZE_SANITY = 8192;
 struct ByteReader;
 
-using RpcRequest = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimerPayload, DisarmTimerPayload, HeartbeatTimeoutPayload, ElectionTimeoutPayload>;
+using RpcRequest = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisArmTimer, HeartbeatTimeoutPayload>;
 using RpcReply = std::variant<AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload>;
-using RpcMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimerPayload, DisarmTimerPayload, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeoutPayload, ElectionTimeoutPayload>;
+using RpcMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisArmTimer, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeoutPayload>;
 
 using ParserFunc = std::expected<RpcRequest, const char*>(*)(ByteReader&);
 using HandlerFunc = std::expected<RpcReply, const char*>(*)(const RpcRequest& message);

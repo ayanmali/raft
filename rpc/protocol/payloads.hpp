@@ -2,7 +2,6 @@
 /*
 RPC request/response payload structs.
 */
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -139,12 +138,7 @@ struct InstallSnapshotRespPayload {
     }
 };
 
-struct ArmTimerPayload {
-  std::chrono::nanoseconds period;
-};
-
-struct DisarmTimerPayload {};
+struct ArmTimer {};
+struct DisArmTimer {};
 
 struct HeartbeatTimeoutPayload {};
-
-struct ElectionTimeoutPayload {};

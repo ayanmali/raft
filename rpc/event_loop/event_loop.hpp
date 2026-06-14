@@ -21,7 +21,7 @@ One event loop runs on one thread.
 */
 struct EventLoop {
     public:
-    static std::expected<std::unique_ptr<EventLoop>, std::string> CreateEventLoop(size_t inbound_cap, NodeInbox& node_inbox, size_t this_id_, long heartbeat_period_, long election_timeout_period);
+    static std::expected<std::unique_ptr<EventLoop>, std::string> CreateEventLoop(size_t inbound_cap, NodeInbox& node_inbox, size_t this_id_, long heartbeat_period_);
     ~EventLoop();
     EventLoop(const EventLoop&) = delete;
     EventLoop& operator=(const EventLoop&) = delete;
@@ -29,16 +29,16 @@ struct EventLoop {
     VoidExpected Run();
     void Stop(); // event loop can be stopped via a signal on the event fd
     void Wake();
-    VoidExpectedF AddPeer(const char* ip_addr, const char* port);
+    VoidExpectedF AddPeer(NodeID id, const char* ip_addr, const char* port);
 
     SPSCQueue<std::unique_ptr<RaftMessage>, INBOX_RING_CAP> outbound_inbox{};
-
-    std::unordered_map<NodeID, PeerConn> peer_conns;
 
     std::atomic<bool> stopped{false};
 
     private:
     ClientConnSlab client_slab;
+    std::unordered_map<NodeID, PeerConn> peer_conns;
+
     std::unordered_map<ClientID, ClientConn*> client_conns;
     std::unordered_map<FD, ClientID> client_fd_to_id;
     std::atomic<bool> wake_armed{false};
@@ -46,7 +46,6 @@ struct EventLoop {
     FD epoll_fd = -1;
     FD listen_fd = -1;
     FD event_fd = -1;
-    FD election_timeout_timer_fd = -1;
 
     // Inbound
     NodeInbox& node_inbox; // incoming messages
@@ -59,7 +58,6 @@ struct EventLoop {
 
     std::unordered_map<FD, NodeID> peer_fd_to_id;
     std::unordered_map<FD, NodeID> peer_timer_fd_to_id; // for heartbeats
-    NodeID next_peer_id = 0;
 
     const long heartbeat_period;
 
@@ -94,11 +92,10 @@ struct EventLoop {
     void DropPeer(PeerConn& p);
 
     // wake / inbox
-    void arm_peer_timer(NodeID peer_id);
-    void disarm_peer_timer(NodeID peer_id);
+    void arm_heartbeat_timer(NodeID peer_id);
+    void disarm_heartbeat_timer(NodeID peer_id);
     void DrainInbox();
     void OnEventFd();
-    void OnElectionTimeout();
     void wake_eventfd_unconditional();
 
     bool post_node_inbox(RpcRequest& req, NodeID client_id);
