@@ -104,12 +104,12 @@ public:
     NodeInbox& inbox;
     // ---- transport ----
     // TODO: replace AoS EventLoop w/ SoA pattern
-    std::vector<NodeID> node_ids;
-    std::unordered_set<NodeID> voters;
+    std::vector<NodeID>                                             node_ids;
+    std::unordered_set<NodeID>                                      voters;
     std::array<std::unique_ptr<EventLoop>, EVENT_LOOP_THREADS>      loops_;
     std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
-    bool                                                            running_ = false;
     std::chrono::steady_clock::time_point                           last_leader_contact;
+    bool                                                            running_ = false;
 
     // ---- raft state ----
     uint32_t                                       current_term  = 0;
@@ -119,10 +119,11 @@ public:
     uint32_t                                       last_applied  = 0;
     // std::vector<int>                            next_index;             // leader-only, per peer
     // std::vector<int>                            match_index;            // leader-only, per peer
-    enum class NodeState { Follower, Candidate, Leader };
+    enum class                                     NodeState { Follower, Candidate, Leader };
     NodeState                                      state         = NodeState::Follower;
     // Election timeout, randomized at construction.
     std::chrono::milliseconds                      election_timeout_;
+
     // ---- election state ----
     uint32_t votes_received;
 

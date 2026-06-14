@@ -188,6 +188,7 @@ void Node::MainLoop() {
                     std::cout << "found AE reply\n";
                     #endif
                 }
+
                 else if constexpr (std::is_same_v<T, RequestVoteRespPayload>) {
                     #ifdef DEBUG
                     std::cout << "found RV reply\n";
@@ -208,11 +209,13 @@ void Node::MainLoop() {
                     }
 
                 }
+
                 else if constexpr (std::is_same_v<T, InstallSnapshotRespPayload>) {
                     #ifdef DEBUG
                     std::cout << "found IS reply\n";
                     #endif
                 }
+
                 // heartbeats are sent per follower, not all at once.
                 else if constexpr (std::is_same_v<T, HeartbeatTimeoutPayload>) {
                     #ifdef DEBUG
@@ -309,30 +312,28 @@ void Node::send_rpc(InstallSnapshotReqPayload&& payload, NodeID peer_id) {
 
 /* Runs upon winning an election */
 void Node::send_arm_timers() {
-    for (auto& el : loops_) {
-        for (NodeID id : node_ids) {
-            auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
-            el->outbound_inbox.PushOne(
-                std::make_unique<RaftMessage>(
-                    ArmTimer{}, id
-                )
-            );
-        }
+    for (NodeID id : node_ids) {
+        auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
+        el->outbound_inbox.PushOne(
+            std::make_unique<RaftMessage>(
+                ArmTimer{}, id
+            )
+        );
+        el->Wake();
     }
 }
 
 /* Runs upon leader demotion */
 void Node::send_disarm_timers() {
     //if (state == NodeState::Leader) return; // leader; don't run
-    for (auto& el : loops_) {
-        for (auto id : node_ids) {
-            auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
-            el->outbound_inbox.PushOne(
-                std::make_unique<RaftMessage>(
-                    DisArmTimer{}, id
-                )
-            );
-        }
+    for (auto id : node_ids) {
+        auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
+        el->outbound_inbox.PushOne(
+            std::make_unique<RaftMessage>(
+                DisArmTimer{}, id
+            )
+        );
+        el->Wake();
     }
 }
 
