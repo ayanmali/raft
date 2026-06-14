@@ -137,24 +137,29 @@ void Node::MainLoop() {
                                 RequestVoteRespPayload{current_term, 0}, client_id
                             )
                         );
+                        return;
                     }
+
                     if (payload.term > current_term) {
                         current_term = payload.term;
                         demoted = demoted || state == NodeState::Leader;
                         state = NodeState::Follower;
+                        voted_for = -1;
                         leader_contact = true;
                     }
 
-                    uint8_t granted = 0;
-                    // if (voted_for == req.candidate_id) {
-                    //     // TODO: log up-to-date check (last_log_idx/last_log_term).
-                    //     voted_for = req.candidate_id;
-                    //     granted   = 1;
-                    // }
+                    uint32_t last_log_term = log.back().term;
+                    uint32_t last_log_idx = log.size() - 1;
+                    if (payload.last_log_term > last_log_term
+                    || (payload.last_log_term == last_log_term
+                        && payload.last_log_idx >= last_log_idx))
+                    {
+                        voted_for = client_id;
+                    }
 
                     el_inbox.PushOne(
                         std::make_unique<RaftMessage>(
-                        RequestVoteRespPayload{current_term, granted}, client_id
+                        RequestVoteRespPayload{current_term, 1}, client_id
                         )
                     );
                 }
@@ -175,6 +180,7 @@ void Node::MainLoop() {
                     current_term = payload.term;
                     demoted = demoted || state == NodeState::Leader;
                     state = NodeState::Follower;
+                    voted_for = -1;
                     leader_contact = true;
                     // TODO: chunk reassembly, install snapshot to state machine.
                     el_inbox.PushOne(
@@ -203,7 +209,7 @@ void Node::MainLoop() {
                     // become leader if quorum of votes achieved
                     if (++votes_received >= (node_ids.size()+1) / 2) { // add 1 to account for this node
                         state = NodeState::Leader;
-                        send_arm_timers();
+                        send_heartbeats_and_arm_timers();
                         voters.clear();
                         votes_received = 0;
                     }
@@ -237,6 +243,7 @@ void Node::MainLoop() {
         if (demoted) {
             voters.clear();
             votes_received = 0;
+            voted_for = -1;
             send_disarm_timers();
             continue;
         }
@@ -310,11 +317,20 @@ void Node::send_rpc(InstallSnapshotReqPayload&& payload, NodeID peer_id) {
     );
 }
 
-/* Runs upon winning an election */
-void Node::send_arm_timers() {
-    for (NodeID id : node_ids) {
+// runs upon winning an election
+void Node::send_heartbeats_and_arm_timers() {
+    for (auto id : node_ids) {
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
+        // send heartbeat rpc
         el->outbound_inbox.PushOne(
+            // send heartbeat rpc
+            std::make_unique<RaftMessage>(
+                AppendEntriesReqPayload{current_term}, id
+            )
+        );
+        //arm this peer's heartbeat timer so we know when to send the next heartbeat.
+        el->outbound_inbox.PushOne(
+            // send heartbeat rpc
             std::make_unique<RaftMessage>(
                 ArmTimer{}, id
             )

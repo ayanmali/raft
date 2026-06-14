@@ -76,7 +76,7 @@ public:
     void send_rpc(AppendEntriesReqPayload&&, NodeID peer_id);
     void send_rpc(RequestVoteReqPayload&&, NodeID peer_id);
     void send_rpc(InstallSnapshotReqPayload&&, NodeID peer_id);
-    void send_arm_timers(); // upon leader promotion
+    void send_heartbeats_and_arm_timers(); // upon leader promotion
     void send_disarm_timers(); // upon leader demotion
 
     // Raft leadership transitions. Both must run on an event-loop thread
@@ -113,7 +113,7 @@ public:
 
     // ---- raft state ----
     uint32_t                                       current_term  = 0;
-    uint32_t                                       voted_for     = -1;
+    int                                            voted_for     = -1;
     std::vector<LogEntry>                          log;
     uint32_t                                       commit_index  = 0;
     uint32_t                                       last_applied  = 0;
