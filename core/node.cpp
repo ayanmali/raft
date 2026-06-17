@@ -5,6 +5,7 @@
 #include "node.hpp"
 #include <csignal>
 #include <random>
+#include <span>
 #ifdef DEBUG
 #include <iostream>
 #endif
@@ -65,6 +66,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     int i{0};
     for (const auto& addr : init_peers) {
         n->node_ids.push_back(i);
+
         VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
             ->AddPeer(i, addr, CLIENT_PORT);
         if (!add_peer_ok) {
@@ -74,6 +76,8 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         }
         ++i;
     }
+    n->next_index.resize(n->node_ids.size());
+    n->match_index.resize(n->node_ids.size());
     n->voters.reserve(init_peers.size());
     return n;
 }
@@ -212,6 +216,14 @@ void Node::MainLoop() {
                         send_heartbeats_and_arm_timers();
                         voters.clear();
                         votes_received = 0;
+
+                        uint32_t last_log_idx = static_cast<uint32_t>(log.size());
+                        for (auto& i : next_index) {
+                            i = last_log_idx + 1;
+                        }
+                        for (auto& i : match_index) {
+                            i = 0;
+                        }
                     }
 
                 }
@@ -317,13 +329,42 @@ void Node::send_rpc(InstallSnapshotReqPayload&& payload, NodeID peer_id) {
     );
 }
 
+void Node::append_log_entries(std::vector<std::vector<std::byte>>& entries) {
+    const uint32_t last_log_idx = log.size() - 1;
+
+    log.reserve(entries.size());
+    for (auto& command : entries) {
+        log.emplace_back(command, current_term);
+    }
+
+    for (int i = 0; i < node_ids.size(); ++i) {
+        const uint32_t next_idx = next_index[i];
+        if (last_log_idx < next_idx) continue;
+
+        const uint32_t prev_log_idx = next_idx > 0 ? next_idx - 1 : 0;
+        const uint32_t prev_log_term = log[prev_log_idx].term;
+
+        auto& el = loops_[node_ids[i] & (EVENT_LOOP_THREADS - 1)];
+        auto entries_to_append = std::span<LogEntry>(log.data() + next_idx, log.size() - next_idx);
+        el->outbound_inbox.PushOne(
+            std::make_unique<RaftMessage>(AppendEntriesReqPayload{
+                entries_to_append,
+                current_term,
+                MY_ID,
+                prev_log_idx,
+                prev_log_term,
+                commit_index
+            }, node_ids[i])
+        );
+    }
+}
+
 // runs upon winning an election
 void Node::send_heartbeats_and_arm_timers() {
     for (auto id : node_ids) {
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
         // send heartbeat rpc
         el->outbound_inbox.PushOne(
-            // send heartbeat rpc
             std::make_unique<RaftMessage>(
                 AppendEntriesReqPayload{current_term}, id
             )

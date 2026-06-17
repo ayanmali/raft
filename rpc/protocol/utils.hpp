@@ -41,7 +41,6 @@ struct ByteReader {
         if (remaining() < sizeof(out)) return false;
 
         std::memcpy(&out, ptr, sizeof(out));
-        out = ntohs(out);
         ptr += sizeof(out);
 
         return true;
@@ -78,7 +77,7 @@ struct ByteReader {
     }
 
     bool read(std::vector<std::byte>& out) {
-        uint32_t size;
+        uint64_t size;
         if (!read(size)) return false;
 
         if (remaining() < size * sizeof(std::byte)) return false;
@@ -87,6 +86,24 @@ struct ByteReader {
 
         std::memcpy(out.data(), ptr, size * sizeof(std::byte));
         ptr += size * sizeof(std::byte);
+        return true;
+    }
+
+    bool read(LogEntry& out) {
+        if (!read(out.data)) return false;
+        if (!read(out.term)) return false;
+        return true;
+    }
+
+    bool read(std::vector<LogEntry>& out) {
+        uint64_t size;
+        if (!read(size)) return false;
+        out.reserve(size);
+        for (uint64_t i = 0; i < size; ++i) {
+            LogEntry entry;
+            if (!read(entry)) return false;
+            out.push_back(std::move(entry));
+        }
         return true;
     }
 
@@ -105,16 +122,16 @@ struct ByteWriter {
     ByteWriter(std::vector<std::byte>& buf_) : buf{buf_} {}
 
     void serialize(const AppendEntriesReqPayload& payload) {
-        auto msg_size         =  htonll(payload.size());
-        auto net_id           =  htons(AE_RPC_ID);
-        auto net_entries_len  =  htonll(payload.entries.size());
-        auto net_term         =  htonl(payload.term);
-        auto net_leader_id    =  htonl(payload.leader_id);
-        auto net_prev_log_idx =  htonl(payload.prev_log_idx);
-        auto net_prev_log_term=  htonl(payload.prev_log_term);
-        auto net_leader_commit=  htonl(payload.leader_commit);
+        auto msg_size           =  htonll(payload.size());
+        auto net_id             =  AE_RPC_ID;
+        auto net_entries_len    =  htonll(payload.entries.size());
+        auto net_term           =  htonl(payload.term);
+        auto net_leader_id      =  htonl(payload.leader_id);
+        auto net_prev_log_idx   =  htonl(payload.prev_log_idx);
+        auto net_prev_log_term  =  htonl(payload.prev_log_term);
+        auto net_leader_commit  =  htonl(payload.leader_commit);
 
-        buf.reserve(msg_size + sizeof(msg_size) + sizeof(net_id));
+        buf.resize(payload.size() + sizeof(msg_size) + sizeof(net_id));
         size_t ptr = 0;
 
         std::memcpy(buf.data(), &msg_size, sizeof(msg_size));
@@ -126,8 +143,18 @@ struct ByteWriter {
         std::memcpy(buf.data() + ptr, &net_entries_len, sizeof(net_entries_len));
         ptr += sizeof(net_entries_len);
 
-        std::memcpy(buf.data() + ptr, payload.entries.data(), payload.entries.size());
-        ptr += payload.entries.size();
+        for (const auto& entry : payload.entries) {
+            uint64_t entry_data_len = htonll(entry.data.size());
+            std::memcpy(buf.data() + ptr, &entry_data_len, sizeof(entry_data_len));
+            ptr += sizeof(entry_data_len);
+
+            std::memcpy(buf.data() + ptr, entry.data.data(), entry.data.size());
+            ptr += entry.data.size();
+
+            uint32_t entry_term = htonl(entry.term);
+            std::memcpy(buf.data() + ptr, &entry_term, sizeof(entry_term));
+            ptr += sizeof(entry_term);
+        }
 
         std::memcpy(buf.data() + ptr, &net_term, sizeof(net_term));
         ptr += sizeof(net_term);
@@ -147,13 +174,13 @@ struct ByteWriter {
 
     void serialize(const RequestVoteReqPayload& payload) {
         auto msg_size          = htonll(payload.size());
-        auto net_id            = htons (RV_RPC_ID);
+        auto net_id            = RV_RPC_ID;
         auto net_term          = htonl(payload.term);
         auto net_candidate_id  = htonl(payload.candidate_id);
         auto net_last_log_idx  = htonl(payload.last_log_idx);
         auto net_last_log_term = htonl(payload.last_log_term);
 
-        buf.reserve(msg_size + sizeof(msg_size) + sizeof(net_id));
+        buf.resize(payload.size() + sizeof(msg_size) + sizeof(net_id));
         size_t ptr = 0;
 
         std::memcpy(buf.data(), &msg_size, sizeof(msg_size));
@@ -177,16 +204,16 @@ struct ByteWriter {
 
     void serialize(const InstallSnapshotReqPayload& payload) {
         auto msg_size               = htonll(payload.size());
-        auto net_id                 = htons(IS_RPC_ID);
+        auto net_id                 = IS_RPC_ID;
         auto net_snapshot_len       = htonll(payload.snapshot.size());
         auto net_term               = htonl(payload.term);
         auto net_leader_id          = htonl(payload.leader_id);
         auto net_last_included_idx  = htonl(payload.last_included_idx);
         auto net_last_included_term = htonl(payload.last_included_term);
         auto net_offset             = htonl(payload.offset);
-        auto net_done               = htons(payload.done);
+        auto net_done               = payload.done;
 
-        buf.reserve(msg_size + sizeof(msg_size) + sizeof(net_id));
+        buf.resize(payload.size() + sizeof(msg_size) + sizeof(net_id));
         size_t ptr = 0;
 
         std::memcpy(buf.data(), &msg_size, sizeof(msg_size));
@@ -221,13 +248,13 @@ struct ByteWriter {
     };
 
     void serialize(const AppendEntriesRespPayload& payload) {
-        auto msg_size = htonll(payload.size());
+        auto msg_size    = htonll(payload.size());
         //auto net_id = htons(AE_REPLY_ID);
-        auto net_term = htonl(payload.term);
-        auto net_success = htonl(payload.success);
+        auto net_term    = htonl(payload.term);
+        auto net_success = payload.success;
 
-        // buf.reserve(msg_size + sizeof(msg_size) + sizeof(net_id));
-        buf.reserve(msg_size + sizeof(msg_size));
+        // buf.resize(payload.size() + sizeof(msg_size) + sizeof(net_id));
+        buf.resize(payload.size() + sizeof(msg_size));
         size_t ptr = 0;
 
         std::memcpy(buf.data(), &msg_size, sizeof(msg_size));
@@ -243,13 +270,13 @@ struct ByteWriter {
     }
 
     void serialize(const RequestVoteRespPayload& payload) {
-        auto msg_size = htonll(payload.size());
+        auto msg_size         = htonll(payload.size());
         //auto net_id = htons(RV_REPLY_ID);
-        auto net_term = htonl(payload.term);
-        auto net_vote_granted = htonl(payload.vote_granted);
+        auto net_term         = htonl(payload.term);
+        auto net_vote_granted = payload.vote_granted;
 
-        // buf.reserve(msg_size + sizeof(msg_size) + sizeof(net_id));
-        buf.reserve(msg_size + sizeof(msg_size));
+        // buf.resize(payload.size() + sizeof(msg_size) + sizeof(net_id));
+        buf.resize(payload.size() + sizeof(msg_size));
         size_t ptr = 0;
 
         std::memcpy(buf.data(), &msg_size, sizeof(msg_size));
@@ -269,8 +296,8 @@ struct ByteWriter {
         //auto net_id = htons(IS_REPLY_ID);
         auto net_term = htonl(payload.term);
 
-        // buf.reserve(msg_size + sizeof(msg_size) + sizeof(net_id));
-        buf.reserve(msg_size + sizeof(msg_size));
+        // buf.resize(payload.size() + sizeof(msg_size) + sizeof(net_id));
+        buf.resize(payload.size() + sizeof(msg_size));
         size_t ptr = 0;
 
         std::memcpy(buf.data(), &msg_size, sizeof(msg_size));

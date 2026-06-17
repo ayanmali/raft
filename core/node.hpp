@@ -35,6 +35,7 @@ Persistence:
 #include "../rpc/conns.hpp"
 #include "../rpc/event_loop/event_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
+#include "log_entry.hpp"
 #include <array>
 #include <chrono>
 #include <csignal>
@@ -48,11 +49,6 @@ Persistence:
 #include <unistd.h>
 #include <unordered_set>
 #include <vector>
-
-struct LogEntry {
-    std::vector<std::byte> data;
-    uint32_t term;
-};
 
 struct Node {
 public:
@@ -76,6 +72,7 @@ public:
     void send_rpc(AppendEntriesReqPayload&&, NodeID peer_id);
     void send_rpc(RequestVoteReqPayload&&, NodeID peer_id);
     void send_rpc(InstallSnapshotReqPayload&&, NodeID peer_id);
+    void append_log_entries(std::vector<std::vector<std::byte>>& entry);
     void send_heartbeats_and_arm_timers(); // upon leader promotion
     void send_disarm_timers(); // upon leader demotion
 
@@ -115,10 +112,10 @@ public:
     uint32_t                                       current_term  = 0;
     int                                            voted_for     = -1;
     std::vector<LogEntry>                          log;
-    uint32_t                                       commit_index  = 0;
-    uint32_t                                       last_applied  = 0;
-    // std::vector<int>                            next_index;             // leader-only, per peer
-    // std::vector<int>                            match_index;            // leader-only, per peer
+    uint32_t                                       commit_index  = 0;   // index of highest log entry known to be committed
+    uint32_t                                       last_applied  = 0;   // index of highest log entry applied to state machine
+    std::vector<int>                               next_index;          // leader-only, one per peer
+    std::vector<int>                               match_index;         // leader-only, one per peer
     enum class                                     NodeState { Follower, Candidate, Leader };
     NodeState                                      state         = NodeState::Follower;
     // Election timeout, randomized at construction.

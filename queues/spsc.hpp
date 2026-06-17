@@ -46,6 +46,21 @@ struct SPSCQueue {
         return true;
     }
 
+    // E.g. can pass `std::make_unique` as the function to create the unique pointer, with `args` as the arguments.
+    template<typename F, typename... Args>
+    bool EmplaceOne(F&& initializer_func, Args&&... args) {
+        const size_t write = write_idx.load(std::memory_order_relaxed);
+        const size_t read  = read_idx.load(std::memory_order_acquire);
+
+        if (write - read >= N) return false;
+
+        buffer[write & (N - 1)] =
+            F(std::forward<Args>(args)...);
+
+        write_idx.fetch_add(1, std::memory_order_release);
+        return true;
+    }
+
     bool PopOne(T* out) {
         const size_t read  = read_idx.load(std::memory_order_relaxed);
         const size_t write = write_idx.load(std::memory_order_acquire);

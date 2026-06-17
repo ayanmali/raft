@@ -2,9 +2,11 @@
 /*
 RPC request/response payload structs.
 */
+#include "../../core/log_entry.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <span>
 
 static constexpr uint8_t AE_RPC_ID = 1;
 static constexpr uint8_t RV_RPC_ID = 2;
@@ -15,29 +17,29 @@ static constexpr uint8_t RV_REPLY_ID = 6;
 static constexpr uint8_t IS_REPLY_ID = 7;
 
 struct AppendEntriesReqPayload {
-    std::vector<std::byte> entries;
+    std::vector<LogEntry> entries;
     uint32_t term;
     uint32_t leader_id; // 0 is null value
     uint32_t prev_log_idx;
     uint32_t prev_log_term;
     uint32_t leader_commit;
 
-    AppendEntriesReqPayload(std::vector<std::byte>& entries, uint32_t term, uint32_t leader_id, uint32_t prev_log_idx, uint32_t prev_log_term, uint32_t leader_commit)
-    : entries(entries),
-      term(term),
-      leader_id(leader_id),
-      prev_log_idx(prev_log_idx),
-      prev_log_term(prev_log_term),
-      leader_commit(leader_commit)
+    AppendEntriesReqPayload(std::vector<LogEntry> entries, uint32_t term, uint32_t leader_id, uint32_t prev_log_idx, uint32_t prev_log_term, uint32_t leader_commit) :
+        entries(std::move(entries)),
+        term(term),
+        leader_id(leader_id),
+        prev_log_idx(prev_log_idx),
+        prev_log_term(prev_log_term),
+        leader_commit(leader_commit)
     {};
 
-    AppendEntriesReqPayload(std::vector<std::byte>&& entries, uint32_t term, uint32_t leader_id, uint32_t prev_log_idx, uint32_t prev_log_term, uint32_t leader_commit)
-    : entries(std::move(entries)),
-      term(term),
-      leader_id(leader_id),
-      prev_log_idx(prev_log_idx),
-      prev_log_term(prev_log_term),
-      leader_commit(leader_commit)
+    AppendEntriesReqPayload(std::span<const LogEntry> entries_span, uint32_t term, uint32_t leader_id, uint32_t prev_log_idx, uint32_t prev_log_term, uint32_t leader_commit) :
+        entries(entries_span.begin(), entries_span.end()),
+        term(term),
+        leader_id(leader_id),
+        prev_log_idx(prev_log_idx),
+        prev_log_term(prev_log_term),
+        leader_commit(leader_commit)
     {};
 
     AppendEntriesReqPayload(uint32_t term) : term(term) {};
@@ -45,8 +47,15 @@ struct AppendEntriesReqPayload {
     AppendEntriesReqPayload() {};
 
     auto size() const {
-      auto s = entries.size() + sizeof(term) + sizeof(leader_id) + sizeof(prev_log_idx) + sizeof(prev_log_term) + sizeof(leader_commit);
-      return s;
+        size_t s = 0;
+        for (const auto& entry : entries) {
+            s += entry.data.size();
+            s += sizeof(entry.term);
+            s += sizeof(uint64_t); // for the length of entry.data itself in serialization
+        }
+        s += sizeof(term) + sizeof(leader_id) + sizeof(prev_log_idx) + sizeof(prev_log_term) + sizeof(leader_commit);
+        s += sizeof(uint64_t); // for the number of entries
+        return s;
     };
 };
 
@@ -123,7 +132,7 @@ struct InstallSnapshotReqPayload {
     InstallSnapshotReqPayload() {};
 
     auto size() const {
-      auto s = snapshot.size() + sizeof(term) + sizeof(leader_id) + sizeof(last_included_idx) + sizeof(last_included_term) + sizeof(offset) + sizeof(done);
+      auto s = snapshot.size() + sizeof(uint64_t) + sizeof(term) + sizeof(leader_id) + sizeof(last_included_idx) + sizeof(last_included_term) + sizeof(offset) + sizeof(done);
       return s;
     };
 
