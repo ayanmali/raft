@@ -1,4 +1,5 @@
 #include "./node.hpp"
+#include <algorithm>
 #ifdef DEBUG
 #include <iostream>
 #endif
@@ -9,7 +10,6 @@ void Node::MainLoop() {
     #endif
     while (true) {
         // check the reply inbox for new replies that have arrived
-        // TODO: implement handlers
         bool leader_contact{false};
         bool demoted{false};
         inbox_.DrainAll([this, &leader_contact, &demoted](std::unique_ptr<RaftMessage>&& message) {
@@ -167,16 +167,8 @@ void Node::MainLoop() {
                      --> entries <= commitIndex become committed. Send confirmation to client
                      */
 
-                    auto map = std::unordered_map<uint32_t, uint32_t>(match_index_.size());
-                    for (auto& match_idx : match_index_) {
-                        map[match_idx]++;
-                    }
-                    for (auto [match_idx, count] : map) {
-                        if (count >= match_index_.size() / 2 && match_idx > commit_index_ && log_[match_idx].term == current_term_) {
-                            commit_index_ = match_idx;
-                            break;
-                        }
-                    }
+                    commit_if_quorum(match_index_, commit_index_, current_term_, log_);
+
                 }
 
                 else if constexpr (std::is_same_v<T, RequestVoteRespPayload>) {
