@@ -1,3 +1,4 @@
+#pragma once
 #include "../conns.hpp"
 #include "payloads.hpp"
 #include "../../errors.hpp"

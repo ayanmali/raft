@@ -1,8 +1,8 @@
 #include "./node.hpp"
-#include "./log_utils.hpp"
 #include <algorithm>
 #ifdef DEBUG
 #include <iostream>
+#include <chrono>
 #endif
 
 void Node::MainLoop() {
@@ -140,7 +140,7 @@ void Node::MainLoop() {
                     const uint32_t last_log_idx = log_.size() - 1;
                     auto it = std::find(node_ids_.begin(), node_ids_.end(), client_id);
                     const uint32_t next_idx = next_indexes_[it - node_ids_.begin()] - 1;
-                    const uint32_t prev_log_idx = next_idx > 0 ? next_idx - 1 : 0;
+                    const uint32_t prev_log_idx = next_idx - 1;
                     const uint32_t prev_log_term = log_[prev_log_idx].term;
 
                     /*
@@ -205,6 +205,9 @@ void Node::MainLoop() {
 
                     // become leader if quorum of votes achieved
                     if (voters_.size() + 1 > (node_ids_.size()+1) / 2) { // add 1 to account for this node
+                        #ifdef DEBUG
+                        std::cout << MY_ID << " became leader\n";
+                        #endif
                         state_ = NodeState::Leader;
                         send_heartbeats_and_arm_timers();
                         voters_.clear();
@@ -238,7 +241,7 @@ void Node::MainLoop() {
                     const auto it = std::find(node_ids_.begin(), node_ids_.end(), client_id);
                     const uint32_t next_idx = next_indexes_[it - node_ids_.begin()];
                     auto s = std::span<LogEntry>(log_.data() + next_idx, log_.size() - next_idx);
-                    const uint32_t prev_log_idx = next_idx > 0 ? next_idx - 1 : 0;
+                    const uint32_t prev_log_idx = next_idx - 1;
                     const uint32_t prev_log_term = log_[prev_log_idx].term;
 
                     if (log_.size() - 1 >= next_idx) {
@@ -268,18 +271,22 @@ void Node::MainLoop() {
 
         if (state_ == NodeState::Leader) continue;
 
-        last_leader_contact = leader_contact
+        last_leader_contact_ = leader_contact
             ? std::chrono::steady_clock::now() // reset only if a leader message came in
-            : last_leader_contact;
+            : last_leader_contact_;
 
         // poll the election timer
         auto now = std::chrono::steady_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(last_leader_contact - now);
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_leader_contact_);
+
+        // #ifdef DEBUG
+        // std::cout << "duration = " << duration << "\n";
+        // #endif
 
         if (duration < election_timeout_) continue;
 
         #ifdef DEBUG
-        std::cout << "found election timeout...\n";
+        std::cout << "election timeout; starting election...\n";
         #endif
 
         // start election
@@ -287,11 +294,14 @@ void Node::MainLoop() {
         state_ = NodeState::Candidate;
         ++current_term_;
         voted_for_ = MY_ID;
-        last_leader_contact = std::chrono::steady_clock::now();
+        last_leader_contact_ = std::chrono::steady_clock::now();
 
         for (NodeID id : node_ids_) {
-            auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
+            #ifdef DEBUG
+            std::cout << "sending RV to peer " << id << " on event loop " << static_cast<int>(id & (EVENT_LOOP_THREADS - 1)) << "\n";
+            #endif
 
+            auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
             el->outbound_inbox.PushOne(
                 std::make_unique<RaftMessage>(RequestVoteReqPayload{
                     current_term_,

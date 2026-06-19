@@ -1,49 +1,56 @@
 #pragma once
+
+#define DEBUG
+
 /*
 initial IP addresses provided for bootstrapping
 */
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <string_view>
 #include <sys/types.h>
 
 static constexpr size_t CACHE_LINE_SIZE = 64;
 
+static constexpr uint EVENT_LOOP_THREADS = 1;
+
 static constexpr uint MIN_ELECTION_TIMEOUT_MS = 150;
 static constexpr uint MAX_ELECTION_TIMEOUT_MS = 300;
 
-// Heartbeat cadence. Must be well under MIN_TIMEOUT_MS so followers see
+static constexpr size_t MAX_NODES = 100;
+
+static constexpr int MY_ID = 0;
+
+// Heartbeat cadence (ms). Must be well under MIN_TIMEOUT_MS so followers see
 // liveness before they bother starting an election; 1/3 of MIN_TIMEOUT_MS
 // is a standard pick.
-static constexpr std::chrono::milliseconds HEARTBEAT_INTERVAL{MIN_ELECTION_TIMEOUT_MS / 3};
+static constexpr uint64_t HEARTBEAT_INTERVAL{MIN_ELECTION_TIMEOUT_MS / 3};
 
 static constexpr const char* SERVER_PORT = "6969";
 //static constexpr uint SERVER_SNAPSHOT_PORT = 6970;
 static constexpr const char* CLIENT_PORT = "6971";
 //static constexpr uint CLIENT_SNAPSHOT_PORT = 6972;
 
-// max number of client connections
-static constexpr uint MAX_CLIENT_CONNS = 5;
-static constexpr uint MAX_BUFFER_SIZE = 200; // Size of the buffer that stores incoming data from the network
+// // max number of client connections
+// static constexpr uint MAX_CLIENT_CONNS = 5;
+// static constexpr uint MAX_BUFFER_SIZE = 200; // Size of the buffer that stores incoming data from the network
 
-// static constexpr std::string_view MY_IP_ADDRESS = "192...";
+// // static constexpr std::string_view MY_IP_ADDRESS = "192...";
 static constexpr int SERVER_BACKLOG = 10; // max # of connections allowed to wait on the incoming queue
 
-static constexpr size_t TASK_QUEUE_N = 1024;     // SPMC task queue depth
-static constexpr size_t COMP_QUEUE_N = 64;       // per-worker completion queue depth
-static constexpr size_t POOL_P       = 4;        // worker count, power of 2
+// static constexpr size_t TASK_QUEUE_N = 1024;     // SPMC task queue depth
+// static constexpr size_t COMP_QUEUE_N = 64;       // per-worker completion queue depth
+// static constexpr size_t POOL_P       = 4;        // worker count, power of 2
 
-// Per-payload inline buffer baked into Task/Completion. Payloads up to this
-// size are zero-allocation; larger payloads fall back to a heap allocation.
-static constexpr uint32_t INLINE_PAYLOAD_BYTES = 256;
+// // Per-payload inline buffer baked into Task/Completion. Payloads up to this
+// // size are zero-allocation; larger payloads fall back to a heap allocation.
+// static constexpr uint32_t INLINE_PAYLOAD_BYTES = 256;
 
 // Connection slab capacity. New accepts beyond this cap are closed immediately.
 static constexpr size_t MAX_SERVER_CONNS = 512;
 
 constexpr auto setup_peers() {
-    return std::array<std::string_view, 2>{
-        "1.2.3", "4.5.6"
+    return std::array<const char*, 2>{
+        "0.0.0.0"
     };
 }

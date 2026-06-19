@@ -34,8 +34,10 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> distrib(MIN_ELECTION_TIMEOUT_MS, MAX_ELECTION_TIMEOUT_MS);
-    //n->election_timeout_ = std::chrono::milliseconds(distrib(gen));
-    const long election_timeout = distrib(gen);
+    n->election_timeout_ = std::chrono::milliseconds(distrib(gen));
+    #ifdef DEBUG
+    std::cout << "election timeout set to " << n->election_timeout_ << "\n";
+    #endif
 
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
         std::expected<std::unique_ptr<EventLoop>, std::string> loop_raw = EventLoop::CreateEventLoop(
@@ -75,7 +77,8 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         }
         ++i;
     }
-    n->next_indexes_.resize(n->node_ids_.size());
+    n->log_.push_back(LogEntry{});
+    n->next_indexes_.insert(n->next_indexes_.end(), n->node_ids_.size(), 1);
     n->match_indexes_.resize(n->node_ids_.size());
     n->voters_.reserve(init_peers.size());
     return n;
@@ -190,6 +193,9 @@ void Node::send_disarm_timers() {
 }
 
 void Node::demote() {
+    #ifdef DEBUG
+    std::cout << MY_ID << " was demoted\n";
+    #endif
     voters_.clear();
     voted_for_ = -1;
     send_disarm_timers();

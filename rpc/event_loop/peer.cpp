@@ -83,6 +83,9 @@ VoidExpected EventLoop::StartConnect(PeerConn& p) {
 }
 
 VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
+    #ifdef DEBUG
+    std::cout << "peer " << p.peer_id << " readable\n";
+    #endif
     // get last sent RPC
     InflightRPC& out = p.outbox.front();
 
@@ -108,6 +111,9 @@ VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
             return Unexpected(reply_raw.error());
         }
         RpcReply& reply = reply_raw.value();
+        #ifdef DEBUG
+        std::cout << "passing reply from peer " << p.peer_id << " back to node\n";
+        #endif
         post_node_inbox(reply, p.peer_id);
 
         p.outbox.pop_front();
@@ -116,6 +122,9 @@ VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
 }
 
 VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
+    #ifdef DEBUG
+    std::cout << "peer " << p.peer_id << " writable\n";
+    #endif
     if (p.state == PeerConn::State::Connecting) {
         int err = 0;
         socklen_t l = sizeof(err);
@@ -132,6 +141,9 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
 
     InflightRPC& out = p.outbox.front();
     while (out.bytes_sent < out.req.size()) {
+        #ifdef DEBUG
+        std::cout << "sending RPC to peer " << p.peer_id << "- kind = " << static_cast<int>(out.kind) << "\n";
+        #endif
         ssize_t n = ::send(p.fd,
             out.req.data() + out.bytes_sent,
             out.req.size() - out.bytes_sent,
@@ -151,6 +163,9 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
 }
 
 VoidExpected EventLoop::OnPeerTimer(PeerConn& p) {
+    #ifdef DEBUG
+    std::cout << "heartbeat timer fired for peer " << p.peer_id << "\n";
+    #endif
     uint64_t expirations = 0;
     ssize_t n = ::read(p.timer_fd, &expirations, sizeof(expirations));
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
@@ -165,6 +180,9 @@ VoidExpected EventLoop::OnPeerTimer(PeerConn& p) {
 
 
 void EventLoop::DropPeer(PeerConn& p) {
+    #ifdef DEBUG
+    std::cout << "Dropping peer " << p.peer_id << "\n";
+    #endif
     if (p.fd >= 0) {
         ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, p.fd, nullptr);
         peer_fd_to_id.erase(p.fd);
@@ -174,6 +192,8 @@ void EventLoop::DropPeer(PeerConn& p) {
     p.state        = PeerConn::State::Disconnected;
     p.epoll_events = 0;
     p.outbox.clear();
+    // TODO: send message to node thread to remove this peer from its nodes list
+
     // TODO: In-flight handlers are stranded; their callbacks won't fire. A future
     // pass can either invoke them with a synthetic failure response or
     // implement automatic reconnect + retry.
@@ -220,6 +240,9 @@ void EventLoop::DropPeer(PeerConn& p) {
 
 /* called when draining the messages in the event loop's MPSC inbox. */
 VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID peer_id) {
+    #ifdef DEBUG
+    std::cout << "Posting AE RPC to outbound queue for node " << peer_id << "\n";
+    #endif
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end()) {
         return UnexpectedF(
@@ -250,6 +273,9 @@ VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID 
 }
 
 VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID peer_id) {
+    #ifdef DEBUG
+    std::cout << "Posting RV RPC to outbound queue for node " << peer_id << "\n";
+    #endif
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end()) {
         return UnexpectedF(
@@ -280,6 +306,9 @@ VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID pe
 }
 
 VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeID peer_id) {
+    #ifdef DEBUG
+    std::cout << "Posting IS RPC to outbound queue for node " << peer_id << "\n";
+    #endif
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end()) {
         return UnexpectedF(
@@ -310,6 +339,9 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeI
 }
 
 void EventLoop::arm_heartbeat_timer(NodeID peer_id) {
+    #ifdef DEBUG
+    std::cout << "arming heartbeat timer for peer " << peer_id << "\n";
+    #endif
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end() || it->second.timer_fd < 0) return;
     PeerConn& p = it->second;
@@ -328,6 +360,9 @@ void EventLoop::arm_heartbeat_timer(NodeID peer_id) {
 }
 
 void EventLoop::disarm_heartbeat_timer(NodeID peer_id) {
+    #ifdef DEBUG
+    std::cout << "disarming heartbeat timer for node " << peer_id << "\n";
+    #endif
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end() || it->second.timer_fd < 0) return;
     PeerConn& p = it->second;
@@ -339,6 +374,9 @@ void EventLoop::disarm_heartbeat_timer(NodeID peer_id) {
 }
 
 VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload, NodeID client_id) {
+    #ifdef DEBUG
+    std::cout << "posting AE reply to outbound queue to node " << client_id << "\n";
+    #endif
     auto it = client_conns.find(client_id);
     if (it == client_conns.end()) {
         return UnexpectedF(
@@ -361,6 +399,9 @@ VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload, NodeID cl
 }
 
 VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload, NodeID client_id) {
+    #ifdef DEBUG
+    std::cout << "posting RV reply to outbound queue to node " << client_id << "\n";
+    #endif
     auto it = client_conns.find(client_id);
     if (it == client_conns.end()) {
         return UnexpectedF(
@@ -383,6 +424,9 @@ VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload, NodeID clie
 }
 
 VoidExpectedF EventLoop::post_reply(InstallSnapshotRespPayload& payload, NodeID client_id) {
+    #ifdef DEBUG
+    std::cout << "posting IS reply to outbound queue to node " << client_id << "\n";
+    #endif
     auto it = client_conns.find(client_id);
     if (it == client_conns.end()) {
         return UnexpectedF(

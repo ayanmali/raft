@@ -100,17 +100,17 @@ public:
     // TODO: replace AoS EventLoop w/ SoA pattern
     private:
     NodeInbox& inbox_;
-    // std::unordered_map<uint32_t, PendingReplication>                pending_replications;  // stores requests to append entries for a given log index. Used for identifying the corresponding request for a given AE reply.
     std::unordered_set<NodeID>                                      voters_;
-    std::array<std::unique_ptr<EventLoop>, EVENT_LOOP_THREADS>      loops_;
-    std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
     std::vector<LogEntry>                                           log_;
     std::vector<NodeID>                                             node_ids_;
     std::vector<uint32_t>                                           next_indexes_;         // leader-only, one per peer
     std::vector<uint32_t>                                           match_indexes_;        // leader-only, one per peer
-    std::chrono::steady_clock::time_point                           last_leader_contact;
+
+    std::array<std::unique_ptr<EventLoop>, EVENT_LOOP_THREADS>      loops_;
+    std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
+
+    std::chrono::steady_clock::time_point                           last_leader_contact_;
     std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
-    bool                                                            running_ = false;
 
     int                                                             voted_for_ = -1;
     uint32_t                                                        current_term_ = 0;
@@ -118,6 +118,7 @@ public:
     uint32_t                                                        last_applied_ = 0;     // index of highest log entry applied to state machine
     enum class                                                      NodeState { Follower, Candidate, Leader };
     NodeState                                                       state_ = NodeState::Follower;
+    bool                                                            running_ = false;
 
     Node(NodeInbox&);
     void demote();

@@ -69,6 +69,9 @@ void EventLoop::Wake() {
 }
 
 void EventLoop::wake_eventfd_unconditional() {
+    #ifdef DEBUG
+    std::cout << "waking event loop " << this_id << "\n";
+    #endif
     uint64_t one = 1;
     ssize_t  n   = ::write(event_fd, &one, sizeof(one));
     (void)n; // EAGAIN is fine; eventfd counter is already > 0 and the loop
@@ -271,6 +274,9 @@ void EventLoop::DrainInbox() {
     // store but before we finish draining will see armed=false, rearm, and
     // re-wake -- so the next epoll_wait will see the eventfd already
     // counted up and we'll come right back. No lost items.
+    #ifdef DEBUG
+    std::cout << "draining inbox...\n";
+    #endif
     wake_armed.store(false, std::memory_order_release);
 
     std::unique_ptr<RaftMessage> out;
@@ -280,18 +286,30 @@ void EventLoop::DrainInbox() {
             using T = std::decay_t<decltype(payload)>;
 
             if constexpr (std::is_same_v<T, AppendEntriesReqPayload> || std::is_same_v<T, RequestVoteReqPayload> || std::is_same_v<T, InstallSnapshotReqPayload>) {
+                #ifdef DEBUG
+                std::cout << "found request\n";
+                #endif
                 post_inflight(payload, out->node_id);
             }
 
             else if constexpr (std::is_same_v<T, AppendEntriesRespPayload> || std::is_same_v<T, RequestVoteRespPayload> || std::is_same_v<T, InstallSnapshotRespPayload>) {
+                #ifdef DEBUG
+                std::cout << "found reply\n";
+                #endif
                 post_reply(payload, out->node_id);
             }
 
             else if constexpr (std::is_same_v<T, ArmTimer>) {
+                #ifdef DEBUG
+                std::cout << "found arm timer req\n";
+                #endif
                 arm_heartbeat_timer(out->node_id);
             }
 
             else if constexpr (std::is_same_v<T, DisArmTimer>) {
+                #ifdef DEBUG
+                std::cout << "found disarm timer req\n";
+                #endif
                 disarm_heartbeat_timer(out->node_id);
             }
 

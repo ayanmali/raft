@@ -57,7 +57,13 @@ VoidExpected EventLoop::Accept() {
 }
 
 VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
+    #ifdef DEBUG
+    std::cout << "client " << c->id << " writable\n";
+    #endif
     while (c->wbuf_offset < c->wbuf.size()) {
+        #ifdef DEBUG
+        std::cout << "sending reply to client " << c->id << "\n";
+        #endif
         ssize_t n = ::send(
             c->fd,
             c->wbuf.data() + c->wbuf_offset,
@@ -84,6 +90,9 @@ VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
 
 VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
     // TODO: if latency is too high here, replace c.rbuf w a ring buffer, or use readv
+    #ifdef DEBUG
+    std::cout << "client " c->id << " readable\n";
+    #endif
     for (;;) {
         size_t old = c->rbuf.size();
         c->rbuf.resize(old + RECV_CHUNK);
@@ -104,6 +113,10 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
 
     // drain as many complete request frames as the buffer can hold
     while (!c->closing && !c->rbuf.empty()) {
+        #ifdef DEBUG
+        std::cout << "reading request" << "\n";
+        #endif
+
         size_t before = c->rbuf.size();
 
         auto [request_raw, rpc_id] = parse_rbuf(c); // erases the read bytes in rbuf
@@ -112,6 +125,9 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
             return Unexpected(request_raw.error());
         }
         RpcRequest& req = request_raw.value();
+        #ifdef DEBUG
+        std::cout << "posting inbound request from client " << c->id << " to node inbox\n";
+        #endif
         post_node_inbox(req, c->id);
 
         if (c->rbuf.size() == before) break; // need more bytes
@@ -120,6 +136,9 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
 }
 
 void EventLoop::CloseClient(ClientConn* c) {
+    #ifdef DEBUG
+    std::cout << "closing client " << c->id << "\n";
+    #endif
     if (c->closing) return;
     c->closing = true;
 
