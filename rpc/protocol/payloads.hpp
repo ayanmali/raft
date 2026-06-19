@@ -2,7 +2,7 @@
 /*
 RPC request/response payload structs.
 */
-#include "../../core/log_entry.hpp"
+#include "../../core/log_utils.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -60,11 +60,12 @@ struct AppendEntriesReqPayload {
 };
 
 struct AppendEntriesRespPayload {
+    uint64_t entries_len;
     uint32_t term;
     uint8_t success; // 0 = fail, 1 = success
 
     auto size() const {
-      auto s = sizeof(term) + sizeof(success);
+      auto s = sizeof(entries_len) + sizeof(term) + sizeof(success);
       return s;
     };
 };

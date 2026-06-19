@@ -248,10 +248,11 @@ struct ByteWriter {
     };
 
     void serialize(const AppendEntriesRespPayload& payload) {
-        auto msg_size    = htonll(payload.size());
+        auto msg_size        = htonll(payload.size());
         //auto net_id = htons(AE_REPLY_ID);
-        auto net_term    = htonl(payload.term);
-        auto net_success = payload.success;
+        auto net_entries_len = htonll(payload.entries_len);
+        auto net_term        = htonl(payload.term);
+        auto net_success     = payload.success;
 
         // buf.resize(payload.size() + sizeof(msg_size) + sizeof(net_id));
         buf.resize(payload.size() + sizeof(msg_size));
@@ -262,6 +263,9 @@ struct ByteWriter {
 
         // std::memcpy(buf.data() + ptr, &net_id, sizeof(net_id));
         // ptr += sizeof(net_id);
+
+        std::memcpy(buf.data() + ptr, &net_entries_len, sizeof(net_entries_len));
+        ptr += sizeof(net_entries_len);
 
         std::memcpy(buf.data() + ptr, &net_term, sizeof(net_term));
         ptr += sizeof(net_term);

@@ -5,12 +5,11 @@
 #include "node.hpp"
 #include <csignal>
 #include <random>
-#include <span>
 #ifdef DEBUG
 #include <iostream>
 #endif
 
-Node::Node(NodeInbox& inbox_) : inbox(inbox_) {}
+Node::Node(NodeInbox& inbox_) : inbox_(inbox_) {}
 
 // Factory function
 // Node requires stable addresses (i.e. not movable)
@@ -65,7 +64,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     auto init_peers = setup_peers();
     int i{0};
     for (const auto& addr : init_peers) {
-        n->node_ids.push_back(i);
+        n->node_ids_.push_back(i);
 
         VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
             ->AddPeer(i, addr, CLIENT_PORT);
@@ -76,224 +75,14 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         }
         ++i;
     }
-    n->next_index.resize(n->node_ids.size());
-    n->match_index.resize(n->node_ids.size());
-    n->voters.reserve(init_peers.size());
+    n->next_index_.resize(n->node_ids_.size());
+    n->match_index_.resize(n->node_ids_.size());
+    n->voters_.reserve(init_peers.size());
     return n;
 }
 
 Node::~Node() {
     Stop();
-}
-
-void Node::MainLoop() {
-    #ifdef DEBUG
-    std::cout << "starting node loop (main thread)\n";
-    #endif
-    while (true) {
-        // check the reply inbox for new replies that have arrived
-        // TODO: implement handlers
-        bool leader_contact{false};
-        bool demoted{false};
-        inbox.DrainAll([this, &leader_contact, &demoted](std::unique_ptr<RaftMessage>&& message) {
-            #ifdef DEBUG
-            std::cout << "draining node inbox...\n";
-            #endif
-            std::visit([this, &message, &leader_contact, &demoted](auto&& payload) {
-                using T = std::decay_t<decltype(payload)>;
-                auto client_id = message->node_id;
-                auto& el_inbox = loops_[client_id & (EVENT_LOOP_THREADS - 1)]->outbound_inbox;
-
-                if constexpr (std::is_same_v<T, AppendEntriesReqPayload>) {
-                    #ifdef DEBUG
-                    std::cout << "found AE RPC\n";
-                    #endif
-
-                    if (current_term > payload.term) {
-                        el_inbox.PushOne(
-                            std::make_unique<RaftMessage>(
-                                AppendEntriesRespPayload{.term = current_term, .success = 0}, client_id
-                            )
-                        );
-                    }
-                    if (current_term < payload.term) {
-                        current_term = payload.term;
-                        voted_for = -1;
-                        demoted = demoted || state == NodeState::Leader;
-                        state = NodeState::Follower;
-                        leader_contact = true;
-                        el_inbox.PushOne(
-                            std::make_unique<RaftMessage>(
-                            AppendEntriesRespPayload{.success = 1}, client_id
-                            )
-                        );
-                    }
-                }
-
-                else if constexpr (std::is_same_v<T, RequestVoteReqPayload>) {
-                    #ifdef DEBUG
-                    std::cout << "found RV RPC\n";
-                    #endif
-
-                    if (payload.term < current_term) {
-                        el_inbox.PushOne(
-                            std::make_unique<RaftMessage>(
-                                RequestVoteRespPayload{current_term, 0}, client_id
-                            )
-                        );
-                        return;
-                    }
-
-                    if (payload.term > current_term) {
-                        current_term = payload.term;
-                        demoted = demoted || state == NodeState::Leader;
-                        state = NodeState::Follower;
-                        voted_for = -1;
-                        leader_contact = true;
-                    }
-
-                    uint32_t last_log_term = log.back().term;
-                    uint32_t last_log_idx = log.size() - 1;
-                    if (payload.last_log_term > last_log_term
-                    || (payload.last_log_term == last_log_term
-                        && payload.last_log_idx >= last_log_idx))
-                    {
-                        voted_for = client_id;
-                    }
-
-                    el_inbox.PushOne(
-                        std::make_unique<RaftMessage>(
-                        RequestVoteRespPayload{current_term, 1}, client_id
-                        )
-                    );
-                }
-
-                else if constexpr (std::is_same_v<T, InstallSnapshotReqPayload>) {
-                    #ifdef DEBUG
-                    std::cout << "found IS RPC\n";
-                    #endif
-
-                    if (payload.term < current_term) {
-                        el_inbox.PushOne(
-                            std::make_unique<RaftMessage>(
-                            InstallSnapshotRespPayload{current_term}, client_id)
-                        );
-                        return;
-                    }
-
-                    current_term = payload.term;
-                    demoted = demoted || state == NodeState::Leader;
-                    state = NodeState::Follower;
-                    voted_for = -1;
-                    leader_contact = true;
-                    // TODO: chunk reassembly, install snapshot to state machine.
-                    el_inbox.PushOne(
-                        std::make_unique<RaftMessage>(
-                        InstallSnapshotRespPayload{current_term}, client_id)
-                    );
-                }
-
-                else if constexpr (std::is_same_v<T, AppendEntriesRespPayload>) {
-                    #ifdef DEBUG
-                    std::cout << "found AE reply\n";
-                    #endif
-                }
-
-                else if constexpr (std::is_same_v<T, RequestVoteRespPayload>) {
-                    #ifdef DEBUG
-                    std::cout << "found RV reply\n";
-                    #endif
-
-                    if (state != NodeState::Candidate
-                        || payload.term != current_term
-                        || !payload.vote_granted
-                        || !voters.insert(client_id).second
-                    ) return;
-
-                    // become leader if quorum of votes achieved
-                    if (++votes_received >= (node_ids.size()+1) / 2) { // add 1 to account for this node
-                        state = NodeState::Leader;
-                        send_heartbeats_and_arm_timers();
-                        voters.clear();
-                        votes_received = 0;
-
-                        uint32_t last_log_idx = static_cast<uint32_t>(log.size());
-                        for (auto& i : next_index) {
-                            i = last_log_idx + 1;
-                        }
-                        for (auto& i : match_index) {
-                            i = 0;
-                        }
-                    }
-
-                }
-
-                else if constexpr (std::is_same_v<T, InstallSnapshotRespPayload>) {
-                    #ifdef DEBUG
-                    std::cout << "found IS reply\n";
-                    #endif
-                }
-
-                // heartbeats are sent per follower, not all at once.
-                else if constexpr (std::is_same_v<T, HeartbeatTimeoutPayload>) {
-                    #ifdef DEBUG
-                    std::cout << "found heartbeat timeout; sending heartbeats...\n";
-                    #endif
-                    send_rpc(AppendEntriesReqPayload{current_term}, client_id);
-                    loops_[client_id & (EVENT_LOOP_THREADS - 1)]->Wake();
-                }
-
-                // These are control messages sent to event loops, not handled by Node.
-                else if constexpr (std::is_same_v<T, ArmTimer> || std::is_same_v<T, DisArmTimer>) {}
-
-                else {
-                    static_assert(false, "non-exhaustive visitor");
-                }
-            }, message->data);
-        });
-
-        if (demoted) {
-            voters.clear();
-            votes_received = 0;
-            voted_for = -1;
-            send_disarm_timers();
-            continue;
-        }
-
-        if (state == NodeState::Leader) continue;
-
-        last_leader_contact = leader_contact
-            ? std::chrono::steady_clock::now() // reset only if a leader message came in
-            : last_leader_contact;
-
-        // poll the election timer
-        auto now = std::chrono::steady_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(last_leader_contact - now);
-
-        if (duration < election_timeout_) continue;
-
-        #ifdef DEBUG
-        std::cout << "found election timeout...\n";
-        #endif
-
-        // start election
-        if (state == NodeState::Candidate) continue;
-        state = NodeState::Candidate;
-        ++current_term;
-        voted_for = MY_ID;
-        votes_received = 1;
-        last_leader_contact = std::chrono::steady_clock::now();
-
-        for (NodeID id : node_ids) {
-            send_rpc(RequestVoteReqPayload{
-                current_term,
-                MY_ID,
-                static_cast<uint32_t>(log.size() - 1),
-                log.back().term
-            }, id);
-            loops_[id & (EVENT_LOOP_THREADS - 1)]->Wake();
-        }
-    }
 }
 
 inline void Node::Stop() {
@@ -306,7 +95,7 @@ inline void Node::Stop() {
     }
 }
 
-// ---- outbound shims --------------------------------------------------------
+// ---- outbound --------------------------------------------------------
 
 void Node::send_rpc(AppendEntriesReqPayload&& payload, NodeID peer_id) {
     auto& el = loops_[peer_id & (EVENT_LOOP_THREADS - 1)];
@@ -329,47 +118,53 @@ void Node::send_rpc(InstallSnapshotReqPayload&& payload, NodeID peer_id) {
     );
 }
 
-void Node::append_log_entries(std::vector<std::vector<std::byte>>& entries) {
-    const uint32_t last_log_idx = log.size() - 1;
+void Node::append_commands(std::vector<std::vector<std::byte>>& commands) {
+    //const uint32_t last_log_idx = log_.size() - 1;
+    log_.reserve(commands.size());
 
-    log.reserve(entries.size());
-    for (auto& command : entries) {
-        log.emplace_back(command, current_term);
+    for (auto& command : commands) {
+        log_.emplace_back(command, current_term_);
     }
 
-    for (int i = 0; i < node_ids.size(); ++i) {
-        const uint32_t next_idx = next_index[i];
-        if (last_log_idx < next_idx) continue;
+    // auto log_index = log_.size();
 
-        const uint32_t prev_log_idx = next_idx > 0 ? next_idx - 1 : 0;
-        const uint32_t prev_log_term = log[prev_log_idx].term;
 
-        auto& el = loops_[node_ids[i] & (EVENT_LOOP_THREADS - 1)];
-        auto entries_to_append = std::span<LogEntry>(log.data() + next_idx, log.size() - next_idx);
-        el->outbound_inbox.PushOne(
-            std::make_unique<RaftMessage>(AppendEntriesReqPayload{
-                entries_to_append,
-                current_term,
-                MY_ID,
-                prev_log_idx,
-                prev_log_term,
-                commit_index
-            }, node_ids[i])
-        );
-    }
+    // for (int i = 0; i < node_ids_.size(); ++i) {
+    //     const uint32_t next_idx = next_index_[i];
+    //     if (last_log_idx < next_idx) continue;
+
+    //     const uint32_t prev_log_idx = next_idx > 0 ? next_idx - 1 : 0;
+    //     const uint32_t prev_log_term = log_[prev_log_idx].term;
+
+        //auto& el = loops_[node_ids_[i] & (EVENT_LOOP_THREADS - 1)];
+        //auto entries_to_append = std::span<LogEntry>(log_.data() + next_idx, log_.size() - next_idx);
+
+        // Message will be posted to event loop when the next heartbeat is sent.
+
+        // el->outbound_inbox.PushOne(
+        //     std::make_unique<RaftMessage>(AppendEntriesReqPayload{
+        //         entries_to_append,
+        //         current_term_,
+        //         MY_ID,
+        //         prev_log_idx,
+        //         prev_log_term,
+        //         commit_index_
+        //     }, node_ids_[i])
+        // );
+        //}
 }
 
 // runs upon winning an election
 void Node::send_heartbeats_and_arm_timers() {
-    for (auto id : node_ids) {
+    for (auto id : node_ids_) {
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
         // send heartbeat rpc
         el->outbound_inbox.PushOne(
             std::make_unique<RaftMessage>(
-                AppendEntriesReqPayload{current_term}, id
+                AppendEntriesReqPayload{current_term_}, id
             )
         );
-        //arm this peer's heartbeat timer so we know when to send the next heartbeat.
+        // arm this peer's heartbeat timer so we know when to send the next heartbeat.
         el->outbound_inbox.PushOne(
             // send heartbeat rpc
             std::make_unique<RaftMessage>(
@@ -383,7 +178,7 @@ void Node::send_heartbeats_and_arm_timers() {
 /* Runs upon leader demotion */
 void Node::send_disarm_timers() {
     //if (state == NodeState::Leader) return; // leader; don't run
-    for (auto id : node_ids) {
+    for (auto id : node_ids_) {
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
         el->outbound_inbox.PushOne(
             std::make_unique<RaftMessage>(
@@ -393,48 +188,3 @@ void Node::send_disarm_timers() {
         el->Wake();
     }
 }
-
-// template <uint N>
-// void Node<N>::tick_peer(NodeID peer_id) {
-//     AppendEntriesReqPayload payload{}; // heartbeat message == empty AE message
-//     // {
-//     //     std::lock_guard<std::mutex> lk(state_mu_);
-//     //     if (!leader) return;                                      // not leader: nothing to send
-//     // }
-//     if (!leader.load(std::memory_order_acquire)) return; // not leader; nothing to send
-//     // Enqueue lands in this peer's owning loop's inbox.
-//     // g_loop_producer_id is set because we're on a loop thread.
-//     // loops_[peer_id % N]->EnqueueAE(
-//     //     peer_id, std::move(payload),
-//     //     [this, peer_id](AppendEntriesRespPayload r) { on_ae_reply(peer_id, r); });
-
-// }
-
-// template <uint N>
-// inline void Node<N>::on_leader_elected() {
-//     // Caller has already snapshotted state under state_mu_ and decided
-//     // we're now leader. Arm every peer's heartbeat timer on its owning
-//     // loop. The Enqueue path routes through the inbox so the
-//     // timerfd_settime syscall happens on the owning loop's thread, not
-//     // on whichever loop detected the election win.
-//     // for (const auto& p : peers_) {
-//     //     loops_[p.id % N]->EnqueueArmTimer(p.id, HEARTBEAT_INTERVAL);
-//     // }
-//     for (auto& loop : loops_) {
-//         for (auto& [id, pc] : loop->peer_conns) {
-//             loop->EnqueueArmTimer(id, HEARTBEAT_INTERVAL);
-//         }
-//     }
-// }
-
-// template <uint N>
-// inline void Node<N>::on_leader_demoted() {
-//     // for (const auto& p : peers_) {
-//     //     loops_[p.id % N]->EnqueueDisarmTimer(p.id);
-//     // }
-//     for (auto& loop : loops_) {
-//         for (auto& [id, pc] : loop->peer_conns) {
-//             loop->EnqueueDisarmTimer(id, HEARTBEAT_INTERVAL);
-//         }
-//     }
-// }

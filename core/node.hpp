@@ -35,7 +35,7 @@ Persistence:
 #include "../rpc/conns.hpp"
 #include "../rpc/event_loop/event_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
-#include "log_entry.hpp"
+#include "log_utils.hpp"
 #include <array>
 #include <chrono>
 #include <csignal>
@@ -69,10 +69,10 @@ public:
     // Outbound RPC entry points. Resolve the owning loop by
     // peer_id % N and post the request into its inbox. The reply
     // callback fires on that loop's thread.
-    void send_rpc(AppendEntriesReqPayload&&, NodeID peer_id);
-    void send_rpc(RequestVoteReqPayload&&, NodeID peer_id);
-    void send_rpc(InstallSnapshotReqPayload&&, NodeID peer_id);
-    void append_log_entries(std::vector<std::vector<std::byte>>& entry);
+    void send_rpc(AppendEntriesReqPayload&&, NodeID);
+    void send_rpc(RequestVoteReqPayload&&, NodeID);
+    void send_rpc(InstallSnapshotReqPayload&&, NodeID);
+    void append_commands(std::vector<std::vector<std::byte>>&);
     void send_heartbeats_and_arm_timers(); // upon leader promotion
     void send_disarm_timers(); // upon leader demotion
 
@@ -97,44 +97,27 @@ public:
     // RequestVoteRespPayload       handle_request_vote(const RequestVoteReqPayload&);
     // InstallSnapshotRespPayload   handle_install_snapshot(const InstallSnapshotReqPayload&);
 
-    private:
-    NodeInbox& inbox;
-    // ---- transport ----
     // TODO: replace AoS EventLoop w/ SoA pattern
-    std::vector<NodeID>                                             node_ids;
-    std::unordered_set<NodeID>                                      voters;
+    private:
+    NodeInbox& inbox_;
+    // std::unordered_map<uint32_t, PendingReplication>                pending_replications;  // stores requests to append entries for a given log index. Used for identifying the corresponding request for a given AE reply.
+    std::unordered_set<NodeID>                                      voters_;
     std::array<std::unique_ptr<EventLoop>, EVENT_LOOP_THREADS>      loops_;
     std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
+    std::vector<LogEntry>                                           log_;
+    std::vector<NodeID>                                             node_ids_;
+    std::vector<int>                                                next_index_;           // leader-only, one per peer
+    std::vector<int>                                                match_index_;          // leader-only, one per peer
     std::chrono::steady_clock::time_point                           last_leader_contact;
+    std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
     bool                                                            running_ = false;
 
-    // ---- raft state ----
-    uint32_t                                       current_term  = 0;
-    int                                            voted_for     = -1;
-    std::vector<LogEntry>                          log;
-    uint32_t                                       commit_index  = 0;   // index of highest log entry known to be committed
-    uint32_t                                       last_applied  = 0;   // index of highest log entry applied to state machine
-    std::vector<int>                               next_index;          // leader-only, one per peer
-    std::vector<int>                               match_index;         // leader-only, one per peer
-    enum class                                     NodeState { Follower, Candidate, Leader };
-    NodeState                                      state         = NodeState::Follower;
-    // Election timeout, randomized at construction.
-    std::chrono::milliseconds                      election_timeout_;
+    int                                                             voted_for_ = -1;
+    uint32_t                                                        current_term_ = 0;
+    uint32_t                                                        commit_index_ = 0;     // index of highest log entry known to be committed
+    uint32_t                                                        last_applied_ = 0;     // index of highest log entry applied to state machine
+    enum class                                                      NodeState { Follower, Candidate, Leader };
+    NodeState                                                       state_ = NodeState::Follower;
 
-    // ---- election state ----
-    uint32_t votes_received;
-
-    // ---- setup helpers ----
-
-    // Constructs the RpcHandlers struct (member-fn lambdas) the loops
-    // dispatch to on inbound requests.
-    // RpcHandlers make_handlers();
-    //
     Node(NodeInbox&);
-    //void tick_peer(NodeID peer_id);
-
-    // std::expected<RpcReply, const char*> handle_append_entries_req(const RpcRequest& message);
-    // std::expected<RpcReply, const char*> handle_request_vote_req(const RpcRequest& message);
-    // std::expected<RpcReply, const char*> handle_install_snapshot_req(const RpcRequest& message);
-
 };

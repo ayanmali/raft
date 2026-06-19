@@ -8,6 +8,7 @@
 inline std::expected<RpcReply, const char*> parse_ae_reply(ByteReader& byte_reader) {
     AppendEntriesRespPayload response;
 
+    if (!byte_reader.read(response.entries_len)) return Unexpected("failed to parse AppendEntries response entries_len field");
     if (!byte_reader.read(response.term)) return Unexpected("failed to parse AppendEntries response term field");
     if (!byte_reader.read(response.success)) return Unexpected("failed to parse AppendEntries response success field");
     return response;
