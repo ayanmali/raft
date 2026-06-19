@@ -91,7 +91,7 @@ VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
 VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
     // TODO: if latency is too high here, replace c.rbuf w a ring buffer, or use readv
     #ifdef DEBUG
-    std::cout << "client " c->id << " readable\n";
+    std::cout << "client " << c->id << " readable\n";
     #endif
     for (;;) {
         size_t old = c->rbuf.size();

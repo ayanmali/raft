@@ -281,7 +281,7 @@ VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID pe
         return UnexpectedF(
             std::format("peer id {} not found\n", peer_id)
         );
-    } // message gets dropped
+    }
     PeerConn& p = it->second;
 
     // serialize bytes into peer outbox
