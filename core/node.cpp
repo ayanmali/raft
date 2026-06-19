@@ -188,3 +188,10 @@ void Node::send_disarm_timers() {
         el->Wake();
     }
 }
+
+void Node::demote() {
+    voters_.clear();
+    voted_for_ = -1;
+    send_disarm_timers();
+    state_ = NodeState::Follower;
+}

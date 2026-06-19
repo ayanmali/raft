@@ -120,4 +120,5 @@ public:
     NodeState                                                       state_ = NodeState::Follower;
 
     Node(NodeInbox&);
+    void demote();
 };

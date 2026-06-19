@@ -11,15 +11,14 @@ void Node::MainLoop() {
     while (true) {
         // check the reply inbox for new replies that have arrived
         bool leader_contact{false};
-        bool demoted{false};
-        inbox_.DrainAll([this, &leader_contact, &demoted](std::unique_ptr<RaftMessage>&& message) {
+        inbox_.DrainAll([this, &leader_contact](std::unique_ptr<RaftMessage>&& message) {
             #ifdef DEBUG
             std::cout << "draining node inbox...\n";
             #endif
-            std::visit([this, &message, &leader_contact, &demoted](auto&& payload) {
+            std::visit([this, &message, &leader_contact](auto&& payload) {
                 using T = std::decay_t<decltype(payload)>;
                 auto client_id = message->node_id;
-                auto& el_inbox = loops_[client_id & (EVENT_LOOP_THREADS - 1)]->outbound_inbox;
+                auto& el = loops_[client_id & (EVENT_LOOP_THREADS - 1)];
 
                 /* Handlers */
 
@@ -28,19 +27,34 @@ void Node::MainLoop() {
                     std::cout << "found AE RPC\n";
                     #endif
 
-                    if (current_term_ > payload.term) {
-                        el_inbox.PushOne(
+                    // reply false if:
+                    // term < current_term
+                    // log doesn't contain an entry at prev_log_index whose term matches prev_log_term
+                    if (current_term_ > payload.term
+                    || log_[payload.prev_log_idx].term != payload.prev_log_term
+                    ) {
+                        el->outbound_inbox.PushOne(
                             std::make_unique<RaftMessage>(
                                 AppendEntriesRespPayload{.term = current_term_, .success = 0}, client_id
                             )
                         );
                     }
+
+                    // if an existing entry conflicts w/ a new one (same index but different terms), delete the existing entry and all that follow it
+                    // ...
+
+                    // append any entries not already in the log
+                    // ...
+
+                    if (payload.leader_commit > commit_index_) {
+                        commit_index_ = std::min(payload.leader_commit, static_cast<uint32_t>(payload.prev_log_idx + payload.entries.size()));
+                    }
+
                     current_term_ = payload.term;
-                    voted_for_ = -1;
-                    demoted = demoted || state_ == NodeState::Leader;
-                    state_ = NodeState::Follower;
+                    if (state_ == NodeState::Leader) demote();
                     leader_contact = true;
-                    el_inbox.PushOne(
+
+                    el->outbound_inbox.PushOne(
                         std::make_unique<RaftMessage>(
                         AppendEntriesRespPayload{.success = 1}, client_id
                         )
@@ -53,7 +67,7 @@ void Node::MainLoop() {
                     #endif
 
                     if (payload.term < current_term_ || voted_for_ != -1) {
-                        el_inbox.PushOne(
+                        el->outbound_inbox.PushOne(
                             std::make_unique<RaftMessage>(
                                 RequestVoteRespPayload{current_term_, 0}, client_id
                             )
@@ -63,9 +77,7 @@ void Node::MainLoop() {
 
                     if (payload.term > current_term_) {
                         current_term_ = payload.term;
-                        demoted = demoted || state_ == NodeState::Leader;
-                        state_ = NodeState::Follower;
-                        voted_for_ = -1;
+                        if (state_ == NodeState::Leader) demote();
                     }
 
                     leader_contact = true;
@@ -78,7 +90,7 @@ void Node::MainLoop() {
                         voted_for_ = client_id;
                     }
 
-                    el_inbox.PushOne(
+                    el->outbound_inbox.PushOne(
                         std::make_unique<RaftMessage>(
                         RequestVoteRespPayload{current_term_, 1}, client_id
                         )
@@ -91,7 +103,7 @@ void Node::MainLoop() {
                     #endif
 
                     if (payload.term < current_term_) {
-                        el_inbox.PushOne(
+                        el->outbound_inbox.PushOne(
                             std::make_unique<RaftMessage>(
                             InstallSnapshotRespPayload{current_term_}, client_id)
                         );
@@ -99,12 +111,10 @@ void Node::MainLoop() {
                     }
 
                     current_term_ = payload.term;
-                    demoted = demoted || state_ == NodeState::Leader;
-                    state_ = NodeState::Follower;
-                    voted_for_ = -1;
+                    if (state_ == NodeState::Leader) demote();
                     leader_contact = true;
                     // TODO: chunk reassembly, install snapshot to state machine.
-                    el_inbox.PushOne(
+                    el->outbound_inbox.PushOne(
                         std::make_unique<RaftMessage>(
                         InstallSnapshotRespPayload{current_term_}, client_id)
                     );
@@ -232,7 +242,7 @@ void Node::MainLoop() {
                     else {
                         send_rpc(AppendEntriesReqPayload{current_term_}, client_id);
                     }
-                    loops_[client_id & (EVENT_LOOP_THREADS - 1)]->Wake();
+                    el->Wake();
                 }
 
                 // These are control messages sent to event loops, not handled by Node.
@@ -243,13 +253,6 @@ void Node::MainLoop() {
                 }
             }, message->data);
         });
-
-        if (demoted) {
-            voters_.clear();
-            voted_for_ = -1;
-            send_disarm_timers();
-            continue;
-        }
 
         if (state_ == NodeState::Leader) continue;
 
