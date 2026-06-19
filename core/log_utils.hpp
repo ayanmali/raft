@@ -9,11 +9,14 @@
 struct LogEntry {
     std::vector<std::byte> data;
     uint32_t term;
+
+    LogEntry() {};
+    LogEntry(std::vector<std::byte>&& data, uint32_t term) : data{data}, term{term} {}
 };
 
-inline void commit_if_quorum(std::span<int> match_index, uint32_t& commit_index, const uint32_t& current_term, std::span<LogEntry> log) {
-    auto freqs = std::unordered_map<uint32_t, uint32_t>(match_index.size());
-    for (auto match_idx : match_index) {
+inline void commit_if_quorum(std::span<uint32_t> match_indexes, uint32_t& commit_index, uint32_t current_term, std::span<LogEntry> log) {
+    auto freqs = std::unordered_map<uint32_t, uint32_t>(match_indexes.size());
+    for (auto match_idx : match_indexes) {
         freqs[match_idx]++;
     }
 
@@ -21,7 +24,7 @@ inline void commit_if_quorum(std::span<int> match_index, uint32_t& commit_index,
     auto kv_max_freq = std::max_element(freqs.begin(), freqs.end(), [](const std::pair<uint32_t, uint32_t>& a, const std::pair<uint32_t, uint32_t>& b){
        return a.second > b.second;
     });
-    if (kv_max_freq->second <= match_index.size() / 2) return;
+    if (kv_max_freq->second <= match_indexes.size() / 2) return;
     if (kv_max_freq->first > commit_index && log[kv_max_freq->first].term == current_term) {
         commit_index = kv_max_freq->first;
         return;
@@ -36,7 +39,7 @@ inline void commit_if_quorum(std::span<int> match_index, uint32_t& commit_index,
     std::sort(freqs_vec.begin(), freqs_vec.end(), [](auto& a, auto& b){ return a.second > b.second; });
 
     for (auto& [match_idx, count] : freqs_vec) {
-        if (count < match_index.size() / 2) break;
+        if (count < match_indexes.size() / 2) break;
         if (match_idx > commit_index && log[match_idx].term == current_term) {
             commit_index = match_idx;
             break;

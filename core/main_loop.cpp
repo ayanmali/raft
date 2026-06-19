@@ -1,4 +1,5 @@
 #include "./node.hpp"
+#include "./log_utils.hpp"
 #include <algorithm>
 #ifdef DEBUG
 #include <iostream>
@@ -41,10 +42,20 @@ void Node::MainLoop() {
                     }
 
                     // if an existing entry conflicts w/ a new one (same index but different terms), delete the existing entry and all that follow it
-                    // ...
+                    int i = 1;
+                    for (; i < log_.size() - payload.prev_log_idx - 1; ++i) {
+                        if (log_[payload.prev_log_idx + i + 1].term != payload.entries[i].term) {
+                            // conflict
+                            log_.erase(log_.begin() + i, log_.end());
+                            break;
+                        }
+                    }
 
                     // append any entries not already in the log
-                    // ...
+                    log_.reserve(payload.entries.size());
+                    for (auto it = payload.entries.begin() + i; it < payload.entries.end(); ++it) {
+                        log_.emplace_back(std::move(it->data), it->term);
+                    }
 
                     if (payload.leader_commit > commit_index_) {
                         commit_index_ = std::min(payload.leader_commit, static_cast<uint32_t>(payload.prev_log_idx + payload.entries.size()));
@@ -97,6 +108,7 @@ void Node::MainLoop() {
                     );
                 }
 
+                // TODO
                 else if constexpr (std::is_same_v<T, InstallSnapshotReqPayload>) {
                     #ifdef DEBUG
                     std::cout << "found IS RPC\n";
@@ -127,7 +139,7 @@ void Node::MainLoop() {
 
                     const uint32_t last_log_idx = log_.size() - 1;
                     auto it = std::find(node_ids_.begin(), node_ids_.end(), client_id);
-                    const uint32_t next_idx = next_index_[it - node_ids_.begin()] - 1;
+                    const uint32_t next_idx = next_indexes_[it - node_ids_.begin()] - 1;
                     const uint32_t prev_log_idx = next_idx > 0 ? next_idx - 1 : 0;
                     const uint32_t prev_log_term = log_[prev_log_idx].term;
 
@@ -160,11 +172,10 @@ void Node::MainLoop() {
                      - matchIndex is set to the index of the last entry successfully
                      appended (calculated as prevLogIndex + len(entries))
                      */
-                    next_index_[it - node_ids_.begin()] += payload.entries_len;
-                    match_index_[it - node_ids_.begin()] = prev_log_idx + payload.entries_len;
+                    next_indexes_[it - node_ids_.begin()] += payload.entries_len;
+                    match_indexes_[it - node_ids_.begin()] = prev_log_idx + payload.entries_len;
 
                     /*
-                     TODO:
                      if there exists an N such that
                      N > commit_index,
                      a majority of matchIndex[N] >= N,
@@ -174,10 +185,10 @@ void Node::MainLoop() {
                      i.e. if a majority of servers have a matchIndex greater than or equal to index N,
                      and the entry at N is in the current term,
                      then set commitIndex to N
-                     --> entries <= commitIndex become committed. Send confirmation to client
+                     --> entries <= commitIndex become committed. TODO: Send confirmation to client
                      */
 
-                    commit_if_quorum(match_index_, commit_index_, current_term_, log_);
+                    commit_if_quorum(match_indexes_, commit_index_, current_term_, log_);
 
                 }
 
@@ -193,23 +204,24 @@ void Node::MainLoop() {
                     ) return;
 
                     // become leader if quorum of votes achieved
-                    if (voters_.size() + 1 >= (node_ids_.size()+1) / 2) { // add 1 to account for this node
+                    if (voters_.size() + 1 > (node_ids_.size()+1) / 2) { // add 1 to account for this node
                         state_ = NodeState::Leader;
                         send_heartbeats_and_arm_timers();
                         voters_.clear();
                         voted_for_ = -1;
 
                         uint32_t last_log_idx = static_cast<uint32_t>(log_.size());
-                        for (auto& i : next_index_) {
+                        for (uint32_t& i : next_indexes_) {
                             i = last_log_idx + 1;
                         }
-                        for (auto& i : match_index_) {
+                        for (uint32_t& i : match_indexes_) {
                             i = 0;
                         }
                     }
 
                 }
 
+                // TODO
                 else if constexpr (std::is_same_v<T, InstallSnapshotRespPayload>) {
                     #ifdef DEBUG
                     std::cout << "found IS reply\n";
@@ -224,7 +236,7 @@ void Node::MainLoop() {
                     // if last log index >= this follower's nextIndex,
                     // then send AE RPC w/ log entries starting at nextIndex. Otherwise, send term w/ no entries.
                     const auto it = std::find(node_ids_.begin(), node_ids_.end(), client_id);
-                    const uint32_t next_idx = next_index_[it - node_ids_.begin()];
+                    const uint32_t next_idx = next_indexes_[it - node_ids_.begin()];
                     auto s = std::span<LogEntry>(log_.data() + next_idx, log_.size() - next_idx);
                     const uint32_t prev_log_idx = next_idx > 0 ? next_idx - 1 : 0;
                     const uint32_t prev_log_term = log_[prev_log_idx].term;

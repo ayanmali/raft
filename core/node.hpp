@@ -106,8 +106,8 @@ public:
     std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
     std::vector<LogEntry>                                           log_;
     std::vector<NodeID>                                             node_ids_;
-    std::vector<int>                                                next_index_;           // leader-only, one per peer
-    std::vector<int>                                                match_index_;          // leader-only, one per peer
+    std::vector<uint32_t>                                           next_indexes_;         // leader-only, one per peer
+    std::vector<uint32_t>                                           match_indexes_;        // leader-only, one per peer
     std::chrono::steady_clock::time_point                           last_leader_contact;
     std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
     bool                                                            running_ = false;

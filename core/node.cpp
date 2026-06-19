@@ -75,8 +75,8 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         }
         ++i;
     }
-    n->next_index_.resize(n->node_ids_.size());
-    n->match_index_.resize(n->node_ids_.size());
+    n->next_indexes_.resize(n->node_ids_.size());
+    n->match_indexes_.resize(n->node_ids_.size());
     n->voters_.reserve(init_peers.size());
     return n;
 }
@@ -123,7 +123,7 @@ void Node::append_commands(std::vector<std::vector<std::byte>>& commands) {
     log_.reserve(commands.size());
 
     for (auto& command : commands) {
-        log_.emplace_back(command, current_term_);
+        log_.emplace_back(std::move(command), current_term_);
     }
 
     // auto log_index = log_.size();
