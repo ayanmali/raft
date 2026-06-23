@@ -49,8 +49,21 @@ static constexpr int SERVER_BACKLOG = 10; // max # of connections allowed to wai
 // Connection slab capacity. New accepts beyond this cap are closed immediately.
 static constexpr size_t MAX_SERVER_CONNS = 512;
 
+// The peer configuration is IDENTICAL on every node in the cluster. A peer's
+// index in this array is its globally consistent NodeID. Each node lists
+// ITSELF at index MY_ID using the empty placeholder "" in place of its own IP
+// address; CreateNode skips that slot. Example for a 3-node cluster, as seen
+// by every node (only MY_ID differs per node):
+//
+//   return std::array<const char*, 3>{
+//       "",                  // index 0: NodeID 0 (placeholder when MY_ID == 0)
+//       "1.2.3.4",           // index 1: NodeID 1
+//       "1.2.3.5",           // index 2: NodeID 2
+//   };
+//
+// The node with MY_ID == k must have "" at index k and real IPs elsewhere.
 constexpr auto setup_peers() {
     return std::array<const char*, 1>{
-        "0.0.0.0"
+        "", // index 0 == MY_ID (this node)
     };
 }
