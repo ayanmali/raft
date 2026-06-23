@@ -227,3 +227,21 @@ void Node::demote() {
     send_disarm_timers();
     state_ = NodeState::Follower;
 }
+
+void Node::become_leader() {
+    #ifdef DEBUG
+    std::cout << MY_ID << " won the election\n";
+    #endif
+    state_ = NodeState::Leader;
+    send_heartbeats_and_arm_timers();
+    voters_.clear();
+    voted_for_ = -1;
+
+    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size());
+    for (uint32_t& i : next_indexes_) {
+        i = last_log_idx + 1;
+    }
+    for (uint32_t& i : match_indexes_) {
+        i = 0;
+    }
+}

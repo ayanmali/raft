@@ -122,4 +122,9 @@ public:
 
     Node(NodeInbox&);
     void demote();
+
+    // Transition Candidate -> Leader: send heartbeats, arm timers, reset
+    // per-peer leader bookkeeping. Caller must already be a Candidate that
+    // has reached quorum.
+    void become_leader();
 };

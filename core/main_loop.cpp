@@ -243,22 +243,8 @@ void Node::MainLoop() {
                     ));
 
                     // become leader if quorum of votes achieved
-                    if (voters_.size() + 1 > (node_ids_.size()+1) / 2) { // add 1 to account for this node
-                        #ifdef DEBUG
-                        std::cout << MY_ID << " won the election\n";
-                        #endif
-                        state_ = NodeState::Leader;
-                        send_heartbeats_and_arm_timers();
-                        voters_.clear();
-                        voted_for_ = -1;
-
-                        uint32_t last_log_idx = static_cast<uint32_t>(log_.size());
-                        for (uint32_t& i : next_indexes_) {
-                            i = last_log_idx + 1;
-                        }
-                        for (uint32_t& i : match_indexes_) {
-                            i = 0;
-                        }
+                    if (voters_.size() + 1 > (node_ids_.size() + 1) / 2) {
+                        become_leader();
                     }
 
                 }
@@ -355,6 +341,15 @@ void Node::MainLoop() {
         ++current_term_;
         voted_for_ = MY_ID;
         last_leader_contact_ = std::chrono::steady_clock::now();
+
+        // A node always votes for itself. If that single vote is already a
+        // majority (e.g. a single-node cluster with no peers), win the
+        // election immediately rather than waiting for RequestVote replies
+        // that will never come.
+        if (voters_.size() + 1 > (node_ids_.size() + 1) / 2) {
+            become_leader();
+            continue;
+        }
 
         for (NodeID id : node_ids_) {
             #ifdef DEBUG
