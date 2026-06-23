@@ -63,13 +63,26 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
 
     n->running_ = true;
 
+    // init_peers is identical on every node in the cluster, so a peer's
+    // index in this array IS its globally consistent NodeID. Each node lists
+    // itself at index MY_ID using the placeholder "" in place of its own IP;
+    // we skip that slot (the loop counter still advances so peer indices stay
+    // aligned with their array positions).
     const auto init_peers = setup_peers();
+    static_assert(MY_ID >= 0, "MY_ID must be non-negative");
+    if (static_cast<size_t>(MY_ID) >= init_peers.size()) {
+        return UnexpectedF(std::format(
+            "error creating node: MY_ID {} out of range for init_peers (size {})",
+            MY_ID, init_peers.size()
+        ));
+    }
+
     int i{0};
-    for (const auto& addr : init_peers) {
+    for (auto it = init_peers.begin(); it < init_peers.begin() + MY_ID; ++i) {
         n->node_ids_.push_back(i);
 
         VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
-            ->AddPeer(i, addr, CLIENT_PORT);
+            ->AddPeer(i, *it, CLIENT_PORT);
         if (!add_peer_ok) {
             return UnexpectedF(
                 std::format("error creating node:\n{}\n", add_peer_ok.error())
@@ -77,6 +90,19 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         }
         ++i;
     }
+    for (auto it = init_peers.begin() + MY_ID + 1; it < init_peers.end(); ++i) {
+        n->node_ids_.push_back(i);
+
+        VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
+            ->AddPeer(i, *it, CLIENT_PORT);
+        if (!add_peer_ok) {
+            return UnexpectedF(
+                std::format("error creating node:\n{}\n", add_peer_ok.error())
+            );
+        }
+        ++i;
+    }
+
     n->log_.push_back(LogEntry{});
     n->next_indexes_.insert(n->next_indexes_.end(), n->node_ids_.size(), 1);
     n->match_indexes_.resize(n->node_ids_.size());
