@@ -23,17 +23,19 @@ VoidExpected EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
 VoidExpectedF EventLoop::AddPeer(NodeID id, const char* ip_addr, const char* port) {
     peer_conns.insert({id, PeerConn{ip_addr, port, id}});
     PeerConn& p = peer_conns.at(id);
-    VoidExpected connect_ok = StartConnect(p);
+    VoidExpectedF connect_ok = StartConnect(p);
     if (!connect_ok) {
         #ifdef DEBUG
-        std::cout << "error adding peer to configuration: " << connect_ok.error() << "\n";
+        std::cout << "error adding peer " << id << " (ip address = " << ip_addr << ") to configuration: " << connect_ok.error() << "\n";
         #endif
-        return {};
+        return UnexpectedF(std::format(
+            "Failed to add peer:\n{}\n", connect_ok.error()
+        ));
     }
     return {};
 }
 
-VoidExpected EventLoop::StartConnect(PeerConn& p) {
+VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
     addrinfo hints{};
     hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -67,7 +69,10 @@ VoidExpected EventLoop::StartConnect(PeerConn& p) {
         p.fd = -1;
         p.state = PeerConn::State::Disconnected;
         p.epoll_events = 0;
-        return peer_fd_ok;
+        return UnexpectedF(std::format(
+            "Failed to connect to peer {}:\n{}\n",
+            p.peer_id, peer_fd_ok.error()
+        ));
     }
     peer_fd_to_id[p.fd] = p.peer_id;
     VoidExpected timer_fd_ok = register_fd(p.timer_fd, EPOLLIN | EPOLLET);
@@ -76,7 +81,10 @@ VoidExpected EventLoop::StartConnect(PeerConn& p) {
         p.timer_fd = -1;
         p.state = PeerConn::State::Disconnected;
         p.epoll_events = 0;
-        return timer_fd_ok;
+        return UnexpectedF(std::format(
+            "Failed to connect to peer {}:\n{}\n",
+            p.peer_id, timer_fd_ok.error()
+        ));
     }
     peer_timer_fd_to_id[p.timer_fd] = p.peer_id;
     return {};
@@ -173,8 +181,7 @@ VoidExpected EventLoop::OnPeerTimer(PeerConn& p) {
     }
     if (n != sizeof(expirations) || expirations == 0) return {};
 
-    RpcRequest req{HeartbeatTimeoutPayload{}};
-    post_node_inbox(req, p.peer_id);
+    post_node_inbox(RpcMessage{HeartbeatTimeout{}}, p.peer_id);
     return {};
 }
 
@@ -192,7 +199,8 @@ void EventLoop::DropPeer(PeerConn& p) {
     p.state        = PeerConn::State::Disconnected;
     p.epoll_events = 0;
     p.outbox.clear();
-    // TODO: send message to node thread to remove this peer from its nodes list
+    // send message to node thread to remove this peer from its nodes list
+    post_node_inbox(RpcMessage{DropPeerMsg{}}, p.peer_id);
 
     // TODO: In-flight handlers are stranded; their callbacks won't fire. A future
     // pass can either invoke them with a synthetic failure response or
@@ -258,7 +266,7 @@ VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID 
     p.outbox.push_back(rpc);
 
     if (p.state == PeerConn::State::Disconnected) {
-        VoidExpected connect_ok = StartConnect(p);
+        VoidExpectedF connect_ok = StartConnect(p);
         if (!connect_ok) {
             return UnexpectedF(connect_ok.error());
         }
@@ -291,7 +299,7 @@ VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID pe
     p.outbox.push_back(rpc);
 
     if (p.state == PeerConn::State::Disconnected) {
-        VoidExpected connect_ok = StartConnect(p);
+        VoidExpectedF connect_ok = StartConnect(p);
         if (!connect_ok) {
             return UnexpectedF(connect_ok.error());
         }
@@ -324,7 +332,7 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeI
     p.outbox.push_back(rpc);
 
     if (p.state == PeerConn::State::Disconnected) {
-        VoidExpected connect_ok = StartConnect(p);
+        VoidExpectedF connect_ok = StartConnect(p);
         if (!connect_ok) {
             return UnexpectedF(connect_ok.error());
         }

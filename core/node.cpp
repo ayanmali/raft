@@ -78,7 +78,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     }
 
     int i{0};
-    for (auto it = init_peers.begin(); it < init_peers.begin() + MY_ID; ++i) {
+    for (auto it = init_peers.begin(); it < init_peers.begin() + MY_ID; ++it) {
         n->node_ids_.push_back(i);
 
         VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
@@ -90,7 +90,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         }
         ++i;
     }
-    for (auto it = init_peers.begin() + MY_ID + 1; it < init_peers.end(); ++i) {
+    for (auto it = init_peers.begin() + MY_ID + 1; it < init_peers.end(); ++it) {
         n->node_ids_.push_back(i);
 
         VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]

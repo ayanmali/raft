@@ -215,7 +215,7 @@ VoidExpected EventLoop::Run() {
                 PeerConn& p = peer_conns.at(it->second);
                 if (e & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                     #ifdef DEBUG
-                    std::cout << "disconnecting peer " << p.peer_id << "\n";
+                    std::cout << "event loop received epoll error; disconnecting peer " << p.peer_id << "\n";
                     #endif
                     DropPeer(p);
                     continue;
@@ -313,8 +313,8 @@ void EventLoop::DrainInbox() {
                 disarm_heartbeat_timer(out->node_id);
             }
 
-            else if constexpr (std::is_same_v<T, HeartbeatTimeoutPayload>) {
-                // This payload is only sent from EventLoop to Node.
+            else if constexpr (std::is_same_v<T, HeartbeatTimeout> || std::is_same_v<T, DropPeerMsg>){
+                // These payloads are only sent from EventLoop to Node.
             }
 
             else static_assert(false, "non-exhaustive visitor!");
@@ -337,29 +337,3 @@ void EventLoop::OnEventFd() {
     }
     DrainInbox();
 }
-
-bool EventLoop::post_node_inbox(RpcRequest& req, NodeID client_id) {
-    int counter = 0;
-
-    while (counter < MAX_ATTEMPTS) {
-        bool res = node_inbox.Push(this_id, std::make_unique<RaftMessage>(std::visit([](auto&& payload) -> RpcMessage {
-            return payload;
-        }, req), client_id));
-        ++counter;
-        if (res) return true;
-    }
-    return false;
-};
-
-bool EventLoop::post_node_inbox(RpcReply& reply, NodeID peer_id) {
-    int counter = 0;
-
-    while (counter < MAX_ATTEMPTS) {
-        bool res = node_inbox.Push(this_id, std::make_unique<RaftMessage>(std::visit([](auto&& payload) -> RpcMessage {
-            return payload;
-        }, reply), peer_id));
-        ++counter;
-        if (res) return true;
-    }
-    return false;
-};

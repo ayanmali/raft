@@ -151,4 +151,6 @@ struct InstallSnapshotRespPayload {
 struct ArmTimer {};
 struct DisArmTimer {};
 
-struct HeartbeatTimeoutPayload {};
+struct HeartbeatTimeout {};
+
+struct DropPeerMsg {};

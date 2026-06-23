@@ -6,6 +6,8 @@
 #include <expected>
 #include <netinet/in.h>
 #include <span>
+#include <type_traits>
+#include <utility>
 #include <variant>
 
 #define ntohll(x) (((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
@@ -14,9 +16,33 @@
 static constexpr uint32_t MAX_VECTOR_SIZE_SANITY = 8192;
 struct ByteReader;
 
-using RpcRequest = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisArmTimer, HeartbeatTimeoutPayload>;
+using RpcRequest = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisArmTimer>;
 using RpcReply = std::variant<AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload>;
-using RpcMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisArmTimer, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeoutPayload>;
+using RpcMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisArmTimer, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeout, DropPeerMsg>;
+
+// Widen any of the narrower variants (RpcRequest/RpcReply) into RpcMessage.
+// Each alternative of the source variant is also an alternative of RpcMessage,
+// so a single std::visit handles the conversion uniformly.
+template <typename... Ts>
+inline RpcMessage to_rpc_message(const std::variant<Ts...>& v) {
+    return std::visit([](auto&& payload) -> RpcMessage { return payload; }, v);
+}
+
+template <typename... Ts>
+inline RpcMessage to_rpc_message(std::variant<Ts...>&& v) {
+    return std::visit([](auto&& payload) -> RpcMessage {
+        return std::move(payload);
+    }, std::move(v));
+}
+
+// Accept a bare payload type (e.g. DropPeerMsg{}) that is itself an RpcMessage
+// alternative, without requiring callers to wrap it in a variant first.
+template <typename T,
+          typename = std::enable_if_t<
+              std::is_constructible_v<RpcMessage, T&&>>>
+inline RpcMessage to_rpc_message(T&& payload) {
+    return RpcMessage(std::forward<T>(payload));
+}
 
 using ParserFunc = std::expected<RpcRequest, const char*>(*)(ByteReader&);
 using HandlerFunc = std::expected<RpcReply, const char*>(*)(const RpcRequest& message);

@@ -257,7 +257,7 @@ void Node::MainLoop() {
                 }
 
                 // heartbeats are sent per follower, not all at once.
-                else if constexpr (std::is_same_v<T, HeartbeatTimeoutPayload>) {
+                else if constexpr (std::is_same_v<T, HeartbeatTimeout>) {
                     #ifdef DEBUG
                     std::cout << "found heartbeat timeout; sending heartbeats...\n";
                     #endif
@@ -303,6 +303,16 @@ void Node::MainLoop() {
                 // These are control messages sent to event loops, not handled by Node.
                 else if constexpr (std::is_same_v<T, ArmTimer> || std::is_same_v<T, DisArmTimer>) {}
 
+                else if constexpr (std::is_same_v<T, DropPeerMsg>) {
+                    node_ids_.erase(node_ids_.begin() + client_id);
+                    next_indexes_.erase(next_indexes_.begin() + client_id);
+                    match_indexes_.erase(match_indexes_.begin() + client_id);
+                    voters_.erase(client_id);
+                    if (voted_for_ == client_id) {
+                        voted_for_ = -1;
+                    }
+                }
+
                 else {
                     static_assert(false, "non-exhaustive visitor");
                 }
@@ -331,12 +341,12 @@ void Node::MainLoop() {
 
         if (duration < election_timeout_) continue;
 
+        // start election
+        if (state_ == NodeState::Candidate) continue;
         #ifdef DEBUG
         std::cout << "election timeout; starting election...\n";
         #endif
 
-        // start election
-        if (state_ == NodeState::Candidate) continue;
         state_ = NodeState::Candidate;
         ++current_term_;
         voted_for_ = MY_ID;

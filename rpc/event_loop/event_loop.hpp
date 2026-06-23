@@ -88,7 +88,7 @@ struct EventLoop {
     VoidExpected OnPeerWritable(PeerConn& p);
     VoidExpected OnPeerReadable(PeerConn& p);
     VoidExpected OnPeerTimer(PeerConn& p);
-    VoidExpected StartConnect(PeerConn& p);
+    VoidExpectedF StartConnect(PeerConn& p);
     void DropPeer(PeerConn& p);
 
     // wake / inbox
@@ -98,6 +98,17 @@ struct EventLoop {
     void OnEventFd();
     void wake_eventfd_unconditional();
 
-    bool post_node_inbox(RpcRequest& req, NodeID client_id);
-    bool post_node_inbox(RpcReply& req, NodeID peer_id);
+    // Accepts any RpcRequest/RpcReply variant, or a bare payload (e.g.
+    // DropPeerMsg), and widens it into the RpcMessage variant before pushing.
+    template <typename T>
+    bool post_node_inbox(T&& msg, NodeID node_id) {
+        RpcMessage widened = to_rpc_message(std::forward<T>(msg));
+        for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt) {
+            if (node_inbox.Push(this_id,
+                    std::make_unique<RaftMessage>(std::move(widened), node_id))) {
+                return true;
+            }
+        }
+        return false;
+    }
 };
