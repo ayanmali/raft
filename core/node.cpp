@@ -63,7 +63,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
 
     n->running_ = true;
 
-    auto init_peers = setup_peers();
+    const auto init_peers = setup_peers();
     int i{0};
     for (const auto& addr : init_peers) {
         n->node_ids_.push_back(i);

@@ -16,7 +16,7 @@ void Node::MainLoop() {
             #ifdef DEBUG
             std::cout << "draining node inbox...\n";
             #endif
-            std::visit([this, &message, &leader_contact](auto&& payload) {
+            VoidExpectedF ok = std::visit([this, &message, &leader_contact](auto&& payload) -> VoidExpectedF {
                 using T = std::decay_t<decltype(payload)>;
                 auto client_id = message->node_id;
                 auto& el = loops_[client_id & (EVENT_LOOP_THREADS - 1)];
@@ -31,7 +31,9 @@ void Node::MainLoop() {
                     // reply false if:
                     // term < current_term
                     // log doesn't contain an entry at prev_log_index whose term matches prev_log_term
+
                     if (current_term_ > payload.term
+                    || payload.prev_log_idx >= log_.size()
                     || log_[payload.prev_log_idx].term != payload.prev_log_term
                     ) {
                         el->outbound_inbox.PushOne(
@@ -39,14 +41,22 @@ void Node::MainLoop() {
                                 AppendEntriesRespPayload{.term = current_term_, .success = 0}, client_id
                             )
                         );
+                        return {};
                     }
 
-                    // if an existing entry conflicts w/ a new one (same index but different terms), delete the existing entry and all that follow it
-                    int i = 1;
-                    for (; i < log_.size() - payload.prev_log_idx - 1; ++i) {
-                        if (log_[payload.prev_log_idx + i + 1].term != payload.entries[i].term) {
-                            // conflict
-                            log_.erase(log_.begin() + i, log_.end());
+                    // if an existing entry conflicts w/ a new one (same index but
+                    // different terms), delete the existing entry and all that
+                    // follow it. The scan is bounded by BOTH the number of local
+                    // log entries after prev_log_idx and the number of incoming
+                    // entries, so neither log_ nor payload.entries is indexed OOB.
+                    const size_t existing_after_prev = log_.size() - payload.prev_log_idx - 1;
+                    const size_t scan_limit = std::min(existing_after_prev, payload.entries.size());
+                    size_t i = 1;
+                    for (; i < scan_limit; ++i) {
+                        const size_t log_idx = payload.prev_log_idx + i + 1;
+                        if (log_[log_idx].term != payload.entries[i].term) {
+                            // conflict: truncate the local log from this index on.
+                            log_.erase(log_.begin() + log_idx, log_.end());
                             break;
                         }
                     }
@@ -83,7 +93,7 @@ void Node::MainLoop() {
                                 RequestVoteRespPayload{current_term_, 0}, client_id
                             )
                         );
-                        return;
+                        return {};
                     }
 
                     if (payload.term > current_term_) {
@@ -106,6 +116,7 @@ void Node::MainLoop() {
                         RequestVoteRespPayload{current_term_, 1}, client_id
                         )
                     );
+                    return {};
                 }
 
                 // TODO
@@ -119,7 +130,7 @@ void Node::MainLoop() {
                             std::make_unique<RaftMessage>(
                             InstallSnapshotRespPayload{current_term_}, client_id)
                         );
-                        return;
+                        return {};
                     }
 
                     current_term_ = payload.term;
@@ -138,9 +149,29 @@ void Node::MainLoop() {
                     #endif
 
                     const uint32_t last_log_idx = log_.size() - 1;
-                    auto it = std::find(node_ids_.begin(), node_ids_.end(), client_id);
-                    const uint32_t next_idx = next_indexes_[it - node_ids_.begin()] - 1;
+                    const auto it = std::find(node_ids_.begin(), node_ids_.end(), client_id);
+                    if (it == node_ids_.end()) {
+                        return UnexpectedF(
+                            std::format("Failed to process AE reply: client ID {} not found in node_ids_", client_id)
+                        );
+                    }
+                    const uint32_t stored_next = next_indexes_[it - node_ids_.begin()];
+                    // next_idx = stored - 1 and prev_log_idx = next_idx - 1, so
+                    // stored must be >= 2 to avoid uint32_t underflow.
+                    if (stored_next < 2) {
+                        return UnexpectedF(std::format(
+                            "Failed to process AE reply: next_index {} for client_id {} too small to derive prev_log_idx",
+                            stored_next, client_id
+                        ));
+                    }
+                    const uint32_t next_idx = stored_next - 1;
                     const uint32_t prev_log_idx = next_idx - 1;
+                    if (prev_log_idx >= log_.size()) {
+                        return UnexpectedF(std::format(
+                            "Failed to process AE reply: prev_log_idx {} out of bounds (log size {})",
+                            prev_log_idx, log_.size()
+                        ));
+                    }
                     const uint32_t prev_log_term = log_[prev_log_idx].term;
 
                     /*
@@ -148,7 +179,12 @@ void Node::MainLoop() {
                      decrement nextIndex and retry
                     */
                     if (payload.success == 0) {
-                        if (last_log_idx < next_idx) return; // TODO: how should this be handled?
+                        if (last_log_idx < next_idx) {
+                            return UnexpectedF(std::format(
+                                "Failed to process AE reply: failed to retry AE RPC to client_id {}; last_log_idx {} is less than decremented next_idx {}",
+                                client_id, last_log_idx, next_idx
+                            ));
+                        };
 
                         auto entries_to_append = std::span<LogEntry>(log_.data() + next_idx, log_.size() - next_idx);
 
@@ -161,7 +197,7 @@ void Node::MainLoop() {
                             commit_index_
                         }, client_id);
 
-                        return;
+                        return {};
                     }
 
                     /*
@@ -201,12 +237,15 @@ void Node::MainLoop() {
                         || payload.term != current_term_
                         || !payload.vote_granted
                         || !voters_.insert(client_id).second
-                    ) return;
+                    ) return UnexpectedF(std::format(
+                        "Failed to process RequestVote reply: payload term ({}) either does not match current term of {}, or sender did not grant vote, or client_id {} has already voted for this node.",
+                        payload.term, current_term_, client_id
+                    ));
 
                     // become leader if quorum of votes achieved
                     if (voters_.size() + 1 > (node_ids_.size()+1) / 2) { // add 1 to account for this node
                         #ifdef DEBUG
-                        std::cout << MY_ID << " became leader\n";
+                        std::cout << MY_ID << " won the election\n";
                         #endif
                         state_ = NodeState::Leader;
                         send_heartbeats_and_arm_timers();
@@ -239,12 +278,27 @@ void Node::MainLoop() {
                     // if last log index >= this follower's nextIndex,
                     // then send AE RPC w/ log entries starting at nextIndex. Otherwise, send term w/ no entries.
                     const auto it = std::find(node_ids_.begin(), node_ids_.end(), client_id);
+                    if (it == node_ids_.end()) {
+                        return UnexpectedF(std::format(
+                            "Failed to process HeartbeatTimeout: client_id {} not found in node_ids_"
+                            , client_id));
+                    }
                     const uint32_t next_idx = next_indexes_[it - node_ids_.begin()];
-                    auto s = std::span<LogEntry>(log_.data() + next_idx, log_.size() - next_idx);
-                    const uint32_t prev_log_idx = next_idx - 1;
-                    const uint32_t prev_log_term = log_[prev_log_idx].term;
 
-                    if (log_.size() - 1 >= next_idx) {
+                    // Only send entries when the log actually has some at/after
+                    // next_idx. log_.size()-1 >= next_idx is restated as
+                    // next_idx < log_.size() to avoid uint underflow on size 0.
+                    if (next_idx < log_.size()) {
+                        // prev_log_idx = next_idx - 1 requires next_idx >= 1.
+                        if (next_idx == 0) {
+                            return UnexpectedF(std::format(
+                                "Failed to process HeartbeatTimeout: next_index 0 for client_id {} cannot derive prev_log_idx",
+                                client_id
+                            ));
+                        }
+                        const uint32_t prev_log_idx = next_idx - 1;
+                        const uint32_t prev_log_term = log_[prev_log_idx].term;
+                        auto s = std::span<LogEntry>(log_.data() + next_idx, log_.size() - next_idx);
                         send_rpc(AppendEntriesReqPayload{
                             s,
                             current_term_,
@@ -266,7 +320,13 @@ void Node::MainLoop() {
                 else {
                     static_assert(false, "non-exhaustive visitor");
                 }
+                return {};
             }, message->data);
+            #ifdef DEBUG
+            if (!ok) std::cout << "inbox handler error: " << ok.error() << "\n";
+            #else
+            (void)ok;
+            #endif
         });
 
         if (state_ == NodeState::Leader) continue;

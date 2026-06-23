@@ -50,7 +50,7 @@ static constexpr int SERVER_BACKLOG = 10; // max # of connections allowed to wai
 static constexpr size_t MAX_SERVER_CONNS = 512;
 
 constexpr auto setup_peers() {
-    return std::array<const char*, 2>{
+    return std::array<const char*, 1>{
         "0.0.0.0"
     };
 }
