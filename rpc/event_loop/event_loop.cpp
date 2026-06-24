@@ -141,7 +141,7 @@ VoidExpected EventLoop::Run() {
     epoll_event evs[EPOLL_BATCH];
     while (!stopped.load(std::memory_order_acquire)) {
         #ifdef DEBUG
-        std::cout << "waiting for events...\n";
+        std::cout << "---\nwaiting for events...\n";
         #endif
         int n = ::epoll_wait(epoll_fd, evs, EPOLL_BATCH, -1);
 
@@ -158,6 +158,9 @@ VoidExpected EventLoop::Run() {
         for (int i = 0; i < n; ++i) {
             const FD fd = evs[i].data.fd;
             const uint32_t e = evs[i].events;
+            #ifdef DEBUG
+            std::cout << i << "th fd:\n";
+            #endif
 
             if (fd == listen_fd) {
                 #ifdef DEBUG
@@ -225,7 +228,7 @@ VoidExpected EventLoop::Run() {
                     else if (e & EPOLLRDHUP) {
                         std::cout << "EPOLLRDHUP";
                     }
-                    std::cout << "; disconnecting peer " << p.peer_id << "\n";
+                    std::cout << " for peer " << p.peer_id << "; disconnecting peer\n";
                     #endif
                     DropPeer(p);
                     continue;

@@ -30,11 +30,11 @@ inline std::expected<RpcReply, const char*> parse_is_reply(ByteReader& byte_read
     return response;
 }
 
-constexpr std::array<ReplyParserFunc, 4> make_reply_parser_table() {
-    std::array<ReplyParserFunc, 4> table{};
-    table[1] = parse_ae_reply;
-    table[2] = parse_rv_reply;
-    table[3] = parse_is_reply;
+constexpr std::array<ReplyParserFunc, 3> make_reply_parser_table() {
+    std::array<ReplyParserFunc, 3> table{};
+    table[0] = parse_ae_reply;
+    table[1] = parse_rv_reply;
+    table[2] = parse_is_reply;
 
     return table;
 }

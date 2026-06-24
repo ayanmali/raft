@@ -104,7 +104,7 @@ VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
     }
     peer_timer_fd_to_id[p.timer_fd] = p.peer_id;
     #ifdef DEBUG
-    std::cout << "finished connecting: peer socket state = " << static_cast<int>(p.state) << "\n";
+    std::cout << "finished connecting: peer " << p.peer_id << " socket state = " << static_cast<int>(p.state) << "\n";
     #endif
     return {};
 }
@@ -160,6 +160,9 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
             return Unexpected("error attempting to write to peer socket\n");
         }
         p.state = PeerConn::State::Connected;
+        #ifdef DEBUG
+        std::cout << "Set peer " << p.peer_id << " fd to Connected\n";
+        #endif
         VoidExpected modify_ok = modify_peer_interest(p, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET);
         if (!modify_ok) {
             return modify_ok;
@@ -169,7 +172,7 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
     InflightRPC& out = p.outbox.front();
     while (out.bytes_sent < out.req.size()) {
         #ifdef DEBUG
-        std::cout << "sending RPC to peer " << p.peer_id << "- kind = " << static_cast<int>(out.kind) << "\n";
+        std::cout << "sending RPC to peer " << p.peer_id << " - kind = " << static_cast<int>(out.kind) << "\n";
         #endif
         ssize_t n = ::send(p.fd,
             out.req.data() + out.bytes_sent,
@@ -181,12 +184,15 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
         DropPeer(p);
         return Unexpected("unknown error after writing to peer socket\n");
     }
+    #ifdef DEBUG
+    std::cout << "peer " << p.peer_id << " finished sending\n";
+    #endif
     // done sending; clean up
     out.req.clear();
     out.bytes_sent = 0;
     VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
     return modify_ok;
-    // leave this message in the queue for now; its now awaiting a reply
+    // leave this message in the queue for now; it's now awaiting a reply
 }
 
 VoidExpected EventLoop::OnPeerTimer(PeerConn& p) {

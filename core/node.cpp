@@ -90,6 +90,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         }
         ++i;
     }
+    ++i; // to ensure IDs stay universally consistent in the cluster.
     for (auto it = init_peers.begin() + MY_ID + 1; it < init_peers.end(); ++it) {
         n->node_ids_.push_back(i);
 
@@ -149,6 +150,12 @@ void Node::send_rpc(InstallSnapshotReqPayload&& payload, NodeID peer_id) {
 
 void Node::append_commands(std::vector<std::vector<std::byte>>& commands) {
     //const uint32_t last_log_idx = log_.size() - 1;
+    if (state_ != NodeState::Leader) {
+        #ifdef DEBUG
+        std::cout << "Found append request in non-leader state - skipping\n";
+        #endif
+        return;
+    }
     #ifdef DEBUG
     std::cout << "appending commands...\n";
     #endif
