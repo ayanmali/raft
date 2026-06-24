@@ -149,11 +149,36 @@ void Node::send_rpc(InstallSnapshotReqPayload&& payload, NodeID peer_id) {
 
 void Node::append_commands(std::vector<std::vector<std::byte>>& commands) {
     //const uint32_t last_log_idx = log_.size() - 1;
+    #ifdef DEBUG
+    std::cout << "appending commands...\n";
+    #endif
     log_.reserve(commands.size());
+
+    #ifdef DEBUG
+    std::cout << "Existing log:\n";
+    for (const LogEntry& e : log_) {
+        std::cout << "[(";
+        for (const auto& b : e.data) {
+            std::cout << static_cast<int>(b) << ", ";
+        }
+        std::cout << "), " << e.term << "]\n";
+    }
+    #endif
 
     for (auto& command : commands) {
         log_.emplace_back(std::move(command), current_term_);
     }
+
+    #ifdef DEBUG
+    std::cout << "New log:\n";
+    for (const LogEntry& e : log_) {
+        std::cout << "[(";
+        for (const auto& b : e.data) {
+            std::cout << static_cast<int>(b) << ", ";
+        }
+        std::cout << "), " << e.term << "]\n";
+    }
+    #endif
 
     // auto log_index = log_.size();
 
@@ -230,7 +255,7 @@ void Node::demote() {
 
 void Node::become_leader() {
     #ifdef DEBUG
-    std::cout << MY_ID << " won the election\n";
+    std::cout << "This node (id = " << MY_ID << ") won the election\n";
     #endif
     state_ = NodeState::Leader;
     send_heartbeats_and_arm_timers();

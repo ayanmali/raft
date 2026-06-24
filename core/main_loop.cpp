@@ -304,6 +304,9 @@ void Node::MainLoop() {
                 else if constexpr (std::is_same_v<T, ArmTimer> || std::is_same_v<T, DisArmTimer>) {}
 
                 else if constexpr (std::is_same_v<T, DropPeerMsg>) {
+                    #ifdef DEBUG
+                    std::cout << "Received drop peer message - dropping peer " << client_id << "\n";
+                    #endif
                     node_ids_.erase(node_ids_.begin() + client_id);
                     next_indexes_.erase(next_indexes_.begin() + client_id);
                     match_indexes_.erase(match_indexes_.begin() + client_id);
