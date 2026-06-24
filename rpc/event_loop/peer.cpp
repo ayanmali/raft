@@ -1,8 +1,9 @@
 #include "./event_loop.hpp"
+#include "../protocol/peer.hpp"
 #include <netdb.h>
 #include <netinet/tcp.h>
-#include "../protocol/peer.hpp"
 #include <sys/timerfd.h>
+#include <format>
 #ifdef DEBUG
 #include <iostream>
 #endif
@@ -218,8 +219,11 @@ void EventLoop::DropPeer(PeerConn& p) {
     if (p.fd >= 0) {
         ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, p.fd, nullptr);
         peer_fd_to_id.erase(p.fd);
+        peer_timer_fd_to_id.erase(p.timer_fd);
         ::close(p.fd);
+        ::close(p.timer_fd);
         p.fd = -1;
+        p.timer_fd = -1;
     }
     p.state        = PeerConn::State::Disconnected;
     p.epoll_events = 0;

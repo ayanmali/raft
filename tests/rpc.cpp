@@ -21,7 +21,6 @@ int main() {
             {std::byte{0x10}, std::byte{0x20}, std::byte{0x30}, std::byte{0x40}}
         };
         std::this_thread::sleep_for(std::chrono::seconds(15));
-        std::cout << "appending commands to node thread...\n";
         node->append_commands(data);
     });
     node->MainLoop();

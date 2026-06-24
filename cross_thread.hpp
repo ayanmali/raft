@@ -1,5 +1,6 @@
 #pragma once
 // using NodeRequestInbox = MPSC<RpcReply
+#include <memory>
 #include "queues/mpsc.hpp"
 #include "rpc/conns.hpp"
 

@@ -17,7 +17,6 @@ Buffering convention (used by both flavors):
             EPOLLOUT is disarmed.
 */
 #include "./protocol/utils.hpp"
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -261,12 +260,8 @@ struct PeerConn {
     std::deque<InflightRPC> outbox;
 
     FD timer_fd = -1;
-    std::chrono::steady_clock::time_point next_due; // for diagnostics
-    uint64_t in_flight_seq = 0; // matches up timer fires w/ the AE sent
-
-    // only applicable when the current node is a leader
-    uint32_t next_index    = 0;
-    uint32_t match_index   = 0;
+    //std::chrono::steady_clock::time_point next_due; // for diagnostics
+    //uint64_t in_flight_seq = 0; // matches up timer fires w/ the AE sent
 
     PeerConn(const char* ip_, const char* port_, NodeID peer_id_) : ip{ip_}, port{port_}, peer_id{peer_id_} {}
 };
