@@ -307,9 +307,12 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "Received drop peer message - dropping peer " << client_id << "\n";
                     #endif
-                    node_ids_.erase(node_ids_.begin() + client_id);
-                    next_indexes_.erase(next_indexes_.begin() + client_id);
-                    match_indexes_.erase(match_indexes_.begin() + client_id);
+                    if (auto it = std::find(node_ids_.begin(), node_ids_.end(), client_id); it != node_ids_.end() ) {
+                        size_t index = std::distance(node_ids_.begin(), it);
+                        node_ids_.erase(it);
+                        next_indexes_.erase(next_indexes_.begin() + index);
+                        match_indexes_.erase(match_indexes_.begin() + index);
+                    }
                     voters_.erase(client_id);
                     if (voted_for_ == client_id) {
                         voted_for_ = -1;

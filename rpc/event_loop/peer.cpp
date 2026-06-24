@@ -36,6 +36,9 @@ VoidExpectedF EventLoop::AddPeer(NodeID id, const char* ip_addr, const char* por
 }
 
 VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
+    #ifdef DEBUG
+    std::cout << "attempting to connect to peer " << p.peer_id << "\n";
+    #endif
     addrinfo hints{};
     hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -61,7 +64,20 @@ VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
 
     p.state         = PeerConn::State::Connecting;
     p.epoll_events  = EPOLLOUT | EPOLLRDHUP | EPOLLET;
-    p.timer_fd      = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+    int timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+    if (int timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK); timer_fd >= 0) {
+        p.timer_fd  = timer_fd;
+    }
+    else {
+        ::close(p.fd);
+        p.fd = -1;
+        p.state = PeerConn::State::Disconnected;
+        p.epoll_events = 0;
+        return UnexpectedF(std::format(
+            "Failed to connect to socket for peer {}:\nerror creating timer fd\n",
+            p.peer_id
+        ));
+    }
 
     VoidExpected peer_fd_ok = register_fd(p.fd, p.epoll_events);
     if (!peer_fd_ok) {
@@ -87,6 +103,9 @@ VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
         ));
     }
     peer_timer_fd_to_id[p.timer_fd] = p.peer_id;
+    #ifdef DEBUG
+    std::cout << "finished connecting: peer socket state = " << static_cast<int>(p.state) << "\n";
+    #endif
     return {};
 }
 

@@ -215,7 +215,17 @@ VoidExpected EventLoop::Run() {
                 PeerConn& p = peer_conns.at(it->second);
                 if (e & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                     #ifdef DEBUG
-                    std::cout << "event loop received epoll error; disconnecting peer " << p.peer_id << "\n";
+                    std::cout << "event loop received epoll error ";
+                    if (e & EPOLLERR) {
+                        std::cout << "EPOLLERR";
+                    }
+                    else if (e & EPOLLHUP) {
+                        std::cout << "EPOLLHUP";
+                    }
+                    else if (e & EPOLLRDHUP) {
+                        std::cout << "EPOLLRDHUP";
+                    }
+                    std::cout << "; disconnecting peer " << p.peer_id << "\n";
                     #endif
                     DropPeer(p);
                     continue;
