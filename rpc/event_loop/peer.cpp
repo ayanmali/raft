@@ -315,6 +315,7 @@ VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID 
         if (!modify_ok) {
             return UnexpectedF(modify_ok.error());
         }
+        Wake();
     }
     return {};
 }
@@ -342,6 +343,7 @@ VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID pe
         if (!modify_ok) {
             return UnexpectedF(modify_ok.error());
         }
+        Wake();
     }
     return {};
 }
@@ -369,6 +371,7 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeI
         if (!modify_ok) {
             return UnexpectedF(modify_ok.error());
         }
+        Wake();
     }
     return {};
 }
@@ -406,79 +409,4 @@ void EventLoop::disarm_heartbeat_timer(NodeID peer_id) {
     // OnPeerTimer just sees expirations==0 and moves on.
     itimerspec zero{};
     ::timerfd_settime(p.timer_fd, 0, &zero, nullptr);
-}
-
-VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload, NodeID client_id) {
-    #ifdef DEBUG
-    std::cout << "posting AE reply to outbound queue to node " << client_id << "\n";
-    #endif
-    auto it = client_conns.find(client_id);
-    if (it == client_conns.end()) {
-        return UnexpectedF(
-            std::format("client id {} not found\n", client_id)
-        );
-    } // message gets dropped
-    ClientConn* c = it->second;
-    //++c.pending_tasks;
-
-    ByteWriter writer{c->wbuf};
-    writer.serialize(payload);
-
-    if (c->wbuf_offset < c->wbuf.size()) {
-        VoidExpected modify_ok = modify_client_interest(c, c->epoll_events | EPOLLOUT);
-        if (!modify_ok) {
-            return UnexpectedF(modify_ok.error());
-        }
-    }
-    return {};
-}
-
-VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload, NodeID client_id) {
-    #ifdef DEBUG
-    std::cout << "posting RV reply to outbound queue to node " << client_id << "\n";
-    #endif
-    auto it = client_conns.find(client_id);
-    if (it == client_conns.end()) {
-        return UnexpectedF(
-            std::format("client id {} not found\n", client_id)
-        );
-    } // message gets dropped
-    ClientConn* c = it->second;
-    //++c.pending_tasks;
-
-    ByteWriter writer{c->wbuf};
-    writer.serialize(payload);
-
-    if (c->wbuf_offset < c->wbuf.size()) {
-        VoidExpected modify_ok = modify_client_interest(c, c->epoll_events | EPOLLOUT);
-        if (!modify_ok) {
-            return UnexpectedF(modify_ok.error());
-        }
-    }
-    return {};
-}
-
-VoidExpectedF EventLoop::post_reply(InstallSnapshotRespPayload& payload, NodeID client_id) {
-    #ifdef DEBUG
-    std::cout << "posting IS reply to outbound queue to node " << client_id << "\n";
-    #endif
-    auto it = client_conns.find(client_id);
-    if (it == client_conns.end()) {
-        return UnexpectedF(
-            std::format("client id {} not found\n", client_id)
-        );
-    } // message gets dropped
-    ClientConn* c = it->second;
-    //++c.pending_tasks;
-
-    ByteWriter writer{c->wbuf};
-    writer.serialize(payload);
-
-    if (c->wbuf_offset < c->wbuf.size()) {
-        VoidExpected modify_ok = modify_client_interest(c, c->epoll_events | EPOLLOUT);
-        if (!modify_ok) {
-            return UnexpectedF(modify_ok.error());
-        }
-    }
-    return {};
 }
