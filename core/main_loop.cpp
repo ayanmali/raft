@@ -72,7 +72,7 @@ void Node::MainLoop() {
                     }
 
                     current_term_ = payload.term;
-                    if (state_ == NodeState::Leader) demote();
+                    if (state_ != NodeState::Follower) demote();
                     leader_contact = true;
 
                     el->outbound_inbox.PushOne(
@@ -87,6 +87,11 @@ void Node::MainLoop() {
                     std::cout << "found RV RPC\n";
                     #endif
 
+                    if (payload.term > current_term_) {
+                        current_term_ = payload.term;
+                        demote();
+                    }
+
                     if (payload.term < current_term_ || voted_for_ != -1) {
                         el->outbound_inbox.PushOne(
                             std::make_unique<RaftMessage>(
@@ -94,11 +99,6 @@ void Node::MainLoop() {
                             )
                         );
                         return {};
-                    }
-
-                    if (payload.term > current_term_) {
-                        current_term_ = payload.term;
-                        if (state_ == NodeState::Leader) demote();
                     }
 
                     leader_contact = true;

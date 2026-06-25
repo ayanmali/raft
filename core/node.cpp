@@ -108,6 +108,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     n->next_indexes_.insert(n->next_indexes_.end(), n->node_ids_.size(), 1);
     n->match_indexes_.resize(n->node_ids_.size());
     n->voters_.reserve(init_peers.size());
+    n->last_leader_contact_ = std::chrono::steady_clock::now();
     return n;
 }
 
