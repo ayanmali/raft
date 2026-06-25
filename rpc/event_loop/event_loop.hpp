@@ -26,7 +26,7 @@ struct EventLoop {
     EventLoop(const EventLoop&) = delete;
     EventLoop& operator=(const EventLoop&) = delete;
 
-    VoidExpected Run();
+    VoidExpectedF Run();
     void Stop(); // event loop can be stopped via a signal on the event fd
     void Wake();
     VoidExpectedF AddPeer(NodeID id, const char* ip_addr, const char* port);
@@ -92,10 +92,10 @@ struct EventLoop {
     void DropPeer(PeerConn& p);
 
     // wake / inbox
-    void arm_heartbeat_timer(NodeID peer_id);
-    void disarm_heartbeat_timer(NodeID peer_id);
-    void DrainInbox();
-    void OnEventFd();
+    VoidExpectedF arm_heartbeat_timer(NodeID peer_id);
+    VoidExpectedF disarm_heartbeat_timer(NodeID peer_id);
+    VoidExpectedF DrainInbox();
+    VoidExpectedF OnEventFd();
     void wake_eventfd_unconditional();
 
     // Accepts any RpcRequest/RpcReply variant, or a bare payload (e.g.

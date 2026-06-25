@@ -135,7 +135,7 @@ VoidExpected EventLoop::setup_listen_socket() {
     return {};
 }
 
-VoidExpected EventLoop::Run() {
+VoidExpectedF EventLoop::Run() {
     #ifdef DEBUG
     std::cout << "starting event loop with id " << this_id << "\n";
     #endif
@@ -175,7 +175,13 @@ VoidExpected EventLoop::Run() {
                 #ifdef DEBUG
                 std::cout << "event fd awakened\n";
                 #endif
-                OnEventFd();
+                VoidExpectedF on_event_fd_ok = OnEventFd();
+                if (!on_event_fd_ok) {
+                    return UnexpectedF(std::format(
+                        "Failed to process new event:\n{}\n",
+                        on_event_fd_ok.error()
+                    ));
+                }
                 continue;
             }
 
@@ -292,7 +298,7 @@ VoidExpected EventLoop::Run() {
 
 /* Cross-thread messaging */
 
-void EventLoop::DrainInbox() {
+VoidExpectedF EventLoop::DrainInbox() {
     // Disarm BEFORE draining the ring. Any producer that pushes after this
     // store but before we finish draining will see armed=false, rearm, and
     // re-wake -- so the next epoll_wait will see the eventfd already
@@ -305,35 +311,59 @@ void EventLoop::DrainInbox() {
     std::unique_ptr<RaftMessage> out;
     bool flag = outbound_inbox.PopOne(&out);
     while (flag) {
-        std::visit([&out, this](auto&& payload) {
+        VoidExpectedF ok = std::visit([&out, this](auto&& payload) -> VoidExpectedF {
             using T = std::decay_t<decltype(payload)>;
 
             if constexpr (std::is_same_v<T, AppendEntriesReqPayload> || std::is_same_v<T, RequestVoteReqPayload> || std::is_same_v<T, InstallSnapshotReqPayload>) {
                 #ifdef DEBUG
                 std::cout << "found request\n";
                 #endif
-                post_inflight(payload, out->node_id);
+                VoidExpectedF post_ok = post_inflight(payload, out->node_id);
+                if (!post_ok) {
+                    return UnexpectedF(std::format(
+                        "Error while draining event loop inbox - failed to post RPC to inflight queue for peer {}:\n{}",
+                        out->node_id, post_ok.error()
+                    ));
+                }
             }
 
             else if constexpr (std::is_same_v<T, AppendEntriesRespPayload> || std::is_same_v<T, RequestVoteRespPayload> || std::is_same_v<T, InstallSnapshotRespPayload>) {
                 #ifdef DEBUG
                 std::cout << "found reply\n";
                 #endif
-                post_reply(payload, out->node_id);
+                VoidExpectedF post_ok = post_reply(payload, out->node_id);
+                if (!post_ok) {
+                    return UnexpectedF(std::format(
+                        "Error while draining event loop inbox - failed to post reply to inflight queue for peer {}:\n{}",
+                        out->node_id, post_ok.error()
+                    ));
+                }
             }
 
             else if constexpr (std::is_same_v<T, ArmTimer>) {
                 #ifdef DEBUG
                 std::cout << "found arm timer req\n";
                 #endif
-                arm_heartbeat_timer(out->node_id);
+                VoidExpectedF arm_ok = arm_heartbeat_timer(out->node_id);
+                if (!arm_ok) {
+                    return UnexpectedF(std::format(
+                        "Error while draining inbox: failed to arm heartbeat timer for node {}:\n{}\n",
+                        out->node_id, arm_ok.error()
+                    ));
+                }
             }
 
             else if constexpr (std::is_same_v<T, DisArmTimer>) {
                 #ifdef DEBUG
                 std::cout << "found disarm timer req\n";
                 #endif
-                disarm_heartbeat_timer(out->node_id);
+                VoidExpectedF disarm_ok = disarm_heartbeat_timer(out->node_id);
+                if (!disarm_ok) {
+                    return UnexpectedF(std::format(
+                        "Error while draining inbox: failed to disarm heartbeat timer for node {}:\n{}\n",
+                        out->node_id, disarm_ok.error()
+                    ));
+                }
             }
 
             else if constexpr (std::is_same_v<T, HeartbeatTimeout> || std::is_same_v<T, DropPeerMsg>){
@@ -341,15 +371,16 @@ void EventLoop::DrainInbox() {
             }
 
             else static_assert(false, "non-exhaustive visitor!");
+            return {};
         }, out->data);
         flag = outbound_inbox.PopOne(&out);
     }
-
+    return {};
 }
 
 // drains this event loop's MPSC inbox
 // for each message in the inbox, enqueue onto the corresponding peer's RPC outbox
-void EventLoop::OnEventFd() {
+VoidExpectedF EventLoop::OnEventFd() {
     uint64_t counter;
     for (;;) {
         ssize_t n = ::read(event_fd, &counter, sizeof(counter));
@@ -358,5 +389,12 @@ void EventLoop::OnEventFd() {
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
         break;
     }
-    DrainInbox();
+    VoidExpectedF drain_ok = DrainInbox();
+    if (!drain_ok) {
+        return UnexpectedF(std::format(
+            "Error while draining inbox:\n{}\n",
+            drain_ok.error()
+        ));
+    }
+    return {};
 }

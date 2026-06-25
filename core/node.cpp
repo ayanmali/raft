@@ -54,7 +54,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         n->loops_[i] = std::move(loop_raw.value());
 
         n->threads_[i] = std::thread([ptr = n.get(), i] {
-            VoidExpected loop_ok = ptr->loops_[i]->Run();
+            VoidExpectedF loop_ok = ptr->loops_[i]->Run();
             #ifdef DEBUG
             std::cout << "event loop " << i << " crashed:\n" << loop_ok.error() << "\n";
             #endif

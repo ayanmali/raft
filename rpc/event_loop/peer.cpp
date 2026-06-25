@@ -297,9 +297,10 @@ VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID 
     #endif
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end()) {
-        return UnexpectedF(
-            std::format("peer id {} not found\n", peer_id)
-        );
+        return UnexpectedF(std::format(
+            "Failed to post AE RPC to inflight queue: peer id {} not found in peer_conns\n",
+            peer_id
+        ));
     } // message gets dropped
     PeerConn& p = it->second;
 
@@ -312,7 +313,10 @@ VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID 
     if (p.state == PeerConn::State::Connected) {
         VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
         if (!modify_ok) {
-            return UnexpectedF(modify_ok.error());
+            return UnexpectedF(std::format(
+                "Failed to post AE RPC to inflight queue for peer {}:\n{}",
+                p.peer_id, modify_ok.error()
+            ));
         }
         Wake();
     }
@@ -325,9 +329,9 @@ VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID pe
     #endif
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end()) {
-        return UnexpectedF(
-            std::format("peer id {} not found\n", peer_id)
-        );
+        return UnexpectedF(std::format(
+            "Failed to post RV RPC to inflight queue: peer id {} not found in peer_conns\n", peer_id
+        ));
     }
     PeerConn& p = it->second;
 
@@ -340,7 +344,10 @@ VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID pe
     if (p.state == PeerConn::State::Connected) {
         VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
         if (!modify_ok) {
-            return UnexpectedF(modify_ok.error());
+            return UnexpectedF(std::format(
+                "Failed to post RV RPC to inflight queue for peer {}:\n{}",
+                p.peer_id, modify_ok.error()
+            ));
         }
         Wake();
     }
@@ -354,7 +361,7 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeI
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end()) {
         return UnexpectedF(
-            std::format("peer id {} not found\n", peer_id)
+            std::format("Failed to post IS RPC to inflight queue: peer id {} not found in peer_conns\n", peer_id)
         );
     } // message gets dropped
     PeerConn& p = it->second;
@@ -368,19 +375,27 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeI
     if (p.state == PeerConn::State::Connected) {
         VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
         if (!modify_ok) {
-            return UnexpectedF(modify_ok.error());
+            return UnexpectedF(std::format(
+                "Failed to post IS RPC to inflight queue for peer {}:\n{}",
+                p.peer_id, modify_ok.error()
+            ));
         }
         Wake();
     }
     return {};
 }
 
-void EventLoop::arm_heartbeat_timer(NodeID peer_id) {
+VoidExpectedF EventLoop::arm_heartbeat_timer(NodeID peer_id) {
     #ifdef DEBUG
     std::cout << "arming heartbeat timer for peer " << peer_id << "\n";
     #endif
     auto it = peer_conns.find(peer_id);
-    if (it == peer_conns.end() || it->second.timer_fd < 0) return;
+    if (it == peer_conns.end() || it->second.timer_fd < 0) {
+        return UnexpectedF(std::format(
+            "Failed to arm heartbeat timer for peer {}; peer id not found in peer_conns or peer timer_fd < 0\n",
+            peer_id
+        ));
+    }
     PeerConn& p = it->second;
 
     // Periodic timer: it_value == it_interval == period. The first
@@ -394,18 +409,25 @@ void EventLoop::arm_heartbeat_timer(NodeID peer_id) {
     spec.it_interval      = spec.it_value;
 
     ::timerfd_settime(p.timer_fd, 0, &spec, nullptr);
+    return {};
 }
 
-void EventLoop::disarm_heartbeat_timer(NodeID peer_id) {
+VoidExpectedF EventLoop::disarm_heartbeat_timer(NodeID peer_id) {
     #ifdef DEBUG
     std::cout << "disarming heartbeat timer for node " << peer_id << "\n";
     #endif
     auto it = peer_conns.find(peer_id);
-    if (it == peer_conns.end() || it->second.timer_fd < 0) return;
+    if (it == peer_conns.end() || it->second.timer_fd < 0) {
+        return UnexpectedF(std::format(
+            "Failed to disarm heartbeat timer for peer {}; peer id not found in peer_conns or peer timer_fd < 0\n",
+            peer_id
+        ));
+    }
     PeerConn& p = it->second;
     // Zero spec disarms; any pending expirations are cleared on the next
     // read. epoll readiness for an already-counted timerfd is harmless --
     // OnPeerTimer just sees expirations==0 and moves on.
     itimerspec zero{};
     ::timerfd_settime(p.timer_fd, 0, &zero, nullptr);
+    return {};
 }
