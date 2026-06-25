@@ -65,7 +65,6 @@ VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
 
     p.state         = PeerConn::State::Connecting;
     p.epoll_events  = EPOLLOUT | EPOLLRDHUP | EPOLLET;
-    int timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     if (int timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK); timer_fd >= 0) {
         p.timer_fd  = timer_fd;
     }

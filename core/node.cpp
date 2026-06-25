@@ -218,6 +218,9 @@ void Node::append_commands(std::vector<std::vector<std::byte>>& commands) {
 
 // runs upon winning an election
 void Node::send_heartbeats_and_arm_timers() {
+    #ifdef DEBUG
+    std::cout << "Sending heartbeats and arming peer timers\n";
+    #endif
     for (auto id : node_ids_) {
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
         // send heartbeat rpc
@@ -226,6 +229,9 @@ void Node::send_heartbeats_and_arm_timers() {
                 AppendEntriesReqPayload{current_term_}, id
             )
         );
+        #ifdef DEBUG
+        std::cout << "posted heartbeat message to peer " << id << "\n";
+        #endif
         // arm this peer's heartbeat timer so we know when to send the next heartbeat.
         el->outbound_inbox.PushOne(
             // send heartbeat rpc
@@ -233,6 +239,9 @@ void Node::send_heartbeats_and_arm_timers() {
                 ArmTimer{}, id
             )
         );
+        #ifdef DEBUG
+        std::cout << "posted arm timer message to peer " << id << "\n";
+        #endif
         el->Wake();
     }
 }
