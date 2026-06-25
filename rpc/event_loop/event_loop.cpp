@@ -183,7 +183,16 @@ VoidExpected EventLoop::Run() {
                 ClientConn* c = client_conns.at(it->second);
                 if (e & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                     #ifdef DEBUG
-                    std::cout << "epoll error found for client " << it->second << ":\n";
+                    std::cout << "epoll error found for client " << it->second << ":";
+                    if (e & EPOLLERR) {
+                        std::cout << "EPOLLERR\n";
+                    }
+                    else if (e & EPOLLHUP) {
+                        std::cout << "EPOLLHUP\n";
+                    }
+                    else if (e & EPOLLRDHUP) {
+                        std::cout << "EPOLLRDHUP\n";
+                    }
                     #endif
                     CloseClient(c);
                     continue;

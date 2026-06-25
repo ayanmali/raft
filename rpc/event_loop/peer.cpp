@@ -153,6 +153,21 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
     #ifdef DEBUG
     std::cout << "peer " << p.peer_id << " writable\n";
     #endif
+    if (p.outbox.empty()) { // to prevent popping from the outbox when its empty
+        std::cout << "deque is empty, returning early\n";
+        return {};
+    }
+
+    // skip over messages that have already been sent but are waiting for a reply
+    auto it = p.outbox.begin();
+    while (it->bytes_sent >= it->req.size()) { ++it; }
+    if (it == p.outbox.end()) {
+        #ifdef DEBUG
+        std::cout << "no messages to send, returning early\n";
+        #endif
+        return {};
+    }
+
     if (p.state == PeerConn::State::Connecting) {
         int err = 0;
         socklen_t l = sizeof(err);
@@ -170,16 +185,15 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
         }
     }
 
-    InflightRPC& out = p.outbox.front();
-    while (out.bytes_sent < out.req.size()) {
+    while (it->bytes_sent < it->req.size()) {
         #ifdef DEBUG
-        std::cout << "sending RPC to peer " << p.peer_id << " - kind = " << static_cast<int>(out.kind) << "\n";
+        std::cout << "sending RPC to peer " << p.peer_id << " - kind = " << static_cast<int>(it->kind) << "\n";
         #endif
         ssize_t n = ::send(p.fd,
-            out.req.data() + out.bytes_sent,
-            out.req.size() - out.bytes_sent,
+            it->req.data() + it->bytes_sent,
+            it->req.size() - it->bytes_sent,
             MSG_NOSIGNAL);
-        if (n > 0) { out.bytes_sent += static_cast<size_t>(n); continue; }
+        if (n > 0) { it->bytes_sent += static_cast<size_t>(n); continue; }
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return {};
         DropPeer(p);
@@ -189,8 +203,8 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
     std::cout << "peer " << p.peer_id << " finished sending\n";
     #endif
     // done sending; clean up
-    out.req.clear();
-    out.bytes_sent = 0;
+    it->req.clear();
+    //out.bytes_sent = 0;
     VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
     return modify_ok;
     // leave this message in the queue for now; it's now awaiting a reply
@@ -291,7 +305,7 @@ VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID 
     PeerConn& p = it->second;
 
     // serialize bytes into peer outbox
-    InflightRPC rpc{.kind = RpcKind::AppendEntries, .bytes_sent = 0};
+    InflightRPC rpc{.bytes_sent = 0, .kind = RpcKind::AppendEntries};
     ByteWriter writer{rpc.req};
     writer.serialize(payload);
     p.outbox.push_back(rpc);
@@ -318,7 +332,7 @@ VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID pe
     PeerConn& p = it->second;
 
     // serialize bytes into peer outbox
-    InflightRPC rpc{.kind = RpcKind::RequestVote, .bytes_sent = 0};
+    InflightRPC rpc{.bytes_sent = 0, .kind = RpcKind::RequestVote};
     ByteWriter writer{rpc.req};
     writer.serialize(payload);
     p.outbox.push_back(rpc);
@@ -345,7 +359,7 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeI
     PeerConn& p = it->second;
 
     // serialize bytes into peer outbox
-    InflightRPC rpc{.kind = RpcKind::InstallSnapshot, .bytes_sent = 0};
+    InflightRPC rpc{.bytes_sent = 0, .kind = RpcKind::InstallSnapshot};
     ByteWriter writer{rpc.req};
     writer.serialize(payload);
     p.outbox.push_back(rpc);

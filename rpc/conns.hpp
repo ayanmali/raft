@@ -231,10 +231,10 @@ In-flight tracking:
   same order.
 */
 struct InflightRPC {
-    RpcKind kind;
     std::vector<std::byte> req;
     std::vector<std::byte> reply;
     size_t bytes_sent; // for chunked sends
+    RpcKind kind;
 };
 
 struct PeerConn {
