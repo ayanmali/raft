@@ -9,3 +9,4 @@ rpc/protocol.hpp
 rpc/serde.hpp
 thread_pool/*
 unit
+debug.log

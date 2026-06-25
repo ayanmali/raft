@@ -82,7 +82,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         n->node_ids_.push_back(i);
 
         VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
-            ->AddPeer(i, *it, CLIENT_PORT);
+            ->AddPeer(i, *it, SERVER_PORT);
         if (!add_peer_ok) {
             return UnexpectedF(
                 std::format("error creating node:\n{}\n", add_peer_ok.error())
@@ -95,7 +95,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         n->node_ids_.push_back(i);
 
         VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
-            ->AddPeer(i, *it, CLIENT_PORT);
+            ->AddPeer(i, *it, SERVER_PORT);
         if (!add_peer_ok) {
             return UnexpectedF(
                 std::format("error creating node:\n{}\n", add_peer_ok.error())
