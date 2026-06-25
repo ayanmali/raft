@@ -219,15 +219,17 @@ void EventLoop::DropPeer(PeerConn& p) {
     if (p.fd >= 0) {
         ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, p.fd, nullptr);
         peer_fd_to_id.erase(p.fd);
-        peer_timer_fd_to_id.erase(p.timer_fd);
         ::close(p.fd);
+    }
+    if (p.timer_fd >= 0) {
+        ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, p.timer_fd, nullptr);
+        peer_timer_fd_to_id.erase(p.timer_fd);
         ::close(p.timer_fd);
-        p.fd = -1;
-        p.timer_fd = -1;
     }
     p.state        = PeerConn::State::Disconnected;
     p.epoll_events = 0;
     p.outbox.clear();
+    peer_conns.erase(p.peer_id);
     // send message to node thread to remove this peer from its nodes list
     post_node_inbox(RpcMessage{DropPeerMsg{}}, p.peer_id);
 
@@ -294,13 +296,7 @@ VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID 
     writer.serialize(payload);
     p.outbox.push_back(rpc);
 
-    if (p.state == PeerConn::State::Disconnected) {
-        VoidExpectedF connect_ok = StartConnect(p);
-        if (!connect_ok) {
-            return UnexpectedF(connect_ok.error());
-        }
-    }
-    else if (p.state == PeerConn::State::Connected) {
+    if (p.state == PeerConn::State::Connected) {
         VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
         if (!modify_ok) {
             return UnexpectedF(modify_ok.error());
@@ -327,13 +323,7 @@ VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID pe
     writer.serialize(payload);
     p.outbox.push_back(rpc);
 
-    if (p.state == PeerConn::State::Disconnected) {
-        VoidExpectedF connect_ok = StartConnect(p);
-        if (!connect_ok) {
-            return UnexpectedF(connect_ok.error());
-        }
-    }
-    else if (p.state == PeerConn::State::Connected) {
+    if (p.state == PeerConn::State::Connected) {
         VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
         if (!modify_ok) {
             return UnexpectedF(modify_ok.error());
@@ -360,13 +350,7 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeI
     writer.serialize(payload);
     p.outbox.push_back(rpc);
 
-    if (p.state == PeerConn::State::Disconnected) {
-        VoidExpectedF connect_ok = StartConnect(p);
-        if (!connect_ok) {
-            return UnexpectedF(connect_ok.error());
-        }
-    }
-    else if (p.state == PeerConn::State::Connected) {
+    if (p.state == PeerConn::State::Connected) {
         VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
         if (!modify_ok) {
             return UnexpectedF(modify_ok.error());
