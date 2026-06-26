@@ -1,6 +1,7 @@
 #include "./event_loop.hpp"
-#include <netinet/tcp.h>
 #include "../protocol/client.hpp"
+#include <format>
+#include <netinet/tcp.h>
 
 #ifdef DEBUG
 #include <iostream>
@@ -33,6 +34,9 @@ VoidExpected EventLoop::Accept() {
             if (errno == EINTR) continue;
             return {}; // transient errors: drop and try again on next epoll wake
         }
+        #ifdef DEBUG
+        std::cout << "connection accepted\n";
+        #endif
 
         int yes = 1;
         ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));

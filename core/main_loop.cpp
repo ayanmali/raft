@@ -27,6 +27,7 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found AE RPC\n";
                     #endif
+                    add_peer_if_not_exists(payload.leader_id);
 
                     // reply false if:
                     // term < current_term
@@ -86,6 +87,7 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found RV RPC\n";
                     #endif
+                    add_peer_if_not_exists(payload.candidate_id);
 
                     if (payload.term > current_term_) {
                         current_term_ = payload.term;
@@ -300,9 +302,6 @@ void Node::MainLoop() {
                     el->Wake();
                 }
 
-                // These are control messages sent to event loops, not handled by Node.
-                else if constexpr (std::is_same_v<T, ArmTimer> || std::is_same_v<T, DisArmTimer>) {}
-
                 else if constexpr (std::is_same_v<T, DropPeerMsg>) {
                     #ifdef DEBUG
                     std::cout << "Received drop peer message - dropping peer " << client_id << "\n";
@@ -318,6 +317,11 @@ void Node::MainLoop() {
                         voted_for_ = -1;
                     }
                 }
+
+                // These are control messages sent to event loops, not handled by Node.
+                else if constexpr (std::is_same_v<T, ArmTimer>
+                    || std::is_same_v<T, DisArmTimer>
+                    || std::is_same_v<T, AddPeerMsg>) {}
 
                 else {
                     static_assert(false, "non-exhaustive visitor");

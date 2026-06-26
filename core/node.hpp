@@ -99,6 +99,15 @@ public:
 
     // TODO: replace AoS EventLoop w/ SoA pattern
     private:
+    Node(NodeInbox&);
+    void demote();
+
+    // Transition Candidate -> Leader: send heartbeats, arm timers, reset
+    // per-peer leader bookkeeping. Caller must already be a Candidate that
+    // has reached quorum.
+    void become_leader();
+    void add_peer_if_not_exists(NodeID);
+
     NodeInbox& inbox_;
     std::unordered_set<NodeID>                                      voters_;
     std::vector<LogEntry>                                           log_;
@@ -119,12 +128,4 @@ public:
     enum class                                                      NodeState { Follower, Candidate, Leader };
     NodeState                                                       state_ = NodeState::Follower;
     bool                                                            running_ = false;
-
-    Node(NodeInbox&);
-    void demote();
-
-    // Transition Candidate -> Leader: send heartbeats, arm timers, reset
-    // per-peer leader bookkeeping. Caller must already be a Candidate that
-    // has reached quorum.
-    void become_leader();
 };

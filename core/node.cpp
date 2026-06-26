@@ -287,3 +287,21 @@ void Node::become_leader() {
         i = 0;
     }
 }
+
+void Node::add_peer_if_not_exists(NodeID node_id) {
+    if (std::find(node_ids_.begin(), node_ids_.end(), node_id) != node_ids_.end()) {
+        return;
+    }
+
+    node_ids_.push_back(node_id);
+    next_indexes_.push_back(1);
+    match_indexes_.push_back(0);
+
+    auto& el = loops_[node_id & (EVENT_LOOP_THREADS - 1)];
+    el->outbound_inbox.PushOne(
+        std::make_unique<RaftMessage>(
+            AddPeerMsg{}, node_id
+        )
+    );
+
+}

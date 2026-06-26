@@ -153,4 +153,9 @@ struct DisArmTimer {};
 
 struct HeartbeatTimeout {};
 
+/* For supporting dynamic cluster configurations */
 struct DropPeerMsg {};
+struct AddPeerMsg {
+    const char* peer_ip_addr;
+    const char* peer_port;
+};

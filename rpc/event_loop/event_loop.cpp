@@ -366,6 +366,14 @@ VoidExpectedF EventLoop::DrainInbox() {
                 }
             }
 
+            else if constexpr (std::is_same_v<T, AddPeerMsg>) {
+                #ifdef DEBUG
+                std::cout << "found add peer msg\n";
+                #endif
+                // TODO
+                VoidExpectedF add_peer_ok = AddPeer(out->node_id, "", "");
+            }
+
             else if constexpr (std::is_same_v<T, HeartbeatTimeout> || std::is_same_v<T, DropPeerMsg>){
                 // These payloads are only sent from EventLoop to Node.
             }
