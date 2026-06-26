@@ -38,9 +38,7 @@ struct EventLoop {
     private:
     ClientConnSlab client_slab;
     std::unordered_map<NodeID, PeerConn> peer_conns;
-
-    std::unordered_map<ClientID, ClientConn*> client_conns;
-    std::unordered_map<FD, ClientID> client_fd_to_id;
+    std::unordered_map<FD, ClientConn*> client_conns;
     std::atomic<bool> wake_armed{false};
 
     FD epoll_fd = -1;
@@ -62,6 +60,7 @@ struct EventLoop {
     const long heartbeat_period;
 
     EventLoop(size_t inbound_cap, NodeInbox&, size_t this_id, long period);
+
     // ---- helpers ----
     static VoidExpected set_nonblocking(FD fd);
     VoidExpected register_fd(FD fd, uint32_t events);
@@ -82,7 +81,6 @@ struct EventLoop {
     VoidExpected OnClientReadable(ClientConn* c);
     VoidExpected OnClientWritable(ClientConn* c);
     void CloseClient(ClientConn* c);
-    void ReapClient(ClientConn* c);
 
     // outbound messaging
     VoidExpected OnPeerWritable(PeerConn& p);

@@ -185,8 +185,8 @@ VoidExpectedF EventLoop::Run() {
                 continue;
             }
 
-            if (auto it = client_fd_to_id.find(fd); it != client_fd_to_id.end()) {
-                ClientConn* c = client_conns.at(it->second);
+            if (auto it = client_conns.find(fd); it != client_conns.end()) {
+                ClientConn* c = it->second;
                 if (e & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                     #ifdef DEBUG
                     std::cout << "epoll error found for client " << it->second << ":";
@@ -205,7 +205,7 @@ VoidExpectedF EventLoop::Run() {
                 }
                 if (e & EPOLLIN) {
                     #ifdef DEBUG
-                    std::cout << "new client message from client " << c->id << "\n";
+                    std::cout << "new client message from client with fd " << fd << "\n";
                     #endif
                     VoidExpected readable_ok = OnClientReadable(c);
                     if (!readable_ok) {
@@ -217,7 +217,7 @@ VoidExpectedF EventLoop::Run() {
                 }
                 if (e & EPOLLOUT) {
                     #ifdef DEBUG
-                    std::cout << "ready to send reply to client " << c->id << "\n";
+                    std::cout << "ready to send reply to client with fd " << fd << "\n";
                     #endif
                     VoidExpected writable_ok = OnClientWritable(c);
                     if (!writable_ok) {
@@ -370,8 +370,8 @@ VoidExpectedF EventLoop::DrainInbox() {
                 #ifdef DEBUG
                 std::cout << "found add peer msg\n";
                 #endif
-                // TODO
-                VoidExpectedF add_peer_ok = AddPeer(out->node_id, "", "");
+                VoidExpectedF add_peer_ok = AddPeer(out->node_id, payload.ip_addr, payload.port);
+                return add_peer_ok;
             }
 
             else if constexpr (std::is_same_v<T, HeartbeatTimeout> || std::is_same_v<T, DropPeerMsg>){

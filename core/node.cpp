@@ -5,6 +5,8 @@
 #include "node.hpp"
 #include <csignal>
 #include <random>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #ifdef DEBUG
 #include <iostream>
 #endif
@@ -288,9 +290,9 @@ void Node::become_leader() {
     }
 }
 
-void Node::add_peer_if_not_exists(NodeID node_id) {
+bool Node::add_peer_if_not_exists(NodeID node_id, IPAddress client_ip_addr) {
     if (std::find(node_ids_.begin(), node_ids_.end(), node_id) != node_ids_.end()) {
-        return;
+        return true;
     }
 
     node_ids_.push_back(node_id);
@@ -300,8 +302,52 @@ void Node::add_peer_if_not_exists(NodeID node_id) {
     auto& el = loops_[node_id & (EVENT_LOOP_THREADS - 1)];
     el->outbound_inbox.PushOne(
         std::make_unique<RaftMessage>(
-            AddPeerMsg{}, node_id
+            AddPeerMsg{client_ip_addr, SERVER_PORT }, node_id
         )
     );
+    return true;
 
+}
+
+void Node::commit_if_quorum(uint32_t& commit_index) {
+    // No peers => no quorum to compute. Guards std::max_element below from
+    // dereferencing end() on an empty map.
+    if (match_indexes_.empty()) return;
+
+    auto freqs = std::unordered_map<uint32_t, uint32_t>(match_indexes_.size());
+    for (auto match_idx : match_indexes_) {
+        freqs[match_idx]++;
+    }
+
+    // fast path
+    auto kv_max_freq = std::max_element(freqs.begin(), freqs.end(), [](const std::pair<uint32_t, uint32_t>& a, const std::pair<uint32_t, uint32_t>& b){
+       return a.second < b.second;
+    });
+    if (kv_max_freq == freqs.end()) return;
+    if (kv_max_freq->second <= match_indexes_.size() / 2) return;
+    if (kv_max_freq->first > commit_index
+        && kv_max_freq->first < log_.size()
+        && log_[kv_max_freq->first].term == current_term_) {
+        commit_index = kv_max_freq->first;
+        return;
+    }
+
+    // slow path
+    freqs.erase(kv_max_freq);
+    std::vector<std::pair<uint32_t, uint32_t>> freqs_vec;
+    freqs_vec.reserve(freqs.size());
+    for (auto [idx, count] : freqs) {
+        freqs_vec.emplace_back(idx, count);
+    }
+    std::sort(freqs_vec.begin(), freqs_vec.end(), [](auto& a, auto& b){ return a.second > b.second; });
+
+    for (auto& [match_idx, count] : freqs_vec) {
+        if (count < match_indexes_.size() / 2) break;
+        if (match_idx > commit_index
+            && match_idx < log_.size()
+            && log_[match_idx].term == current_term_) {
+            commit_index = match_idx;
+            break;
+        }
+    }
 }

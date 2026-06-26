@@ -16,9 +16,10 @@ Buffering convention (used by both flavors):
             send. Once wbuf_offset == wbuf.size(), the buffer is reset and
             EPOLLOUT is disarmed.
 */
-#include "./protocol/utils.hpp"
+#include "./protocol/payloads.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <sys/types.h>
 #include <type_traits>
@@ -75,12 +76,14 @@ struct RaftMessage {
 struct ClientConn {
     std::vector<std::byte> rbuf;
     std::vector<std::byte> wbuf;
-    size_t wbuf_offset = 0; // to track how much of the wbuf has been sent (for chunked sends)
+    IPAddress client_ip_addr;
+    size_t wbuf_offset     =  0; // to track how much of the wbuf has been sent (for chunked sends)
 
-    ClientConn* next_free = nullptr; // freelist link, valid only when free
+    ClientConn* next_free  = nullptr; // freelist link, valid only when free
 
-    FD       fd            = -1;
-    NodeID   id            = 0;
+    FD fd                  = -1;
+    //ClientID client_id     =  0;
+    // NodeID cluster_id      =  0;
 
     // Reserved: when request handlers run on a worker pool, this counts
     // outstanding tasks for the connection so we can defer reaping a
@@ -88,12 +91,11 @@ struct ClientConn {
     // // handlers (current state) this stays 0.
     //int      pending_tasks = 0;
 
-    bool     closing       = false;
     // bool     want_write    = false;
-    uint32_t epoll_events  = 0;
+    uint32_t epoll_events  =  0;
+    bool     closing       =  false;
     // uint32_t next_seq      = 0;
 
-    void write_reply(RpcReply& reply);;
 };
 
 /*
@@ -198,8 +200,10 @@ struct ClientConnSlab {
         c->wbuf.clear();
         c->wbuf.shrink_to_fit();
         c->wbuf_offset = 0;
+        std::memset(c->client_ip_addr, 0, sizeof(c->client_ip_addr));
         c->fd = -1;
-        c->id = 0;
+        //c->client_id = 0;
+        // c->cluster_id = 0;
         //c->pending_tasks = 0;
         c->closing = false;
         // c->want_write = false;

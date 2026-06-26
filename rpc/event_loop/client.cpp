@@ -1,5 +1,6 @@
 #include "./event_loop.hpp"
 #include "../protocol/client.hpp"
+#include <arpa/inet.h>
 #include <format>
 #include <netinet/tcp.h>
 
@@ -38,11 +39,13 @@ VoidExpected EventLoop::Accept() {
         std::cout << "connection accepted\n";
         #endif
 
+        // populate client ip address
+        inet_ntop(AF_INET, &peer.sin_addr, c->client_ip_addr, sizeof(c->client_ip_addr));
+
         int yes = 1;
         ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
         c->fd = fd;
-        c->id = next_conn_id++;
         c->epoll_events = EPOLLIN | EPOLLRDHUP | EPOLLET;
 
         VoidExpected client_fd_ok = register_fd(fd, c->epoll_events);
@@ -54,19 +57,18 @@ VoidExpected EventLoop::Accept() {
             client_slab.Release(c);
             continue;
         }
-        client_fd_to_id[fd] = c->id;
-        client_conns.emplace(c->id, c);
+        client_conns[c->fd] = c;
     }
     return {};
 }
 
 VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
     #ifdef DEBUG
-    std::cout << "client " << c->id << " writable\n";
+    std::cout << "client with fd " << c->fd << " writable\n";
     #endif
     while (c->wbuf_offset < c->wbuf.size()) {
         #ifdef DEBUG
-        std::cout << "sending reply to client " << c->id << "\n";
+        std::cout << "sending reply to client with fd " << c->fd << "\n";
         #endif
         ssize_t n = ::send(
             c->fd,
@@ -88,14 +90,17 @@ VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
         #endif
     }
     // if (c.closing && c.pending_tasks == 0) ReapClient(c);
-    if (c->closing) ReapClient(c);
+    if (c->closing) {
+        client_conns.erase(c->fd);
+        client_slab.Release(c);
+    }
     return modify_ok;
 }
 
 VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
     // TODO: if latency is too high here, replace c.rbuf w a ring buffer, or use readv
     #ifdef DEBUG
-    std::cout << "client " << c->id << " readable\n";
+    std::cout << "client with fd " << c->fd << " readable\n";
     #endif
     for (;;) {
         size_t old = c->rbuf.size();
@@ -123,16 +128,16 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
 
         size_t before = c->rbuf.size();
 
-        auto [request_raw, rpc_id] = parse_rbuf(c); // erases the read bytes in rbuf
+        auto request_raw = parse_rbuf(c); // erases the read bytes in rbuf
         if (!request_raw) {
             //CloseClient(c);
             return Unexpected(request_raw.error());
         }
         RpcRequest& req = request_raw.value();
         #ifdef DEBUG
-        std::cout << "posting inbound request from client " << c->id << " to node inbox\n";
+        std::cout << "posting inbound request from client with fd " << c->fd << " to node inbox\n";
         #endif
-        post_node_inbox(req, c->id);
+        post_node_inbox(req, 0); // TODO
 
         if (c->rbuf.size() == before) break; // need more bytes
     }
@@ -141,7 +146,7 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
 
 void EventLoop::CloseClient(ClientConn* c) {
     #ifdef DEBUG
-    std::cout << "closing client " << c->id << "\n";
+    std::cout << "closing client with fd " << c->fd << "\n";
     #endif
     if (c->closing) return;
     c->closing = true;
@@ -149,19 +154,11 @@ void EventLoop::CloseClient(ClientConn* c) {
     if (c->fd >= 0) {
         ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, c->fd, nullptr);
         ::close(c->fd);
-        client_fd_to_id.erase(c->fd);
-        c->fd = -1;
+        client_conns.erase(c->fd);
     }
-    c->epoll_events = 0;
 
-    ReapClient(c);
-    //if (c.pending_tasks == 0) ReapClient(c);
-}
-
-void EventLoop::ReapClient(ClientConn* c) {
-    const ClientID id = c->id;
-    client_conns.erase(id);
     client_slab.Release(c);
+    //if (c.pending_tasks == 0) ReapClient(c);
 }
 
 VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload, NodeID client_id) {

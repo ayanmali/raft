@@ -27,7 +27,9 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found AE RPC\n";
                     #endif
-                    add_peer_if_not_exists(payload.leader_id);
+                    bool add_peer_ok = add_peer_if_not_exists(payload.leader_id, payload.client_ip_addr);
+                    if (!add_peer_ok) return {};
+                    auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
 
                     // reply false if:
                     // term < current_term
@@ -39,7 +41,7 @@ void Node::MainLoop() {
                     ) {
                         el->outbound_inbox.PushOne(
                             std::make_unique<RaftMessage>(
-                                AppendEntriesRespPayload{.term = current_term_, .success = 0}, client_id
+                                AppendEntriesRespPayload{.term = current_term_, .success = 0}, payload.leader_id
                             )
                         );
                         return {};
@@ -78,7 +80,7 @@ void Node::MainLoop() {
 
                     el->outbound_inbox.PushOne(
                         std::make_unique<RaftMessage>(
-                        AppendEntriesRespPayload{.success = 1}, client_id
+                        AppendEntriesRespPayload{.success = 1}, payload.leader_id
                         )
                     );
                 }
@@ -87,7 +89,9 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found RV RPC\n";
                     #endif
-                    add_peer_if_not_exists(payload.candidate_id);
+                    bool add_peer_ok = add_peer_if_not_exists(payload.candidate_id, payload.client_ip_addr);
+                    if (!add_peer_ok) return {};
+                    auto& el = loops_[payload.candidate_id & (EVENT_LOOP_THREADS - 1)];
 
                     if (payload.term > current_term_) {
                         current_term_ = payload.term;
@@ -97,7 +101,7 @@ void Node::MainLoop() {
                     if (payload.term < current_term_ || voted_for_ != -1) {
                         el->outbound_inbox.PushOne(
                             std::make_unique<RaftMessage>(
-                                RequestVoteRespPayload{current_term_, 0}, client_id
+                                RequestVoteRespPayload{current_term_, 0}, payload.candidate_id
                             )
                         );
                         return {};
@@ -110,12 +114,12 @@ void Node::MainLoop() {
                     || (payload.last_log_term == last_log_term
                         && payload.last_log_idx >= last_log_idx))
                     {
-                        voted_for_ = client_id;
+                        voted_for_ = payload.candidate_id;
                     }
 
                     el->outbound_inbox.PushOne(
                         std::make_unique<RaftMessage>(
-                        RequestVoteRespPayload{current_term_, 1}, client_id
+                        RequestVoteRespPayload{current_term_, 1}, payload.candidate_id
                         )
                     );
                     return {};
@@ -127,10 +131,14 @@ void Node::MainLoop() {
                     std::cout << "found IS RPC\n";
                     #endif
 
+                    bool add_peer_ok = add_peer_if_not_exists(payload.leader_id, payload.client_ip_addr);
+                    if (!add_peer_ok) return {};
+                    auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
+
                     if (payload.term < current_term_) {
                         el->outbound_inbox.PushOne(
                             std::make_unique<RaftMessage>(
-                            InstallSnapshotRespPayload{current_term_}, client_id)
+                            InstallSnapshotRespPayload{current_term_}, payload.leader_id)
                         );
                         return {};
                     }
@@ -141,7 +149,7 @@ void Node::MainLoop() {
                     // TODO: chunk reassembly, install snapshot to state machine.
                     el->outbound_inbox.PushOne(
                         std::make_unique<RaftMessage>(
-                        InstallSnapshotRespPayload{current_term_}, client_id)
+                        InstallSnapshotRespPayload{current_term_}, payload.leader_id)
                     );
                 }
 
@@ -226,7 +234,7 @@ void Node::MainLoop() {
                      --> entries <= commitIndex become committed. TODO: Send confirmation to client
                      */
 
-                    commit_if_quorum(match_indexes_, commit_index_, current_term_, log_);
+                    commit_if_quorum(commit_index_);
 
                 }
 

@@ -35,7 +35,6 @@ Persistence:
 #include "../rpc/conns.hpp"
 #include "../rpc/event_loop/event_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
-#include "log_utils.hpp"
 #include <array>
 #include <chrono>
 #include <csignal>
@@ -106,7 +105,8 @@ public:
     // per-peer leader bookkeeping. Caller must already be a Candidate that
     // has reached quorum.
     void become_leader();
-    void add_peer_if_not_exists(NodeID);
+    bool add_peer_if_not_exists(NodeID, IPAddress);
+    void commit_if_quorum(uint32_t& commit_index);
 
     NodeInbox& inbox_;
     std::unordered_set<NodeID>                                      voters_;
