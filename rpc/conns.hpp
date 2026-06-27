@@ -20,48 +20,22 @@ Buffering convention (used by both flavors):
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <deque>
 #include <sys/types.h>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-// Peer endpoints in stable storage. Indexed by NodeID.
-struct PeerInfo {
-    NodeID      id;
-    const char* ip;
-    const char* port;
-};
-
-// Tracks the kind of in-flight RPC for a given peer connection so the
-// reply parser knows which deserialize_*_resp to run. Replies do not
-// carry an id byte (see protocol.hpp), so the caller maintains its own
-// FIFO of pending request kinds and matches them to incoming replies.
 enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot };
-
-// One slot in a peer's in-flight queue. Exactly one of `on_ae`/`on_rv`/
-// `on_is` is populated based on `kind`. The EventLoop pops the head of the
-// queue when a complete reply arrives and invokes the matching callback.
-// template <typename AEF, typename RVF, typename ISF>
-// struct PendingReply {
-//     RpcKind kind;
-//     /* One of these functions will be called when the response comes back from the peer */
-
-//     std::function<void(AppendEntriesRespPayload)>   on_ae;
-//     std::function<void(RequestVoteRespPayload)>     on_rv;
-//     std::function<void(InstallSnapshotRespPayload)> on_is;
-//     // AEF on_ae;
-//     // RVF on_rv;
-//     // ISF on_is;
-// };
 
 struct ClientConn {
     std::vector<std::byte> rbuf;
     std::vector<std::byte> wbuf;
+
     char client_ip_addr[INET_ADDRSTRLEN];
-    size_t wbuf_offset     =  0; // to track how much of the wbuf has been sent (for chunked sends)
 
     ClientConn* next_free  = nullptr; // freelist link, valid only when free
+
+    size_t wbuf_offset     =  0; // to track how much of the wbuf has been sent (for chunked sends)
 
     FD fd                  = -1;
     //ClientID client_id     =  0;
@@ -202,52 +176,46 @@ owns this peer (peer_id % N); no cross-thread access.
 State machine:
   Disconnected -> Connecting -> Connected -> Disconnected (on EOF/error)
 
-  Disconnected: fd == -1. Pending sends queue up in `wbuf`; the loop
+  Disconnected: fd == -1. Pending writes queue up in `wbuf`; the loop
                 kicks a non-blocking connect() before draining.
   Connecting:   fd >= 0, EPOLLOUT armed. Connection completion arrives
                 as EPOLLOUT with SO_ERROR == 0.
   Connected:    EPOLLIN always armed; EPOLLOUT armed iff wbuf_offset <
                 wbuf.size().
 
-In-flight tracking:
-  Raft RPCs are synchronous request/reply over a single peer connection,
-  so replies arrive in send order. `inflight` records the kind of each
-  outstanding request so OnPeerReadable knows which deserialize_*_resp
-  to invoke. `inflight_handlers` carries the response callbacks in the
-  same order.
+Buffering (mirrors ClientConn):
+  - wbuf: outbound bytes. Serialized requests are appended; chunked sends
+          advance wbuf_offset. The buffer is cleared after all bytes are
+          transmitted and EPOLLOUT is disarmed.
+  - rbuf: inbound reply bytes. Replies carry a 4-byte length prefix
+          followed by a 1-byte RpcKind and the payload, so the parser is
+          self-describing — no per-request tracking needed.
 */
-struct InflightRPC {
-    std::vector<std::byte> req;
-    std::vector<std::byte> reply;
-    size_t bytes_sent; // for chunked sends
-    RpcKind kind;
-};
-
 struct PeerConn {
-    enum class State : uint8_t { Disconnected, Connecting, Connected };
+    // Single write buffer for all outbound data (requests are serialized
+    // and appended). wbuf_offset tracks chunked-send progress.
+    std::vector<std::byte> wbuf;
+
+    // Single read buffer for all inbound reply data. Replies carry their
+    // RpcKind on the wire, so no per-message tracking is needed.
+    std::vector<std::byte> rbuf;
 
     // Configuration (set once when the peer subset is wired into the loop).
-    const char* ip   = nullptr;
-    const char* port = nullptr;
-    NodeID      peer_id = 0;
+    const char* ip        = nullptr;
+    const char* port      = nullptr;
 
-    // Connection state.
-    State state = State::Disconnected;
-    FD    fd    = -1;
+    size_t wbuf_offset    = 0;
+
+    NodeID      peer_id   = 0;
+
+    FD    fd              = -1;
+    FD timer_fd           = -1;
+
     uint32_t epoll_events = 0;
 
-    // Buffering, mirroring ClientConn's layout.
-    // std::vector<std::byte> rbuf;
-    // std::vector<std::byte> wbuf;
-
-    // Reply matching: pending replies in send order. The head is the
-    // currently-arriving reply. Entry includes both the kind (drives the
-    // deserializer) and the user callback to invoke on completion.
-    std::deque<InflightRPC> outbox;
-
-    FD timer_fd = -1;
-    //std::chrono::steady_clock::time_point next_due; // for diagnostics
-    //uint64_t in_flight_seq = 0; // matches up timer fires w/ the AE sent
+    // Connection state.
+    enum class State : uint8_t { Disconnected, Connecting, Connected };
+    State state           = State::Disconnected;
 
     PeerConn(const char* ip_, const char* port_, NodeID peer_id_) : ip{ip_}, port{port_}, peer_id{peer_id_} {}
 };

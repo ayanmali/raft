@@ -1,5 +1,4 @@
 #include "./utils.hpp"
-#include "../conns.hpp"
 #include "payloads.hpp"
 #include "../../errors.hpp"
 
@@ -43,18 +42,30 @@ constexpr std::array<ReplyParserFunc, IS_RPC_ID + 1> make_reply_parser_table() {
 
 constexpr auto REPLY_PARSER_TABLE = make_reply_parser_table();
 
-std::expected<RpcMessage, const char*> parse_rbuf(InflightRPC& rpc) {
-    if (rpc.reply.size() < sizeof(uint32_t)) return Unexpected("not enough data to read"); // need to see message size first
-    uint32_t message_size;
-    std::memcpy(&message_size, rpc.reply.data(), sizeof(message_size));
-    message_size = ntohl(message_size);
+std::expected<RpcMessage, const char*> parse_rbuf(std::vector<std::byte>& rbuf) {
+    if (rbuf.size() < sizeof(uint32_t))
+        return Unexpected("not enough data to read");
 
-    ByteReader byte_reader(std::span<std::byte>(rpc.reply.begin(), rpc.reply.begin() + message_size));
+    uint32_t total_length;
+    std::memcpy(&total_length, rbuf.data(), sizeof(total_length));
+    total_length = ntohl(total_length);
 
-    auto func = REPLY_PARSER_TABLE[static_cast<size_t>(rpc.kind)];
-    if (!func) return Unexpected("invalid RPC id");
+    if (rbuf.size() < sizeof(uint32_t) + total_length)
+        return Unexpected("not enough data to read");
 
-    rpc.reply.erase(rpc.reply.begin(), rpc.reply.begin() + sizeof(message_size));
+    ByteReader byte_reader(
+        std::span<std::byte>(rbuf.begin() + sizeof(uint32_t),
+                             rbuf.begin() + sizeof(uint32_t) + total_length));
+
+    uint8_t kind_byte;
+    if (!byte_reader.read(kind_byte))
+        return Unexpected("failed to read RPC kind");
+
+    auto func = REPLY_PARSER_TABLE[kind_byte];
+    if (!func)
+        return Unexpected("invalid RPC kind");
+
+    rbuf.erase(rbuf.begin(), rbuf.begin() + sizeof(uint32_t) + total_length);
     return func(byte_reader);
 }
 
@@ -70,10 +81,10 @@ void ByteWriter::serialize(const AppendEntriesReqPayload& payload) {
     auto net_prev_log_term  =  htonl(payload.prev_log_term);
     auto net_leader_commit  =  htonl(payload.leader_commit);
 
-    buf.resize(payload.size() + sizeof(msg_size) + sizeof(net_id));
-    size_t ptr = 0;
+    buf.resize(offset + payload.size() + sizeof(msg_size) + sizeof(net_id));
+    size_t ptr = offset;
 
-    std::memcpy(buf.data(), &msg_size, sizeof(msg_size));
+    std::memcpy(buf.data() + ptr, &msg_size, sizeof(msg_size));
     ptr += sizeof(msg_size);
 
     std::memcpy(buf.data() + ptr, &net_id, sizeof(net_id));
@@ -118,10 +129,10 @@ void ByteWriter::serialize(const RequestVoteReqPayload& payload) {
     auto net_last_log_idx  = htonl(payload.last_log_idx);
     auto net_last_log_term = htonl(payload.last_log_term);
 
-    buf.resize(payload.size() + sizeof(msg_size) + sizeof(net_id));
-    size_t ptr = 0;
+    buf.resize(offset + payload.size() + sizeof(msg_size) + sizeof(net_id));
+    size_t ptr = offset;
 
-    std::memcpy(buf.data(), &msg_size, sizeof(msg_size));
+    std::memcpy(buf.data() + ptr, &msg_size, sizeof(msg_size));
     ptr += sizeof(msg_size);
 
     std::memcpy(buf.data() + ptr, &net_id, sizeof(net_id));
@@ -151,10 +162,10 @@ void ByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
     auto net_offset             = htonl(payload.offset);
     auto net_done               = payload.done;
 
-    buf.resize(payload.size() + sizeof(msg_size) + sizeof(net_id));
-    size_t ptr = 0;
+    buf.resize(offset + payload.size() + sizeof(msg_size) + sizeof(net_id));
+    size_t ptr = offset;
 
-    std::memcpy(buf.data(), &msg_size, sizeof(msg_size));
+    std::memcpy(buf.data() + ptr, &msg_size, sizeof(msg_size));
     ptr += sizeof(msg_size);
 
     std::memcpy(buf.data() + ptr, &net_id, sizeof(net_id));

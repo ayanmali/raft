@@ -42,7 +42,7 @@ struct ByteReader;
 using ReqParserFunc = std::expected<RpcMessage, const char*>(*)(ByteReader&, FD);
 using ReplyParserFunc = std::expected<RpcMessage, const char*>(*)(ByteReader&);
 
-std::expected<RpcMessage, const char*> parse_rbuf(InflightRPC& rpc);
+std::expected<RpcMessage, const char*> parse_rbuf(std::vector<std::byte>& rbuf);
 std::expected<RpcMessage, const char*> parse_rbuf(ClientConn* c);
 
 struct ByteReader {
@@ -142,7 +142,7 @@ struct ByteReader {
 
 struct ByteWriter {
     public:
-    ByteWriter(std::vector<std::byte>& buf_) : buf{buf_} {}
+    ByteWriter(std::vector<std::byte>& buf_, size_t offset_ = 0) : buf{buf_}, offset{offset_} {}
     void serialize(const AppendEntriesReqPayload& payload);
     void serialize(const RequestVoteReqPayload& payload);
     void serialize(const InstallSnapshotReqPayload& payload);
@@ -151,4 +151,5 @@ struct ByteWriter {
     void serialize(const InstallSnapshotRespPayload& payload);
     private:
     std::vector<std::byte>& buf;
+    size_t offset;
 };

@@ -113,27 +113,24 @@ VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
     #ifdef DEBUG
     std::cout << "peer " << p.peer_id << " readable\n";
     #endif
-    // get last sent RPC
-    InflightRPC& out = p.outbox.front();
 
-    // TODO: if too much latency here, replace p.rbuf w a ring buffer, or use readv
-    // must drain socket completely b/c of edge-triggered mode
     for (;;) {
-        size_t old = out.reply.size();
-        out.reply.resize(old + RECV_CHUNK);
-        ssize_t n = ::recv(p.fd, out.reply.data() + old, RECV_CHUNK, 0);
-        if (n > 0) { out.reply.resize(old + n); continue; }
-        if (n == 0) { out.reply.resize(old); return {}; }
+        size_t old = p.rbuf.size();
+        p.rbuf.resize(old + RECV_CHUNK);
+        ssize_t n = ::recv(p.fd, p.rbuf.data() + old, RECV_CHUNK, 0);
+        if (n > 0) { p.rbuf.resize(old + n); continue; }
+        if (n == 0) { p.rbuf.resize(old); return {}; }
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) break;
         DropPeer(p);
         return Unexpected("unexpected error attempting to read from peer socket\n");
     }
 
-    while (!p.outbox.empty()) {
-        InflightRPC& head = p.outbox.front();
-        std::expected<RpcMessage, const char*> reply_raw = parse_rbuf(head);
+    while (!p.rbuf.empty()) {
+        size_t before = p.rbuf.size();
+        auto reply_raw = parse_rbuf(p.rbuf);
         if (!reply_raw) {
+            if (p.rbuf.size() == before) break;
             return Unexpected(reply_raw.error());
         }
         RpcMessage& reply = reply_raw.value();
@@ -141,8 +138,6 @@ VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
         std::cout << "passing reply from peer " << p.peer_id << " back to node\n";
         #endif
         post_node_inbox(std::move(reply));
-
-        p.outbox.pop_front();
     }
     return {};
 }
@@ -151,20 +146,6 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
     #ifdef DEBUG
     std::cout << "peer " << p.peer_id << " writable\n";
     #endif
-    if (p.outbox.empty()) { // to prevent popping from the outbox when its empty
-        std::cout << "deque is empty, returning early\n";
-        return {};
-    }
-
-    // skip over messages that have already been sent but are waiting for a reply
-    auto it = p.outbox.begin();
-    while (it->bytes_sent >= it->req.size()) { ++it; }
-    if (it == p.outbox.end()) {
-        #ifdef DEBUG
-        std::cout << "no messages to send, returning early\n";
-        #endif
-        return {};
-    }
 
     if (p.state == PeerConn::State::Connecting) {
         int err = 0;
@@ -183,29 +164,28 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
         }
     }
 
-    while (it->bytes_sent < it->req.size()) {
-        #ifdef DEBUG
-        std::cout << "sending RPC to peer " << p.peer_id << " - kind = " << static_cast<int>(it->kind) << "\n";
-        #endif
+    while (p.wbuf_offset < p.wbuf.size()) {
         ssize_t n = ::send(p.fd,
-            it->req.data() + it->bytes_sent,
-            it->req.size() - it->bytes_sent,
+            p.wbuf.data() + p.wbuf_offset,
+            p.wbuf.size() - p.wbuf_offset,
             MSG_NOSIGNAL);
-        if (n > 0) { it->bytes_sent += static_cast<size_t>(n); continue; }
+        if (n > 0) { p.wbuf_offset += static_cast<size_t>(n); continue; }
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return {};
         DropPeer(p);
         return Unexpected("unknown error after writing to peer socket\n");
     }
-    #ifdef DEBUG
-    std::cout << "peer " << p.peer_id << " finished sending\n";
-    #endif
-    // done sending; clean up
-    it->req.clear();
-    //out.bytes_sent = 0;
-    VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
-    return modify_ok;
-    // leave this message in the queue for now; it's now awaiting a reply
+
+    // All bytes sent — but only clear if no new data was appended by
+    // post_inflight while we were sending (same-thread interleaving via
+    // DrainInbox in the same epoll batch).
+    if (p.wbuf_offset >= p.wbuf.size()) {
+        p.wbuf.clear();
+        p.wbuf_offset = 0;
+        VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
+        if (!modify_ok) return modify_ok;
+    }
+    return {};
 }
 
 VoidExpected EventLoop::OnPeerTimer(PeerConn& p) {
@@ -240,15 +220,12 @@ void EventLoop::DropPeer(PeerConn& p) {
     }
     p.state        = PeerConn::State::Disconnected;
     p.epoll_events = 0;
-    p.outbox.clear();
+    p.wbuf.clear();
+    p.wbuf_offset = 0;
+    p.rbuf.clear();
     peer_conns.erase(p.peer_id);
     // send message to node thread to remove this peer from its nodes list
     post_node_inbox(RpcMessage{DropPeerMsg{.source_id = p.peer_id}});
-
-    // TODO: In-flight handlers are stranded; their callbacks won't fire. A future
-    // pass can either invoke them with a synthetic failure response or
-    // implement automatic reconnect + retry.
-    // DLQ?
 }
 
 /* Enqueue functions post a new message to the back of the destination peer struct's outbox queue. */
@@ -299,14 +276,11 @@ VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload) {
             "Failed to post AE RPC to inflight queue: peer id {} not found in peer_conns\n",
             payload.dest_id
         ));
-    } // message gets dropped
+    }
     PeerConn& p = it->second;
 
-    // serialize bytes into peer outbox
-    InflightRPC rpc{.bytes_sent = 0, .kind = RpcKind::AppendEntries};
-    ByteWriter writer{rpc.req};
+    ByteWriter writer{p.wbuf, p.wbuf.size()};
     writer.serialize(payload);
-    p.outbox.push_back(rpc);
 
     if (p.state == PeerConn::State::Connected) {
         VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
@@ -333,11 +307,8 @@ VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload) {
     }
     PeerConn& p = it->second;
 
-    // serialize bytes into peer outbox
-    InflightRPC rpc{.bytes_sent = 0, .kind = RpcKind::RequestVote};
-    ByteWriter writer{rpc.req};
+    ByteWriter writer{p.wbuf, p.wbuf.size()};
     writer.serialize(payload);
-    p.outbox.push_back(rpc);
 
     if (p.state == PeerConn::State::Connected) {
         VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
@@ -361,14 +332,11 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload) {
         return UnexpectedF(
             std::format("Failed to post IS RPC to inflight queue: peer id {} not found in peer_conns\n", payload.dest_id)
         );
-    } // message gets dropped
+    }
     PeerConn& p = it->second;
 
-    // serialize bytes into peer outbox
-    InflightRPC rpc{.bytes_sent = 0, .kind = RpcKind::InstallSnapshot};
-    ByteWriter writer{rpc.req};
+    ByteWriter writer{p.wbuf, p.wbuf.size()};
     writer.serialize(payload);
-    p.outbox.push_back(rpc);
 
     if (p.state == PeerConn::State::Connected) {
         VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
