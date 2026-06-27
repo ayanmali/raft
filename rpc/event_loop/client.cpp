@@ -64,7 +64,7 @@ VoidExpected EventLoop::Accept() {
 
 VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
     #ifdef DEBUG
-    std::cout << "client with id " << c->id << " writable\n";
+    std::cout << "client with fd " << c->fd << " writable\n";
     #endif
     while (c->wbuf_offset < c->wbuf.size()) {
         #ifdef DEBUG
@@ -135,7 +135,7 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
         }
         RpcMessage& req = request_raw.value();
         #ifdef DEBUG
-        std::cout << "posting inbound request from client with id " << c->id << " to node inbox\n";
+        std::cout << "posting inbound request from client with fd " << c->fd << " to node inbox\n";
         #endif
         post_node_inbox(std::move(req));
 

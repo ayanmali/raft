@@ -39,7 +39,7 @@ struct ClientConn {
 
     FD fd                  = -1;
     //ClientID client_id     =  0;
-    NodeID id;
+    // NodeID id;
 
     // Reserved: when request handlers run on a worker pool, this counts
     // outstanding tasks for the connection so we can defer reaping a
@@ -159,7 +159,7 @@ struct ClientConnSlab {
         std::memset(c->client_ip_addr, 0, sizeof(c->client_ip_addr));
         c->fd = -1;
         //c->client_id = 0;
-        c->id = 0;
+        // c->id = 0;
         //c->pending_tasks = 0;
         c->closing = false;
         // c->want_write = false;

@@ -370,9 +370,6 @@ VoidExpectedF EventLoop::DrainInbox() {
                 std::cout << "found add peer msg\n";
                 #endif
 
-                sockaddr_in addr{};
-                socklen_t len = sizeof(addr);
-
                 if (auto it = client_conns.find(payload.fd); it != client_conns.end()) {
                     VoidExpectedF add_peer_ok = AddPeer(payload.dest_id, it->second->client_ip_addr, payload.port);
                     return UnexpectedF(std::format(
@@ -382,7 +379,7 @@ VoidExpectedF EventLoop::DrainInbox() {
                 }
 
                 return UnexpectedF(std::format(
-                    "Failed to add peer - getpeername failed for fd {}\n",
+                    "Failed to add peer - fd {} not present in client_conns\n",
                     payload.fd
                 ));
             }
