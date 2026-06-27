@@ -31,7 +31,7 @@ struct EventLoop {
     void Wake();
     VoidExpectedF AddPeer(NodeID id, const char* ip_addr, const char* port);
 
-    SPSCQueue<std::unique_ptr<RaftMessage>, INBOX_RING_CAP> outbound_inbox{};
+    SPSCQueue<std::unique_ptr<RpcMessage>, INBOX_RING_CAP> outbound_inbox{};
 
     std::atomic<bool> stopped{false};
 
@@ -46,9 +46,9 @@ struct EventLoop {
     FD event_fd = -1;
 
     // Inbound
-    NodeInbox& node_inbox; // incoming messages
+    NodeInbox& node_inbox; // incoming messages; multi-producer (each event loop is a producer)
 
-    ClientID next_conn_id = 0;
+    // ClientID next_conn_id = 0;
 
     const size_t this_id;
 
@@ -67,13 +67,13 @@ struct EventLoop {
     VoidExpected modify_client_interest(ClientConn* c, uint32_t events);
     VoidExpected modify_peer_interest(PeerConn& p, uint32_t events);
 
-    VoidExpectedF post_inflight(AppendEntriesReqPayload& payload, NodeID peer_id);
-    VoidExpectedF post_inflight(RequestVoteReqPayload& payload, NodeID peer_id);
-    VoidExpectedF post_inflight(InstallSnapshotReqPayload& payload, NodeID peer_id);
+    VoidExpectedF post_inflight(AppendEntriesReqPayload& payload);
+    VoidExpectedF post_inflight(RequestVoteReqPayload& payload);
+    VoidExpectedF post_inflight(InstallSnapshotReqPayload& payload);
 
-    VoidExpectedF post_reply(AppendEntriesRespPayload& payload, NodeID client_id);
-    VoidExpectedF post_reply(RequestVoteRespPayload& payload, NodeID client_id);
-    VoidExpectedF post_reply(InstallSnapshotRespPayload& payload, NodeID client_id);
+    VoidExpectedF post_reply(AppendEntriesRespPayload& payload);
+    VoidExpectedF post_reply(RequestVoteRespPayload& payload);
+    VoidExpectedF post_reply(InstallSnapshotRespPayload& payload);
 
     // inbound messaging
     VoidExpected setup_listen_socket();
@@ -98,12 +98,10 @@ struct EventLoop {
 
     // Accepts any RpcRequest/RpcReply variant, or a bare payload (e.g.
     // DropPeerMsg), and widens it into the RpcMessage variant before pushing.
-    template <typename T>
-    bool post_node_inbox(T&& msg, NodeID node_id) {
-        RpcMessage widened = to_rpc_message(std::forward<T>(msg));
+    bool post_node_inbox(RpcMessage&& msg) {
         for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt) {
             if (node_inbox.Push(this_id,
-                    std::make_unique<RaftMessage>(std::move(widened), node_id))) {
+                std::make_unique<RpcMessage>(std::forward<RpcMessage>(msg)))) {
                 return true;
             }
         }

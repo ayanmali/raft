@@ -32,7 +32,6 @@ Persistence:
     - matchIndex[]
 */
 #include "../config.hpp"
-#include "../rpc/conns.hpp"
 #include "../rpc/event_loop/event_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
 #include <array>
@@ -68,9 +67,9 @@ public:
     // Outbound RPC entry points. Resolve the owning loop by
     // peer_id % N and post the request into its inbox. The reply
     // callback fires on that loop's thread.
-    void send_rpc(AppendEntriesReqPayload&&, NodeID);
-    void send_rpc(RequestVoteReqPayload&&, NodeID);
-    void send_rpc(InstallSnapshotReqPayload&&, NodeID);
+    void send_rpc(AppendEntriesReqPayload&&);
+    void send_rpc(RequestVoteReqPayload&&);
+    void send_rpc(InstallSnapshotReqPayload&&);
     void append_commands(std::vector<std::vector<std::byte>>&);
     void send_heartbeats_and_arm_timers(); // upon leader promotion
     void send_disarm_timers(); // upon leader demotion
@@ -105,7 +104,7 @@ public:
     // per-peer leader bookkeeping. Caller must already be a Candidate that
     // has reached quorum.
     void become_leader();
-    bool add_peer_if_not_exists(NodeID, IPAddress);
+    bool add_peer_if_not_exists(NodeID, FD);
     void commit_if_quorum(uint32_t& commit_index);
 
     NodeInbox& inbox_;

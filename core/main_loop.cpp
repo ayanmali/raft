@@ -12,14 +12,12 @@ void Node::MainLoop() {
     while (true) {
         // check the reply inbox for new replies that have arrived
         bool leader_contact{false};
-        inbox_.DrainAll([this, &leader_contact](std::unique_ptr<RaftMessage>&& message) {
+        inbox_.DrainAll([this, &leader_contact](std::unique_ptr<RpcMessage>&& message) {
             #ifdef DEBUG
             std::cout << "draining node inbox...\n";
             #endif
             VoidExpectedF ok = std::visit([this, &message, &leader_contact](auto&& payload) -> VoidExpectedF {
                 using T = std::decay_t<decltype(payload)>;
-                auto client_id = message->node_id;
-                auto& el = loops_[client_id & (EVENT_LOOP_THREADS - 1)];
 
                 /* Handlers */
 
@@ -27,7 +25,7 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found AE RPC\n";
                     #endif
-                    bool add_peer_ok = add_peer_if_not_exists(payload.leader_id, payload.client_ip_addr);
+                    bool add_peer_ok = add_peer_if_not_exists(payload.leader_id, payload.fd);
                     if (!add_peer_ok) return {};
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
 
@@ -40,8 +38,8 @@ void Node::MainLoop() {
                     || log_[payload.prev_log_idx].term != payload.prev_log_term
                     ) {
                         el->outbound_inbox.PushOne(
-                            std::make_unique<RaftMessage>(
-                                AppendEntriesRespPayload{.term = current_term_, .success = 0}, payload.leader_id
+                            std::make_unique<RpcMessage>(
+                                AppendEntriesRespPayload{.server_id = MY_ID, .client_id = payload.leader_id, .term = current_term_, .success = 0}
                             )
                         );
                         return {};
@@ -79,8 +77,8 @@ void Node::MainLoop() {
                     leader_contact = true;
 
                     el->outbound_inbox.PushOne(
-                        std::make_unique<RaftMessage>(
-                        AppendEntriesRespPayload{.success = 1}, payload.leader_id
+                        std::make_unique<RpcMessage>(
+                        AppendEntriesRespPayload{.server_id = MY_ID, .client_id = payload.leader_id, .success = 1}
                         )
                     );
                 }
@@ -89,7 +87,7 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found RV RPC\n";
                     #endif
-                    bool add_peer_ok = add_peer_if_not_exists(payload.candidate_id, payload.client_ip_addr);
+                    bool add_peer_ok = add_peer_if_not_exists(payload.candidate_id, payload.fd);
                     if (!add_peer_ok) return {};
                     auto& el = loops_[payload.candidate_id & (EVENT_LOOP_THREADS - 1)];
 
@@ -100,8 +98,8 @@ void Node::MainLoop() {
 
                     if (payload.term < current_term_ || voted_for_ != -1) {
                         el->outbound_inbox.PushOne(
-                            std::make_unique<RaftMessage>(
-                                RequestVoteRespPayload{current_term_, 0}, payload.candidate_id
+                            std::make_unique<RpcMessage>(
+                                RequestVoteRespPayload{.server_id = MY_ID, .client_id = payload.candidate_id, .term = current_term_, .vote_granted = 0}
                             )
                         );
                         return {};
@@ -118,8 +116,8 @@ void Node::MainLoop() {
                     }
 
                     el->outbound_inbox.PushOne(
-                        std::make_unique<RaftMessage>(
-                        RequestVoteRespPayload{current_term_, 1}, payload.candidate_id
+                        std::make_unique<RpcMessage>(
+                        RequestVoteRespPayload{.server_id = MY_ID, .client_id = payload.candidate_id, .term = current_term_, .vote_granted = 1}
                         )
                     );
                     return {};
@@ -131,14 +129,14 @@ void Node::MainLoop() {
                     std::cout << "found IS RPC\n";
                     #endif
 
-                    bool add_peer_ok = add_peer_if_not_exists(payload.leader_id, payload.client_ip_addr);
+                    bool add_peer_ok = add_peer_if_not_exists(payload.leader_id, payload.fd);
                     if (!add_peer_ok) return {};
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
 
                     if (payload.term < current_term_) {
                         el->outbound_inbox.PushOne(
-                            std::make_unique<RaftMessage>(
-                            InstallSnapshotRespPayload{current_term_}, payload.leader_id)
+                            std::make_unique<RpcMessage>(
+                            InstallSnapshotRespPayload{.server_id = MY_ID, .client_id = payload.leader_id, .term = current_term_})
                         );
                         return {};
                     }
@@ -148,8 +146,8 @@ void Node::MainLoop() {
                     leader_contact = true;
                     // TODO: chunk reassembly, install snapshot to state machine.
                     el->outbound_inbox.PushOne(
-                        std::make_unique<RaftMessage>(
-                        InstallSnapshotRespPayload{current_term_}, payload.leader_id)
+                        std::make_unique<RpcMessage>(
+                        InstallSnapshotRespPayload{.server_id = MY_ID, .client_id = payload.leader_id, .term = current_term_})
                     );
                 }
 
@@ -159,10 +157,10 @@ void Node::MainLoop() {
                     #endif
 
                     const uint32_t last_log_idx = log_.size() - 1;
-                    const auto it = std::find(node_ids_.begin(), node_ids_.end(), client_id);
+                    const auto it = std::find(node_ids_.begin(), node_ids_.end(), payload.server_id);
                     if (it == node_ids_.end()) {
                         return UnexpectedF(
-                            std::format("Failed to process AE reply: client ID {} not found in node_ids_", client_id)
+                            std::format("Failed to process AE reply: node ID {} not found in node_ids_", payload.server_id)
                         );
                     }
                     const uint32_t stored_next = next_indexes_[it - node_ids_.begin()];
@@ -171,7 +169,7 @@ void Node::MainLoop() {
                     if (stored_next < 2) {
                         return UnexpectedF(std::format(
                             "Failed to process AE reply: next_index {} for client_id {} too small to derive prev_log_idx",
-                            stored_next, client_id
+                            stored_next, payload.server_id
                         ));
                     }
                     const uint32_t next_idx = stored_next - 1;
@@ -192,7 +190,7 @@ void Node::MainLoop() {
                         if (last_log_idx < next_idx) {
                             return UnexpectedF(std::format(
                                 "Failed to process AE reply: failed to retry AE RPC to client_id {}; last_log_idx {} is less than decremented next_idx {}",
-                                client_id, last_log_idx, next_idx
+                                payload.server_id, last_log_idx, next_idx
                             ));
                         };
 
@@ -200,12 +198,13 @@ void Node::MainLoop() {
 
                         send_rpc(AppendEntriesReqPayload{
                             entries_to_append,
+                            payload.server_id,
                             current_term_,
                             MY_ID,
                             prev_log_idx,
                             prev_log_term,
                             commit_index_
-                        }, client_id);
+                        });
 
                         return {};
                     }
@@ -246,10 +245,10 @@ void Node::MainLoop() {
                     if (state_ != NodeState::Candidate
                         || payload.term != current_term_
                         || !payload.vote_granted
-                        || !voters_.insert(client_id).second
+                        || !voters_.insert(payload.server_id).second
                     ) return UnexpectedF(std::format(
                         "Failed to process RequestVote reply: payload term ({}) either does not match current term of {}, or sender did not grant vote, or client_id {} has already voted for this node.",
-                        payload.term, current_term_, client_id
+                        payload.term, current_term_, payload.server_id
                     ));
 
                     // become leader if quorum of votes achieved
@@ -273,11 +272,11 @@ void Node::MainLoop() {
                     #endif
                     // if last log index >= this follower's nextIndex,
                     // then send AE RPC w/ log entries starting at nextIndex. Otherwise, send term w/ no entries.
-                    const auto it = std::find(node_ids_.begin(), node_ids_.end(), client_id);
+                    const auto it = std::find(node_ids_.begin(), node_ids_.end(), payload.source_id);
                     if (it == node_ids_.end()) {
                         return UnexpectedF(std::format(
-                            "Failed to process HeartbeatTimeout: client_id {} not found in node_ids_"
-                            , client_id));
+                            "Failed to process HeartbeatTimeout: node id {} not found in node_ids_"
+                            , payload.source_id));
                     }
                     const uint32_t next_idx = next_indexes_[it - node_ids_.begin()];
 
@@ -289,7 +288,7 @@ void Node::MainLoop() {
                         if (next_idx == 0) {
                             return UnexpectedF(std::format(
                                 "Failed to process HeartbeatTimeout: next_index 0 for client_id {} cannot derive prev_log_idx",
-                                client_id
+                                payload.source_id
                             ));
                         }
                         const uint32_t prev_log_idx = next_idx - 1;
@@ -297,31 +296,34 @@ void Node::MainLoop() {
                         auto s = std::span<LogEntry>(log_.data() + next_idx, log_.size() - next_idx);
                         send_rpc(AppendEntriesReqPayload{
                             s,
+                            payload.source_id,
                             current_term_,
                             MY_ID,
                             prev_log_idx,
                             prev_log_term,
                             commit_index_
-                        }, client_id);
+                        });
                     }
                     else {
-                        send_rpc(AppendEntriesReqPayload{current_term_}, client_id);
+                        send_rpc(AppendEntriesReqPayload{current_term_, MY_ID, payload.source_id});
                     }
+
+                    auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
                     el->Wake();
                 }
 
                 else if constexpr (std::is_same_v<T, DropPeerMsg>) {
                     #ifdef DEBUG
-                    std::cout << "Received drop peer message - dropping peer " << client_id << "\n";
+                    std::cout << "Received drop peer message - dropping peer " << payload.source_id << "\n";
                     #endif
-                    if (auto it = std::find(node_ids_.begin(), node_ids_.end(), client_id); it != node_ids_.end() ) {
+                    if (auto it = std::find(node_ids_.begin(), node_ids_.end(), payload.source_id); it != node_ids_.end() ) {
                         size_t index = std::distance(node_ids_.begin(), it);
                         node_ids_.erase(it);
                         next_indexes_.erase(next_indexes_.begin() + index);
                         match_indexes_.erase(match_indexes_.begin() + index);
                     }
-                    voters_.erase(client_id);
-                    if (voted_for_ == client_id) {
+                    voters_.erase(payload.source_id);
+                    if (voted_for_ == payload.source_id) {
                         voted_for_ = -1;
                     }
                 }
@@ -335,7 +337,7 @@ void Node::MainLoop() {
                     static_assert(false, "non-exhaustive visitor");
                 }
                 return {};
-            }, message->data);
+            }, *message.get());
             #ifdef DEBUG
             if (!ok) std::cout << "inbox handler error: " << ok.error() << "\n";
             #else
@@ -392,12 +394,13 @@ void Node::MainLoop() {
 
             auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
             el->outbound_inbox.PushOne(
-                std::make_unique<RaftMessage>(RequestVoteReqPayload{
-                    current_term_,
-                    MY_ID,
-                    static_cast<uint32_t>(log_.size() - 1),
-                    log_.back().term
-                }, id)
+                std::make_unique<RpcMessage>(RequestVoteReqPayload{
+                    .dest_id = id,
+                    .term = current_term_,
+                    .candidate_id = MY_ID,
+                    .last_log_idx = static_cast<uint32_t>(log_.size() - 1),
+                    .last_log_term = log_.back().term
+                })
             );
 
             el->Wake();

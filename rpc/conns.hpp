@@ -26,10 +26,6 @@ Buffering convention (used by both flavors):
 #include <utility>
 #include <vector>
 
-using NodeID = uint64_t;
-using ClientID = uint64_t;
-using FD = int;
-
 // Peer endpoints in stable storage. Indexed by NodeID.
 struct PeerInfo {
     NodeID      id;
@@ -42,20 +38,6 @@ struct PeerInfo {
 // carry an id byte (see protocol.hpp), so the caller maintains its own
 // FIFO of pending request kinds and matches them to incoming replies.
 enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot };
-
-// Messages that are sent from Raft layer to an event loop to send RPCs/replies to peers/clients.
-struct RaftMessage {
-    RpcMessage data;
-    // std::vector<std::byte> data; // serialized bytes
-    // PendingReply           reply;
-    // F on_reply;
-
-    // // only used for ArmTimer messages
-    // std::chrono::nanoseconds period{0};
-    // RpcKind kind;
-    // Routing key (target loop = peer_id % N). Always meaningful.
-    NodeID node_id = 0;
-};
 
 // One slot in a peer's in-flight queue. Exactly one of `on_ae`/`on_rv`/
 // `on_is` is populated based on `kind`. The EventLoop pops the head of the
@@ -76,14 +58,14 @@ struct RaftMessage {
 struct ClientConn {
     std::vector<std::byte> rbuf;
     std::vector<std::byte> wbuf;
-    IPAddress client_ip_addr;
+    char client_ip_addr[INET_ADDRSTRLEN];
     size_t wbuf_offset     =  0; // to track how much of the wbuf has been sent (for chunked sends)
 
     ClientConn* next_free  = nullptr; // freelist link, valid only when free
 
     FD fd                  = -1;
     //ClientID client_id     =  0;
-    // NodeID cluster_id      =  0;
+    NodeID id;
 
     // Reserved: when request handlers run on a worker pool, this counts
     // outstanding tasks for the connection so we can defer reaping a
@@ -203,7 +185,7 @@ struct ClientConnSlab {
         std::memset(c->client_ip_addr, 0, sizeof(c->client_ip_addr));
         c->fd = -1;
         //c->client_id = 0;
-        // c->cluster_id = 0;
+        c->id = 0;
         //c->pending_tasks = 0;
         c->closing = false;
         // c->want_write = false;

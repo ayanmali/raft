@@ -1,5 +1,5 @@
 #include "./event_loop.hpp"
-#include "../protocol/peer.hpp"
+#include "../protocol/utils.hpp"
 #include <netdb.h>
 #include <netinet/tcp.h>
 #include <sys/timerfd.h>
@@ -132,16 +132,15 @@ VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
 
     while (!p.outbox.empty()) {
         InflightRPC& head = p.outbox.front();
-        std::expected<RpcReply, const char*> reply_raw = parse_reply_buffer(head);
+        std::expected<RpcMessage, const char*> reply_raw = parse_rbuf(head);
         if (!reply_raw) {
-            // TODO: handle error
             return Unexpected(reply_raw.error());
         }
-        RpcReply& reply = reply_raw.value();
+        RpcMessage& reply = reply_raw.value();
         #ifdef DEBUG
         std::cout << "passing reply from peer " << p.peer_id << " back to node\n";
         #endif
-        post_node_inbox(reply, p.peer_id);
+        post_node_inbox(std::move(reply));
 
         p.outbox.pop_front();
     }
@@ -220,7 +219,7 @@ VoidExpected EventLoop::OnPeerTimer(PeerConn& p) {
     }
     if (n != sizeof(expirations) || expirations == 0) return {};
 
-    post_node_inbox(RpcMessage{HeartbeatTimeout{}}, p.peer_id);
+    post_node_inbox(RpcMessage{HeartbeatTimeout{.source_id = p.peer_id}});
     return {};
 }
 
@@ -244,7 +243,7 @@ void EventLoop::DropPeer(PeerConn& p) {
     p.outbox.clear();
     peer_conns.erase(p.peer_id);
     // send message to node thread to remove this peer from its nodes list
-    post_node_inbox(RpcMessage{DropPeerMsg{}}, p.peer_id);
+    post_node_inbox(RpcMessage{DropPeerMsg{.source_id = p.peer_id}});
 
     // TODO: In-flight handlers are stranded; their callbacks won't fire. A future
     // pass can either invoke them with a synthetic failure response or
@@ -253,7 +252,6 @@ void EventLoop::DropPeer(PeerConn& p) {
 }
 
 /* Enqueue functions post a new message to the back of the destination peer struct's outbox queue. */
-/*TODO: serialize request bytes into inflightrpc structs*/
 
 // template <size_t P>
 // inline void EventLoop<P>::EnqueueAE(NodeID peer_id, AppendEntriesReqPayload payload) {
@@ -291,15 +289,15 @@ void EventLoop::DropPeer(PeerConn& p) {
 // }
 
 /* called when draining the messages in the event loop's MPSC inbox. */
-VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID peer_id) {
+VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload) {
     #ifdef DEBUG
-    std::cout << "Posting AE RPC to outbound queue for node " << peer_id << "\n";
+    std::cout << "Posting AE RPC to outbound queue for node " << payload.dest_id << "\n";
     #endif
-    auto it = peer_conns.find(peer_id);
+    auto it = peer_conns.find(payload.dest_id);
     if (it == peer_conns.end()) {
         return UnexpectedF(std::format(
             "Failed to post AE RPC to inflight queue: peer id {} not found in peer_conns\n",
-            peer_id
+            payload.dest_id
         ));
     } // message gets dropped
     PeerConn& p = it->second;
@@ -323,14 +321,14 @@ VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload, NodeID 
     return {};
 }
 
-VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID peer_id) {
+VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload) {
     #ifdef DEBUG
-    std::cout << "Posting RV RPC to outbound queue for node " << peer_id << "\n";
+    std::cout << "Posting RV RPC to outbound queue for node " << payload.dest_id << "\n";
     #endif
-    auto it = peer_conns.find(peer_id);
+    auto it = peer_conns.find(payload.dest_id);
     if (it == peer_conns.end()) {
         return UnexpectedF(std::format(
-            "Failed to post RV RPC to inflight queue: peer id {} not found in peer_conns\n", peer_id
+            "Failed to post RV RPC to inflight queue: peer id {} not found in peer_conns\n", payload.dest_id
         ));
     }
     PeerConn& p = it->second;
@@ -354,14 +352,14 @@ VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload, NodeID pe
     return {};
 }
 
-VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload, NodeID peer_id) {
+VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload) {
     #ifdef DEBUG
-    std::cout << "Posting IS RPC to outbound queue for node " << peer_id << "\n";
+    std::cout << "Posting IS RPC to outbound queue for node " << payload.dest_id << "\n";
     #endif
-    auto it = peer_conns.find(peer_id);
+    auto it = peer_conns.find(payload.dest_id);
     if (it == peer_conns.end()) {
         return UnexpectedF(
-            std::format("Failed to post IS RPC to inflight queue: peer id {} not found in peer_conns\n", peer_id)
+            std::format("Failed to post IS RPC to inflight queue: peer id {} not found in peer_conns\n", payload.dest_id)
         );
     } // message gets dropped
     PeerConn& p = it->second;
@@ -417,9 +415,15 @@ VoidExpectedF EventLoop::disarm_heartbeat_timer(NodeID peer_id) {
     std::cout << "disarming heartbeat timer for node " << peer_id << "\n";
     #endif
     auto it = peer_conns.find(peer_id);
-    if (it == peer_conns.end() || it->second.timer_fd < 0) {
+    if (it == peer_conns.end()) {
         return UnexpectedF(std::format(
-            "Failed to disarm heartbeat timer for peer {}; peer id not found in peer_conns or peer timer_fd < 0\n",
+            "Failed to disarm heartbeat timer for peer {}; peer id not found in peer_conns\n",
+            peer_id
+        ));
+    }
+    if (it->second.timer_fd < 0) {
+        return UnexpectedF(std::format(
+            "Failed to disarm heartbeat timer for peer {}; peer timer_fd < 0\n",
             peer_id
         ));
     }

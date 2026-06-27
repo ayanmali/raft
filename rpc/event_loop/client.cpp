@@ -1,5 +1,5 @@
 #include "./event_loop.hpp"
-#include "../protocol/client.hpp"
+#include "../protocol/utils.hpp"
 #include <arpa/inet.h>
 #include <format>
 #include <netinet/tcp.h>
@@ -64,7 +64,7 @@ VoidExpected EventLoop::Accept() {
 
 VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
     #ifdef DEBUG
-    std::cout << "client with fd " << c->fd << " writable\n";
+    std::cout << "client with id " << c->id << " writable\n";
     #endif
     while (c->wbuf_offset < c->wbuf.size()) {
         #ifdef DEBUG
@@ -133,11 +133,11 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
             //CloseClient(c);
             return Unexpected(request_raw.error());
         }
-        RpcRequest& req = request_raw.value();
+        RpcMessage& req = request_raw.value();
         #ifdef DEBUG
-        std::cout << "posting inbound request from client with fd " << c->fd << " to node inbox\n";
+        std::cout << "posting inbound request from client with id " << c->id << " to node inbox\n";
         #endif
-        post_node_inbox(req, 0); // TODO
+        post_node_inbox(std::move(req));
 
         if (c->rbuf.size() == before) break; // need more bytes
     }
@@ -161,14 +161,14 @@ void EventLoop::CloseClient(ClientConn* c) {
     //if (c.pending_tasks == 0) ReapClient(c);
 }
 
-VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload, NodeID client_id) {
+VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload) {
     #ifdef DEBUG
-    std::cout << "posting AE reply to outbound queue to node " << client_id << "\n";
+    std::cout << "posting AE reply to outbound queue to node " << payload.client_id << "\n";
     #endif
-    auto it = client_conns.find(client_id);
+    auto it = client_conns.find(payload.client_id);
     if (it == client_conns.end()) {
         return UnexpectedF(
-            std::format("client id {} not found\n", client_id)
+            std::format("client id {} not found\n", payload.client_id)
         );
     } // message gets dropped
     ClientConn* c = it->second;
@@ -187,14 +187,14 @@ VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload, NodeID cl
     return {};
 }
 
-VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload, NodeID client_id) {
+VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload) {
     #ifdef DEBUG
-    std::cout << "posting RV reply to outbound queue to node " << client_id << "\n";
+    std::cout << "posting RV reply to outbound queue to node " << payload.client_id << "\n";
     #endif
-    auto it = client_conns.find(client_id);
+    auto it = client_conns.find(payload.client_id);
     if (it == client_conns.end()) {
         return UnexpectedF(
-            std::format("client id {} not found\n", client_id)
+            std::format("client id {} not found\n", payload.client_id)
         );
     } // message gets dropped
     ClientConn* c = it->second;
@@ -213,14 +213,14 @@ VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload, NodeID clie
     return {};
 }
 
-VoidExpectedF EventLoop::post_reply(InstallSnapshotRespPayload& payload, NodeID client_id) {
+VoidExpectedF EventLoop::post_reply(InstallSnapshotRespPayload& payload) {
     #ifdef DEBUG
-    std::cout << "posting IS reply to outbound queue to node " << client_id << "\n";
+    std::cout << "posting IS reply to outbound queue to node " << payload.client_id << "\n";
     #endif
-    auto it = client_conns.find(client_id);
+    auto it = client_conns.find(payload.client_id);
     if (it == client_conns.end()) {
         return UnexpectedF(
-            std::format("client id {} not found\n", client_id)
+            std::format("client id {} not found\n", payload.client_id)
         );
     } // message gets dropped
     ClientConn* c = it->second;

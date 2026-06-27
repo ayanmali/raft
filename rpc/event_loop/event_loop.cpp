@@ -1,4 +1,5 @@
 #include "./event_loop.hpp"
+#include <arpa/inet.h>
 #include <cstddef>
 #include <fcntl.h>
 #include <netdb.h>
@@ -105,7 +106,6 @@ VoidExpected EventLoop::setup_listen_socket() {
     hints.ai_flags    = AI_PASSIVE;
 
     addrinfo* res = nullptr;
-    // TODO: fix this?
     if (::getaddrinfo(nullptr, SERVER_PORT, &hints, &res) != 0 || res == nullptr) {
         return Unexpected("getaddrinfo failed");
     }
@@ -308,9 +308,8 @@ VoidExpectedF EventLoop::DrainInbox() {
     #endif
     wake_armed.store(false, std::memory_order_release);
 
-    std::unique_ptr<RaftMessage> out;
-    bool flag = outbound_inbox.PopOne(&out);
-    while (flag) {
+    std::unique_ptr<RpcMessage> out;
+    while (outbound_inbox.PopOne(&out)) {
         VoidExpectedF ok = std::visit([&out, this](auto&& payload) -> VoidExpectedF {
             using T = std::decay_t<decltype(payload)>;
 
@@ -318,11 +317,11 @@ VoidExpectedF EventLoop::DrainInbox() {
                 #ifdef DEBUG
                 std::cout << "found request\n";
                 #endif
-                VoidExpectedF post_ok = post_inflight(payload, out->node_id);
+                VoidExpectedF post_ok = post_inflight(payload);
                 if (!post_ok) {
                     return UnexpectedF(std::format(
                         "Error while draining event loop inbox - failed to post RPC to inflight queue for peer {}:\n{}",
-                        out->node_id, post_ok.error()
+                        payload.dest_id, post_ok.error()
                     ));
                 }
             }
@@ -331,11 +330,11 @@ VoidExpectedF EventLoop::DrainInbox() {
                 #ifdef DEBUG
                 std::cout << "found reply\n";
                 #endif
-                VoidExpectedF post_ok = post_reply(payload, out->node_id);
+                VoidExpectedF post_ok = post_reply(payload);
                 if (!post_ok) {
                     return UnexpectedF(std::format(
                         "Error while draining event loop inbox - failed to post reply to inflight queue for peer {}:\n{}",
-                        out->node_id, post_ok.error()
+                        payload.server_id, post_ok.error()
                     ));
                 }
             }
@@ -344,11 +343,11 @@ VoidExpectedF EventLoop::DrainInbox() {
                 #ifdef DEBUG
                 std::cout << "found arm timer req\n";
                 #endif
-                VoidExpectedF arm_ok = arm_heartbeat_timer(out->node_id);
+                VoidExpectedF arm_ok = arm_heartbeat_timer(payload.dest_id);
                 if (!arm_ok) {
                     return UnexpectedF(std::format(
                         "Error while draining inbox: failed to arm heartbeat timer for node {}:\n{}\n",
-                        out->node_id, arm_ok.error()
+                        payload.dest_id, arm_ok.error()
                     ));
                 }
             }
@@ -357,11 +356,11 @@ VoidExpectedF EventLoop::DrainInbox() {
                 #ifdef DEBUG
                 std::cout << "found disarm timer req\n";
                 #endif
-                VoidExpectedF disarm_ok = disarm_heartbeat_timer(out->node_id);
+                VoidExpectedF disarm_ok = disarm_heartbeat_timer(payload.dest_id);
                 if (!disarm_ok) {
                     return UnexpectedF(std::format(
                         "Error while draining inbox: failed to disarm heartbeat timer for node {}:\n{}\n",
-                        out->node_id, disarm_ok.error()
+                        payload.dest_id, disarm_ok.error()
                     ));
                 }
             }
@@ -370,8 +369,22 @@ VoidExpectedF EventLoop::DrainInbox() {
                 #ifdef DEBUG
                 std::cout << "found add peer msg\n";
                 #endif
-                VoidExpectedF add_peer_ok = AddPeer(out->node_id, payload.ip_addr, payload.port);
-                return add_peer_ok;
+
+                sockaddr_in addr{};
+                socklen_t len = sizeof(addr);
+
+                if (auto it = client_conns.find(payload.fd); it != client_conns.end()) {
+                    VoidExpectedF add_peer_ok = AddPeer(payload.dest_id, it->second->client_ip_addr, payload.port);
+                    return UnexpectedF(std::format(
+                        "Failed to add peer - AddPeer failed for fd {}\n{}\n",
+                        payload.fd, add_peer_ok.error()
+                    ));
+                }
+
+                return UnexpectedF(std::format(
+                    "Failed to add peer - getpeername failed for fd {}\n",
+                    payload.fd
+                ));
             }
 
             else if constexpr (std::is_same_v<T, HeartbeatTimeout> || std::is_same_v<T, DropPeerMsg>){
@@ -380,8 +393,7 @@ VoidExpectedF EventLoop::DrainInbox() {
 
             else static_assert(false, "non-exhaustive visitor!");
             return {};
-        }, out->data);
-        flag = outbound_inbox.PopOne(&out);
+        }, *out.get());
     }
     return {};
 }

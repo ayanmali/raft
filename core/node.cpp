@@ -130,24 +130,24 @@ inline void Node::Stop() {
 
 // ---- outbound --------------------------------------------------------
 
-void Node::send_rpc(AppendEntriesReqPayload&& payload, NodeID peer_id) {
-    auto& el = loops_[peer_id & (EVENT_LOOP_THREADS - 1)];
+void Node::send_rpc(AppendEntriesReqPayload&& payload) {
+    auto& el = loops_[payload.dest_id & (EVENT_LOOP_THREADS - 1)];
     el->outbound_inbox.PushOne(
-        std::make_unique<RaftMessage>(payload, peer_id)
+        std::make_unique<RpcMessage>(payload)
     );
 }
 
-void Node::send_rpc(RequestVoteReqPayload&& payload, NodeID peer_id) {
-    auto& el = loops_[peer_id & (EVENT_LOOP_THREADS - 1)];
+void Node::send_rpc(RequestVoteReqPayload&& payload) {
+    auto& el = loops_[payload.dest_id & (EVENT_LOOP_THREADS - 1)];
     el->outbound_inbox.PushOne(
-        std::make_unique<RaftMessage>(payload, peer_id)
+        std::make_unique<RpcMessage>(payload)
     );
 }
 
-void Node::send_rpc(InstallSnapshotReqPayload&& payload, NodeID peer_id) {
-    auto& el = loops_[peer_id & (EVENT_LOOP_THREADS - 1)];
+void Node::send_rpc(InstallSnapshotReqPayload&& payload) {
+    auto& el = loops_[payload.dest_id & (EVENT_LOOP_THREADS - 1)];
     el->outbound_inbox.PushOne(
-        std::make_unique<RaftMessage>(payload, peer_id)
+        std::make_unique<RpcMessage>(payload)
     );
 }
 
@@ -227,8 +227,8 @@ void Node::send_heartbeats_and_arm_timers() {
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
         // send heartbeat rpc
         el->outbound_inbox.PushOne(
-            std::make_unique<RaftMessage>(
-                AppendEntriesReqPayload{current_term_}, id
+            std::make_unique<RpcMessage>(
+                AppendEntriesReqPayload{current_term_, MY_ID, id}
             )
         );
         #ifdef DEBUG
@@ -237,8 +237,8 @@ void Node::send_heartbeats_and_arm_timers() {
         // arm this peer's heartbeat timer so we know when to send the next heartbeat.
         el->outbound_inbox.PushOne(
             // send heartbeat rpc
-            std::make_unique<RaftMessage>(
-                ArmTimer{}, id
+            std::make_unique<RpcMessage>(
+                ArmTimer{ .dest_id = id }
             )
         );
         #ifdef DEBUG
@@ -254,8 +254,8 @@ void Node::send_disarm_timers() {
     for (auto id : node_ids_) {
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
         el->outbound_inbox.PushOne(
-            std::make_unique<RaftMessage>(
-                DisArmTimer{}, id
+            std::make_unique<RpcMessage>(
+                DisArmTimer{ .dest_id = id }
             )
         );
         el->Wake();
@@ -290,7 +290,7 @@ void Node::become_leader() {
     }
 }
 
-bool Node::add_peer_if_not_exists(NodeID node_id, IPAddress client_ip_addr) {
+bool Node::add_peer_if_not_exists(NodeID node_id, FD fd) {
     if (std::find(node_ids_.begin(), node_ids_.end(), node_id) != node_ids_.end()) {
         return true;
     }
@@ -301,8 +301,8 @@ bool Node::add_peer_if_not_exists(NodeID node_id, IPAddress client_ip_addr) {
 
     auto& el = loops_[node_id & (EVENT_LOOP_THREADS - 1)];
     el->outbound_inbox.PushOne(
-        std::make_unique<RaftMessage>(
-            AddPeerMsg{client_ip_addr, SERVER_PORT }, node_id
+        std::make_unique<RpcMessage>(
+            AddPeerMsg{ .fd = fd, .port = SERVER_PORT, .dest_id = node_id }
         )
     );
     return true;
