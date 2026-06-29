@@ -104,7 +104,7 @@ public:
     // per-peer leader bookkeeping. Caller must already be a Candidate that
     // has reached quorum.
     void become_leader();
-    bool add_peer_if_not_exists(NodeID, FD);
+    void add_peer_if_not_exists(NodeID, FD, std::unique_ptr<EventLoop>&);
     void commit_if_quorum(uint32_t& commit_index);
 
     NodeInbox& inbox_;

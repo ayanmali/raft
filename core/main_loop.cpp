@@ -25,9 +25,8 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found AE RPC\n";
                     #endif
-                    bool add_peer_ok = add_peer_if_not_exists(payload.leader_id, payload.fd);
-                    if (!add_peer_ok) return {};
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
+                    add_peer_if_not_exists(payload.leader_id, payload.fd, el);
 
                     // reply false if:
                     // term < current_term
@@ -87,9 +86,12 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found RV RPC\n";
                     #endif
-                    bool add_peer_ok = add_peer_if_not_exists(payload.candidate_id, payload.fd);
-                    if (!add_peer_ok) return {};
                     auto& el = loops_[payload.candidate_id & (EVENT_LOOP_THREADS - 1)];
+                    add_peer_if_not_exists(payload.candidate_id, payload.fd, el);
+
+                    #ifdef DEBUG
+                    std::cout << "Payload term = " << payload.term << ", this node's term = " << current_term_ << "\n";
+                    #endif
 
                     if (payload.term > current_term_) {
                         current_term_ = payload.term;
@@ -128,10 +130,8 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found IS RPC\n";
                     #endif
-
-                    bool add_peer_ok = add_peer_if_not_exists(payload.leader_id, payload.fd);
-                    if (!add_peer_ok) return {};
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
+                    add_peer_if_not_exists(payload.leader_id, payload.fd, el);
 
                     if (payload.term < current_term_) {
                         el->outbound_inbox.PushOne(
@@ -268,7 +268,7 @@ void Node::MainLoop() {
                 // heartbeats are sent per follower, not all at once.
                 else if constexpr (std::is_same_v<T, HeartbeatTimeout>) {
                     #ifdef DEBUG
-                    std::cout << "found heartbeat timeout; sending heartbeats...\n";
+                    std::cout << "found heartbeat timeout for node " << payload.source_id << "; sending heartbeat...\n";
                     #endif
                     // if last log index >= this follower's nextIndex,
                     // then send AE RPC w/ log entries starting at nextIndex. Otherwise, send term w/ no entries.

@@ -1,7 +1,6 @@
 #include "./utils.hpp"
 #include "payloads.hpp"
 #include "../../errors.hpp"
-#include <iostream>
 
 /* Inbound */
 
@@ -150,10 +149,6 @@ void ByteWriter::serialize(const RequestVoteReqPayload& payload) {
 
     std::memcpy(buf.data() + ptr, &net_last_log_term, sizeof(net_last_log_term));
 
-    for (auto b : buf) {
-        std::cout << static_cast<int>(b);
-    }
-    std::cout << "\n";
 };
 
 void ByteWriter::serialize(const InstallSnapshotReqPayload& payload) {

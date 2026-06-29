@@ -264,7 +264,7 @@ void Node::send_disarm_timers() {
 
 void Node::demote() {
     #ifdef DEBUG
-    std::cout << MY_ID << " was demoted\n";
+    std::cout << "this node (id " << MY_ID << ") was demoted\n";
     #endif
     voters_.clear();
     voted_for_ = -1;
@@ -290,23 +290,23 @@ void Node::become_leader() {
     }
 }
 
-bool Node::add_peer_if_not_exists(NodeID node_id, FD fd) {
+void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLoop>& el) {
     if (std::find(node_ids_.begin(), node_ids_.end(), node_id) != node_ids_.end()) {
-        return true;
+        return;
     }
 
     node_ids_.push_back(node_id);
     next_indexes_.push_back(1);
     match_indexes_.push_back(0);
 
-    auto& el = loops_[node_id & (EVENT_LOOP_THREADS - 1)];
     el->outbound_inbox.PushOne(
         std::make_unique<RpcMessage>(
             AddPeerMsg{ .fd = fd, .port = SERVER_PORT, .dest_id = node_id }
         )
     );
-    return true;
-
+    #ifdef DEBUG
+    std::cout << "added node w/ id " << node_id << " to node_ids_\n";
+    #endif
 }
 
 void Node::commit_if_quorum(uint32_t& commit_index) {
