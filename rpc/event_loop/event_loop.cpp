@@ -189,7 +189,7 @@ VoidExpectedF EventLoop::Run() {
                 ClientConn* c = it->second;
                 if (e & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                     #ifdef DEBUG
-                    std::cout << "epoll error found for client " << it->second << ":";
+                    std::cout << "epoll error found for client " << it->second->client_ip_addr << ":";
                     if (e & EPOLLERR) {
                         std::cout << "EPOLLERR\n";
                     }
