@@ -23,7 +23,7 @@ void Node::MainLoop() {
 
                 if constexpr (std::is_same_v<T, AppendEntriesReqPayload>) {
                     #ifdef DEBUG
-                    std::cout << "found AE RPC\n";
+                    std::cout << "found AE RPC from node " << payload.leader_id << "\n";
                     #endif
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
                     add_peer_if_not_exists(payload.leader_id, payload.fd, el);
@@ -84,13 +84,20 @@ void Node::MainLoop() {
 
                 else if constexpr (std::is_same_v<T, RequestVoteReqPayload>) {
                     #ifdef DEBUG
-                    std::cout << "found RV RPC\n";
+                    std::cout << "found RV RPC from node " << payload.candidate_id << "\n";
                     #endif
                     auto& el = loops_[payload.candidate_id & (EVENT_LOOP_THREADS - 1)];
                     add_peer_if_not_exists(payload.candidate_id, payload.fd, el);
 
                     #ifdef DEBUG
                     std::cout << "Payload term = " << payload.term << ", this node's term = " << current_term_ << "\n";
+                    std::cout << "This node's voted_for = " << voted_for_ << "\n";
+                    std::cout << "This node's voters = ";
+                    for (auto v : voters_) {
+                        std::cout << v << ", ";
+                    }
+                    std::cout << "\n";
+
                     #endif
 
                     if (payload.term > current_term_) {
@@ -128,7 +135,7 @@ void Node::MainLoop() {
                 // TODO
                 else if constexpr (std::is_same_v<T, InstallSnapshotReqPayload>) {
                     #ifdef DEBUG
-                    std::cout << "found IS RPC\n";
+                    std::cout << "found IS RPC from node " << payload.leader_id << "\n";
                     #endif
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
                     add_peer_if_not_exists(payload.leader_id, payload.fd, el);
@@ -153,7 +160,7 @@ void Node::MainLoop() {
 
                 else if constexpr (std::is_same_v<T, AppendEntriesRespPayload>) {
                     #ifdef DEBUG
-                    std::cout << "found AE reply\n";
+                    std::cout << "found AE reply from node " << payload.server_id << "\n";
                     #endif
 
                     const uint32_t last_log_idx = log_.size() - 1;
@@ -239,7 +246,7 @@ void Node::MainLoop() {
 
                 else if constexpr (std::is_same_v<T, RequestVoteRespPayload>) {
                     #ifdef DEBUG
-                    std::cout << "found RV reply\n";
+                    std::cout << "found RV reply from node " << payload.server_id << "\n";
                     #endif
 
                     if (state_ != NodeState::Candidate
@@ -261,7 +268,7 @@ void Node::MainLoop() {
                 // TODO
                 else if constexpr (std::is_same_v<T, InstallSnapshotRespPayload>) {
                     #ifdef DEBUG
-                    std::cout << "found IS reply\n";
+                    std::cout << "found IS reply from node " << payload.server_id << "\n";
                     #endif
                 }
 
