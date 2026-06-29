@@ -35,12 +35,13 @@ VoidExpected EventLoop::Accept() {
             if (errno == EINTR) continue;
             return {}; // transient errors: drop and try again on next epoll wake
         }
-        #ifdef DEBUG
-        std::cout << "connection accepted\n";
-        #endif
 
         // populate client ip address
         inet_ntop(AF_INET, &peer.sin_addr, c->client_ip_addr, sizeof(c->client_ip_addr));
+
+        #ifdef DEBUG
+        std::cout << "connection accepted from node w/ IP address " << c->client_ip_addr << "\n";
+        #endif
 
         int yes = 1;
         ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
@@ -64,11 +65,11 @@ VoidExpected EventLoop::Accept() {
 
 VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
     #ifdef DEBUG
-    std::cout << "client with fd " << c->fd << " writable\n";
+    std::cout << "client with ip " << c->client_ip_addr << " writable\n";
     #endif
     while (c->wbuf_offset < c->wbuf.size()) {
         #ifdef DEBUG
-        std::cout << "sending reply to client with fd " << c->fd << "\n";
+        std::cout << "sending reply to client with ip " << c->client_ip_addr << "\n";
         #endif
         ssize_t n = ::send(
             c->fd,
@@ -100,7 +101,7 @@ VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
 VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
     // TODO: if latency is too high here, replace c.rbuf w a ring buffer, or use readv
     #ifdef DEBUG
-    std::cout << "client with fd " << c->fd << " readable\n";
+    std::cout << "client with ip " << c->client_ip_addr << " readable\n";
     #endif
     for (;;) {
         size_t old = c->rbuf.size();
@@ -135,7 +136,7 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
         }
         RpcMessage& req = request_raw.value();
         #ifdef DEBUG
-        std::cout << "posting inbound request from client with fd " << c->fd << " to node inbox\n";
+        std::cout << "posting inbound request from client with client_ip_addr " << c->client_ip_addr << " to node inbox\n";
         #endif
         post_node_inbox(std::move(req));
 
@@ -146,7 +147,7 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
 
 void EventLoop::CloseClient(ClientConn* c) {
     #ifdef DEBUG
-    std::cout << "closing client with fd " << c->fd << "\n";
+    std::cout << "closing client with ip " << c->client_ip_addr << "\n";
     #endif
     if (c->closing) return;
     c->closing = true;
