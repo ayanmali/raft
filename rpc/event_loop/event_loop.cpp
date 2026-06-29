@@ -205,7 +205,7 @@ VoidExpectedF EventLoop::Run() {
                 }
                 if (e & EPOLLIN) {
                     #ifdef DEBUG
-                    std::cout << "new client message from client with fd " << fd << "\n";
+                    std::cout << "new client message from client with ip " << c->client_ip_addr << "\n";
                     #endif
                     VoidExpected readable_ok = OnClientReadable(c);
                     if (!readable_ok) {
@@ -217,7 +217,7 @@ VoidExpectedF EventLoop::Run() {
                 }
                 if (e & EPOLLOUT) {
                     #ifdef DEBUG
-                    std::cout << "ready to send reply to client with fd " << fd << "\n";
+                    std::cout << "ready to send reply to client with ip " << c->client_ip_addr << "\n";
                     #endif
                     VoidExpected writable_ok = OnClientWritable(c);
                     if (!writable_ok) {

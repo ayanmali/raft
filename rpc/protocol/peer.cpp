@@ -1,6 +1,7 @@
 #include "./utils.hpp"
 #include "payloads.hpp"
 #include "../../errors.hpp"
+#include <iostream>
 
 /* Inbound */
 
@@ -119,6 +120,11 @@ void ByteWriter::serialize(const AppendEntriesReqPayload& payload) {
     ptr += sizeof(net_prev_log_term);
 
     std::memcpy(buf.data() + ptr, &net_leader_commit, sizeof(net_leader_commit));
+
+    std::cout << "bytes being sent:\n";
+    for (auto b : buf) {
+        std::cout << static_cast<int>(b) << "\n";
+    }
 }
 
 void ByteWriter::serialize(const RequestVoteReqPayload& payload) {

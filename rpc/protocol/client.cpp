@@ -65,9 +65,8 @@ std::expected<RpcMessage, const char*> parse_rbuf(ClientConn* c) {
 
     std::cout << "rbuf bytes:\n";
     for (auto b : c->rbuf) {
-        std::cout << static_cast<int>(b);
+        std::cout << static_cast<int>(b) << "\n";
     }
-    std::cout << "\n";
 
     uint32_t message_size;
     std::memcpy(&message_size, c->rbuf.data(), sizeof(message_size));
