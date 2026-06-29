@@ -73,7 +73,7 @@ std::expected<RpcMessage, const char*> parse_rbuf(ClientConn* c) {
     std::memcpy(&message_size, c->rbuf.data(), sizeof(message_size));
     message_size = ntohl(message_size);
 
-    ByteReader byte_reader(std::span<std::byte>(c->rbuf.begin(), c->rbuf.begin() + message_size));
+    ByteReader byte_reader(std::span<std::byte>(c->rbuf.begin() + sizeof(message_size), c->rbuf.begin() + sizeof(message_size) + message_size));
     uint8_t rpc_id;
 
     if (!byte_reader.read(rpc_id)) return Unexpected("failed to parse RPC id");
@@ -81,7 +81,7 @@ std::expected<RpcMessage, const char*> parse_rbuf(ClientConn* c) {
     auto func = PARSER_TABLE[rpc_id];
     if (!func) return Unexpected("invalid RPC id");
 
-    c->rbuf.erase(c->rbuf.begin(), c->rbuf.begin() + sizeof(message_size) + sizeof(rpc_id));
+    c->rbuf.erase(c->rbuf.begin(), c->rbuf.begin() + sizeof(message_size) + message_size);
     return func(byte_reader, c->fd);
 }
 

@@ -73,7 +73,7 @@ std::expected<RpcMessage, const char*> parse_rbuf(std::vector<std::byte>& rbuf) 
 /* Outbound */
 
 void ByteWriter::serialize(const AppendEntriesReqPayload& payload) {
-    auto msg_size           =  htonll(payload.size());
+    auto msg_size           =  htonl(payload.size() + sizeof(uint8_t));
     auto net_id             =  AE_RPC_ID;
     auto net_entries_len    =  htonll(payload.entries.size());
     auto net_term           =  htonl(payload.term);
@@ -123,7 +123,7 @@ void ByteWriter::serialize(const AppendEntriesReqPayload& payload) {
 }
 
 void ByteWriter::serialize(const RequestVoteReqPayload& payload) {
-    auto msg_size          = htonll(payload.size());
+    auto msg_size          = htonl(payload.size() + sizeof(uint8_t));
     auto net_id            = RV_RPC_ID;
     auto net_term          = htonl(payload.term);
     auto net_candidate_id  = htonl(payload.candidate_id);
@@ -157,7 +157,7 @@ void ByteWriter::serialize(const RequestVoteReqPayload& payload) {
 };
 
 void ByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
-    auto msg_size               = htonll(payload.size());
+    auto msg_size               = htonl(payload.size() + sizeof(uint8_t));
     auto net_id                 = IS_RPC_ID;
     auto net_snapshot_len       = htonll(payload.snapshot.size());
     auto net_term               = htonl(payload.term);
