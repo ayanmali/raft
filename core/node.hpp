@@ -64,15 +64,7 @@ public:
 
     void MainLoop();
 
-    // Outbound RPC entry points. Resolve the owning loop by
-    // peer_id % N and post the request into its inbox. The reply
-    // callback fires on that loop's thread.
-    void send_rpc(AppendEntriesReqPayload&&);
-    void send_rpc(RequestVoteReqPayload&&);
-    void send_rpc(InstallSnapshotReqPayload&&);
     void append_commands(std::vector<std::vector<std::byte>>&);
-    void send_heartbeats_and_arm_timers(); // upon leader promotion
-    void send_disarm_timers(); // upon leader demotion
 
     // Raft leadership transitions. Both must run on an event-loop thread
     // (i.e. as part of a state-machine reaction to an inbound RPC, reply,
@@ -98,12 +90,16 @@ public:
     // TODO: replace AoS EventLoop w/ SoA pattern
     private:
     Node(NodeInbox&);
-    void demote();
+    // Outbound RPC entry points. Resolve the owning loop by
+    // peer_id % N and post the request into its inbox. The reply
+    // callback fires on that loop's thread.
+    template <typename T>
+    void send(T&&, std::unique_ptr<EventLoop>&);
+    void request_votes();
 
-    // Transition Candidate -> Leader: send heartbeats, arm timers, reset
-    // per-peer leader bookkeeping. Caller must already be a Candidate that
-    // has reached quorum.
+    void demote();
     void become_leader();
+
     void add_peer_if_not_exists(NodeID, FD, std::unique_ptr<EventLoop>&);
     void commit_if_quorum(uint32_t& commit_index);
 

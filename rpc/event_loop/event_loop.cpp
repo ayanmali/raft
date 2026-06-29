@@ -64,6 +64,9 @@ void EventLoop::Stop() {
 }
 
 void EventLoop::Wake() {
+    #ifdef DEBUG
+    std::cout << "waking event loop " << this_id << "\n";
+    #endif
     if (!wake_armed.exchange(true, std::memory_order_acq_rel)) {
         wake_eventfd_unconditional();
     }
@@ -315,7 +318,7 @@ VoidExpectedF EventLoop::DrainInbox() {
 
             if constexpr (std::is_same_v<T, AppendEntriesReqPayload> || std::is_same_v<T, RequestVoteReqPayload> || std::is_same_v<T, InstallSnapshotReqPayload>) {
                 #ifdef DEBUG
-                std::cout << "found request\n";
+                std::cout << "found request in event loop outbound inbox\n";
                 #endif
                 VoidExpectedF post_ok = post_inflight(payload);
                 if (!post_ok) {
@@ -328,7 +331,7 @@ VoidExpectedF EventLoop::DrainInbox() {
 
             else if constexpr (std::is_same_v<T, AppendEntriesRespPayload> || std::is_same_v<T, RequestVoteRespPayload> || std::is_same_v<T, InstallSnapshotRespPayload>) {
                 #ifdef DEBUG
-                std::cout << "found reply\n";
+                std::cout << "found reply in event loop outbound inbox\n";
                 #endif
                 VoidExpectedF post_ok = post_reply(payload);
                 if (!post_ok) {
@@ -352,7 +355,7 @@ VoidExpectedF EventLoop::DrainInbox() {
                 }
             }
 
-            else if constexpr (std::is_same_v<T, DisArmTimer>) {
+            else if constexpr (std::is_same_v<T, DisarmTimer>) {
                 #ifdef DEBUG
                 std::cout << "found disarm timer req\n";
                 #endif

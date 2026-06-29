@@ -130,25 +130,32 @@ inline void Node::Stop() {
 
 // ---- outbound --------------------------------------------------------
 
-void Node::send_rpc(AppendEntriesReqPayload&& payload) {
-    auto& el = loops_[payload.dest_id & (EVENT_LOOP_THREADS - 1)];
+template <typename T>
+void Node::send(T&& payload, std::unique_ptr<EventLoop>& el) {
     el->outbound_inbox.PushOne(
-        std::make_unique<RpcMessage>(payload)
+        std::make_unique<RpcMessage>(std::forward<T>(payload))
     );
+    el->Wake();
 }
 
-void Node::send_rpc(RequestVoteReqPayload&& payload) {
-    auto& el = loops_[payload.dest_id & (EVENT_LOOP_THREADS - 1)];
-    el->outbound_inbox.PushOne(
-        std::make_unique<RpcMessage>(payload)
-    );
-}
+void Node::request_votes() {
+    for (NodeID id : node_ids_) {
+        #ifdef DEBUG
+        std::cout << "sending RV to peer " << id << " on event loop " << static_cast<int>(id & (EVENT_LOOP_THREADS - 1)) << "\n";
+        #endif
 
-void Node::send_rpc(InstallSnapshotReqPayload&& payload) {
-    auto& el = loops_[payload.dest_id & (EVENT_LOOP_THREADS - 1)];
-    el->outbound_inbox.PushOne(
-        std::make_unique<RpcMessage>(payload)
-    );
+        auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
+        el->outbound_inbox.PushOne(
+            std::make_unique<RpcMessage>(RequestVoteReqPayload{
+                .dest_id = id,
+                .term = current_term_,
+                .candidate_id = MY_ID,
+                .last_log_idx = static_cast<uint32_t>(log_.size() - 1),
+                .last_log_term = log_.back().term
+            })
+        );
+    }
+    for (auto& loop : loops_) { loop->Wake(); }
 }
 
 void Node::append_commands(std::vector<std::vector<std::byte>>& commands) {
@@ -218,8 +225,45 @@ void Node::append_commands(std::vector<std::vector<std::byte>>& commands) {
         //}
 }
 
-// runs upon winning an election
-void Node::send_heartbeats_and_arm_timers() {
+void Node::demote() {
+    #ifdef DEBUG
+    std::cout << "this node (id " << MY_ID << ") was demoted\n";
+    #endif
+
+    voters_.clear();
+    voted_for_ = -1;
+    state_ = NodeState::Follower;
+
+    #ifdef DEBUG
+    std::cout << "disarming peer timers\n";
+    #endif
+    for (auto id : node_ids_) {
+        auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
+        el->outbound_inbox.PushOne(
+            std::make_unique<RpcMessage>(
+                DisarmTimer{ .dest_id = id }
+            )
+        );
+    }
+    for (auto& loop : loops_) { loop->Wake(); }
+}
+
+void Node::become_leader() {
+    #ifdef DEBUG
+    std::cout << "This node (id = " << MY_ID << ") won the election\n";
+    #endif
+    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size());
+    for (uint32_t& i : next_indexes_) {
+        i = last_log_idx + 1;
+    }
+    for (uint32_t& i : match_indexes_) {
+        i = 0;
+    }
+
+    voters_.clear();
+    voted_for_ = -1;
+    state_ = NodeState::Leader;
+
     #ifdef DEBUG
     std::cout << "Sending heartbeats and arming peer timers\n";
     #endif
@@ -244,50 +288,9 @@ void Node::send_heartbeats_and_arm_timers() {
         #ifdef DEBUG
         std::cout << "posted arm timer message to peer " << id << "\n";
         #endif
-        el->Wake();
     }
-}
 
-/* Runs upon leader demotion */
-void Node::send_disarm_timers() {
-    //if (state == NodeState::Leader) return; // leader; don't run
-    for (auto id : node_ids_) {
-        auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
-        el->outbound_inbox.PushOne(
-            std::make_unique<RpcMessage>(
-                DisArmTimer{ .dest_id = id }
-            )
-        );
-        el->Wake();
-    }
-}
-
-void Node::demote() {
-    #ifdef DEBUG
-    std::cout << "this node (id " << MY_ID << ") was demoted\n";
-    #endif
-    voters_.clear();
-    voted_for_ = -1;
-    send_disarm_timers();
-    state_ = NodeState::Follower;
-}
-
-void Node::become_leader() {
-    #ifdef DEBUG
-    std::cout << "This node (id = " << MY_ID << ") won the election\n";
-    #endif
-    state_ = NodeState::Leader;
-    send_heartbeats_and_arm_timers();
-    voters_.clear();
-    voted_for_ = -1;
-
-    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size());
-    for (uint32_t& i : next_indexes_) {
-        i = last_log_idx + 1;
-    }
-    for (uint32_t& i : match_indexes_) {
-        i = 0;
-    }
+    for (auto& loop : loops_) { loop->Wake(); }
 }
 
 void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLoop>& el) {

@@ -176,7 +176,7 @@ struct InstallSnapshotRespPayload {
 };
 
 struct ArmTimer { NodeID dest_id; };
-struct DisArmTimer { NodeID dest_id; };
+struct DisarmTimer { NodeID dest_id; };
 
 struct HeartbeatTimeout { NodeID source_id; };
 
@@ -186,4 +186,4 @@ struct AddPeerMsg { FD fd; const char* port; NodeID dest_id; };
 
 // using RpcRequest = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisArmTimer>;
 // using RpcReply = std::variant<AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload>;
-using RpcMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisArmTimer, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeout, DropPeerMsg, AddPeerMsg>;
+using RpcMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisarmTimer, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeout, DropPeerMsg, AddPeerMsg>;
