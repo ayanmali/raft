@@ -210,7 +210,7 @@ VoidExpectedF EventLoop::Run() {
                     VoidExpected readable_ok = OnClientReadable(c);
                     if (!readable_ok) {
                         #ifdef DEBUG
-                        std::cout << "failed to read incoming client message:\n" << readable_ok.error() << "\n";
+                        std::cout << "failed to read incoming client message from client with ip " << c->client_ip_addr << ":\n" << readable_ok.error() << "\n";
                         #endif
                         continue;
                     }
