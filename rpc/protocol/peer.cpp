@@ -120,11 +120,6 @@ void ByteWriter::serialize(const AppendEntriesReqPayload& payload) {
     ptr += sizeof(net_prev_log_term);
 
     std::memcpy(buf.data() + ptr, &net_leader_commit, sizeof(net_leader_commit));
-
-    std::cout << "bytes being sent:\n";
-    for (auto b : buf) {
-        std::cout << static_cast<int>(b) << "\n";
-    }
 }
 
 void ByteWriter::serialize(const RequestVoteReqPayload& payload) {
@@ -155,6 +150,10 @@ void ByteWriter::serialize(const RequestVoteReqPayload& payload) {
 
     std::memcpy(buf.data() + ptr, &net_last_log_term, sizeof(net_last_log_term));
 
+    for (auto b : buf) {
+        std::cout << static_cast<int>(b);
+    }
+    std::cout << "\n";
 };
 
 void ByteWriter::serialize(const InstallSnapshotReqPayload& payload) {

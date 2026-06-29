@@ -3,7 +3,6 @@
 #include "../../errors.hpp"
 #include "payloads.hpp"
 #include <expected>
-#include <iostream>
 
 /* Inbound */
 
@@ -62,11 +61,6 @@ constexpr auto PARSER_TABLE = make_parser_table();
 
 std::expected<RpcMessage, const char*> parse_rbuf(ClientConn* c) {
     if (c->rbuf.size() < sizeof(uint32_t)) { return Unexpected("not enough data to read"); } // need to see message size first
-
-    std::cout << "rbuf bytes:\n";
-    for (auto b : c->rbuf) {
-        std::cout << static_cast<int>(b) << "\n";
-    }
 
     uint32_t message_size;
     std::memcpy(&message_size, c->rbuf.data(), sizeof(message_size));
