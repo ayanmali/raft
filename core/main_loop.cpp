@@ -173,6 +173,8 @@ void Node::MainLoop() {
                 else if constexpr (std::is_same_v<T, AppendEntriesRespPayload>) {
                     #ifdef DEBUG
                     std::cout << "found AE reply from node " << payload.server_id << "\n";
+                    std::cout << "server term = " << payload.term << "\n";
+                    std::cout << "success = " << payload.success << "\n";
                     #endif
 
                     const uint32_t last_log_idx = log_.size() - 1;
@@ -260,22 +262,37 @@ void Node::MainLoop() {
                 else if constexpr (std::is_same_v<T, RequestVoteRespPayload>) {
                     #ifdef DEBUG
                     std::cout << "found RV reply from node " << payload.server_id << "\n";
+                    std:: cout << "current cluster: " << MY_ID << ", ";
+                    for (auto n : node_ids_) {
+                        std::cout << n << ", ";
+                    }
+                    std::cout << "\n";
+
+                    std::cout << "Payload term = " << payload.term << ", this node's term = " << current_term_ << "\n";
+                    std::cout << "This node's voted_for = " << voted_for_ << "\n";
+                    std::cout << "This node's voters = ";
+                    for (auto v : voters_) {
+                        std::cout << v << ", ";
+                    }
+                    std::cout << "\n";
                     #endif
 
                     if (state_ != NodeState::Candidate
                         || payload.term != current_term_
                         || !payload.vote_granted
                         || !voters_.insert(payload.server_id).second
-                    ) return UnexpectedF(std::format(
-                        "Failed to process RequestVote reply: payload term ({}) either does not match current term of {}, or sender did not grant vote, or server id {} has already voted for this node.",
-                        payload.term, current_term_, payload.server_id
-                    ));
+                    ) {
+                        #ifdef DEBUG
+                        std::cout << "payload term " << payload.term << " does not match current term " << current_term_ << ", or sender did not grant vote, or server id " << payload.server_id << " has already voted for this node; skipping\n";
+                        #endif
+                        return {};
+                    }
 
                     // become leader if quorum of votes achieved
                     if (voters_.size() + 1 > (node_ids_.size() + 1) / 2) {
                         become_leader();
                     }
-
+                    return {};
                 }
 
                 // TODO
