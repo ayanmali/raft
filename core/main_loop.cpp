@@ -29,6 +29,19 @@ void Node::MainLoop() {
                     std::cout << "prev log index = " << payload.prev_log_idx << "\n";
                     std::cout << "prev log term = " << payload.prev_log_term << "\n";
                     std::cout << "commit index = " << payload.leader_commit << "\n";
+
+                    std::cout << "next indexes: ";
+                    for (auto n : next_indexes_) {
+                        std::cout << n << ", ";
+                    }
+                    std::cout << "\n";
+
+                    std::cout << "match indexes: ";
+                    for (auto n : match_indexes_) {
+                        std::cout << n << ", ";
+                    }
+                    std::cout << "\n";
+
                     #endif
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
                     add_peer_if_not_exists(payload.leader_id, payload.fd, el);
@@ -181,6 +194,18 @@ void Node::MainLoop() {
                     std::cout << "server term = " << payload.term << "\n";
                     std::cout << "current term = " << current_term_ << "\n";
                     std::cout << "success = " << static_cast<int>(payload.success) << "\n";
+
+                    std::cout << "next indexes: ";
+                    for (auto n : next_indexes_) {
+                        std::cout << n << ", ";
+                    }
+                    std::cout << "\n";
+
+                    std::cout << "match indexes: ";
+                    for (auto n : match_indexes_) {
+                        std::cout << n << ", ";
+                    }
+                    std::cout << "\n";
                     #endif
 
                     const uint32_t last_log_idx = log_.size() - 1;
