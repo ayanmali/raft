@@ -106,6 +106,9 @@ void Node::MainLoop() {
                     }
 
                     if (payload.term < current_term_ || voted_for_ != -1) {
+                        #ifdef DEBUG
+                        std::cout << "rejecting RV from node " << payload.candidate_id << "\n";
+                        #endif
                         el->outbound_inbox.PushOne(
                             std::make_unique<RpcMessage>(
                                 RequestVoteRespPayload{.server_id = MY_ID, .client_id = payload.candidate_id, .term = current_term_, .vote_granted = 0}
@@ -129,6 +132,10 @@ void Node::MainLoop() {
                         RequestVoteRespPayload{.server_id = MY_ID, .client_id = payload.candidate_id, .term = current_term_, .vote_granted = 1}
                         )
                     );
+
+                    #ifdef DEBUG
+                    std::cout << "voting for node " << payload.candidate_id << "\n";
+                    #endif
                     return {};
                 }
 
