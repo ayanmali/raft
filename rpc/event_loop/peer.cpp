@@ -109,6 +109,7 @@ VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
     return {};
 }
 
+// TODO: use fixed size stack buffers instead of vectors
 VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
     #ifdef DEBUG
     std::cout << "peer " << p.peer_id << " readable\n";
@@ -121,7 +122,7 @@ VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
         if (n > 0) { p.rbuf.resize(old + n); continue; }
         if (n == 0) { p.rbuf.resize(old); return {}; }
         if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) { p.rbuf.resize(old); break; }
         DropPeer(p);
         return Unexpected("unexpected error attempting to read from peer socket\n");
     }

@@ -63,6 +63,7 @@ VoidExpected EventLoop::Accept() {
     return {};
 }
 
+// TODO: use fixed size stack buffers instead of vectors
 VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
     #ifdef DEBUG
     std::cout << "client with ip " << c->client_ip_addr << " writable\n";
@@ -115,7 +116,7 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
             break;
         }
         if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) { c->rbuf.resize(old); break; }
 
         CloseClient(c);
         return Unexpected("unexpected error attempting to read client message\n");
