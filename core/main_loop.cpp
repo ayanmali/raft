@@ -24,6 +24,11 @@ void Node::MainLoop() {
                 if constexpr (std::is_same_v<T, AppendEntriesReqPayload>) {
                     #ifdef DEBUG
                     std::cout << "found AE RPC from node " << payload.leader_id << "\n";
+                    std::cout << "payload term = " << payload.term << "\n";
+                    std::cout << "current term = " << current_term_ << "\n";
+                    std::cout << "prev log index = " << payload.prev_log_idx << "\n";
+                    std::cout << "prev log term = " << payload.prev_log_term << "\n";
+                    std::cout << "commit index = " << payload.leader_commit << "\n";
                     #endif
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
                     add_peer_if_not_exists(payload.leader_id, payload.fd, el);
@@ -174,7 +179,8 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found AE reply from node " << payload.server_id << "\n";
                     std::cout << "server term = " << payload.term << "\n";
-                    std::cout << "success = " << payload.success << "\n";
+                    std::cout << "current term = " << current_term_ << "\n";
+                    std::cout << "success = " << static_cast<int>(payload.success) << "\n";
                     #endif
 
                     const uint32_t last_log_idx = log_.size() - 1;
@@ -269,6 +275,7 @@ void Node::MainLoop() {
                     std::cout << "\n";
 
                     std::cout << "Payload term = " << payload.term << ", this node's term = " << current_term_ << "\n";
+                    std::cout << "vote granted = " << static_cast<int>(payload.vote_granted) << "\n";
                     std::cout << "This node's voted_for = " << voted_for_ << "\n";
                     std::cout << "This node's voters = ";
                     for (auto v : voters_) {
@@ -279,7 +286,7 @@ void Node::MainLoop() {
 
                     if (state_ != NodeState::Candidate
                         || payload.term != current_term_
-                        || !payload.vote_granted
+                        || payload.vote_granted == 0
                         || !voters_.insert(payload.server_id).second
                     ) {
                         #ifdef DEBUG
