@@ -270,6 +270,10 @@ void EventLoop::DropPeer(PeerConn& p) {
 VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload) {
     #ifdef DEBUG
     std::cout << "Posting AE RPC to outbound queue for node " << payload.dest_id << "\n";
+    std::cout << "payload term = " << payload.term << "\n";
+    std::cout << "payload prev log index = " << payload.prev_log_idx << "\n";
+    std::cout << "payload prev log term = " << payload.prev_log_term << "\n";
+    std::cout << "payload leader commit = " << payload.leader_commit << "\n";
     #endif
     auto it = peer_conns.find(payload.dest_id);
     if (it == peer_conns.end()) {
