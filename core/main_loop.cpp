@@ -85,6 +85,11 @@ void Node::MainLoop() {
                 else if constexpr (std::is_same_v<T, RequestVoteReqPayload>) {
                     #ifdef DEBUG
                     std::cout << "found RV RPC from node " << payload.candidate_id << "\n";
+                    std:: cout << "current cluster: " << MY_ID << ", ";
+                    for (auto n : node_ids_) {
+                        std::cout << n << ", ";
+                    }
+                    std::cout << "\n";
                     #endif
                     auto& el = loops_[payload.candidate_id & (EVENT_LOOP_THREADS - 1)];
                     add_peer_if_not_exists(payload.candidate_id, payload.fd, el);
