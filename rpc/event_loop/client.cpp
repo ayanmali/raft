@@ -205,6 +205,9 @@ VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload) {
     ByteWriter writer{c->wbuf};
     writer.serialize(payload);
 
+    #ifdef DEBUG
+    std::cout << "wbuf offset = " << c->wbuf_offset << ", wbuf size = " << c->wbuf.size() << "\n";
+    #endif
     if (c->wbuf_offset < c->wbuf.size()) {
         VoidExpected modify_ok = modify_client_interest(c, c->epoll_events | EPOLLOUT);
         if (!modify_ok) {
