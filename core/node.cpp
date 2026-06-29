@@ -130,14 +130,6 @@ inline void Node::Stop() {
 
 // ---- outbound --------------------------------------------------------
 
-template <typename T>
-void Node::send(T&& payload, std::unique_ptr<EventLoop>& el) {
-    el->outbound_inbox.PushOne(
-        std::make_unique<RpcMessage>(std::forward<T>(payload))
-    );
-    el->Wake();
-}
-
 void Node::request_votes() {
     for (NodeID id : node_ids_) {
         #ifdef DEBUG

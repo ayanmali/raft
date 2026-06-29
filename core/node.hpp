@@ -94,7 +94,12 @@ public:
     // peer_id % N and post the request into its inbox. The reply
     // callback fires on that loop's thread.
     template <typename T>
-    void send(T&&, std::unique_ptr<EventLoop>&);
+    void send(T&& payload, std::unique_ptr<EventLoop>& el) {
+        el->outbound_inbox.PushOne(
+            std::make_unique<RpcMessage>(std::forward<T>(payload))
+        );
+        el->Wake();
+    }
     void request_votes();
 
     void demote();
