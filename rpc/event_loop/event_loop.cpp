@@ -375,10 +375,12 @@ VoidExpectedF EventLoop::DrainInbox() {
 
                 if (auto it = client_conns.find(payload.fd); it != client_conns.end()) {
                     VoidExpectedF add_peer_ok = AddPeer(payload.dest_id, it->second->client_ip_addr, payload.port);
-                    return UnexpectedF(std::format(
-                        "Failed to add peer - AddPeer failed for fd {}\n{}\n",
-                        payload.fd, add_peer_ok.error()
-                    ));
+                    if (!add_peer_ok) {
+                        return UnexpectedF(std::format(
+                            "Failed to add peer - AddPeer failed for fd {}\n{}\n",
+                            payload.fd, add_peer_ok.error()
+                        ));
+                    }
                 }
 
                 return UnexpectedF(std::format(
