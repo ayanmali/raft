@@ -37,8 +37,8 @@ void Node::MainLoop() {
                     || log_[payload.prev_log_idx].term != payload.prev_log_term
                     ) {
                         send(AppendEntriesRespPayload{
+                            .client_fd = payload.fd,
                             .server_id = MY_ID,
-                            .client_id = payload.leader_id,
                             .term = current_term_,
                             .success = 0}, el);
                         return {};
@@ -76,8 +76,8 @@ void Node::MainLoop() {
                     leader_contact = true;
 
                     send(AppendEntriesRespPayload{
+                        .client_fd = payload.fd,
                         .server_id = MY_ID,
-                        .client_id = payload.leader_id,
                         .success = 1}, el);
                 }
 
@@ -115,8 +115,8 @@ void Node::MainLoop() {
                         std::cout << "rejecting RV from node " << payload.candidate_id << "\n";
                         #endif
                         send(RequestVoteRespPayload{
+                            .client_fd = payload.fd,
                             .server_id = MY_ID,
-                            .client_id = payload.candidate_id,
                             .term = current_term_,
                             .vote_granted = 0}, el);
                         return {};
@@ -133,8 +133,8 @@ void Node::MainLoop() {
                     }
 
                     send(RequestVoteRespPayload{
+                        .client_fd = payload.fd,
                         .server_id = MY_ID,
-                        .client_id = payload.candidate_id,
                         .term = current_term_,
                         .vote_granted = 1}, el);
 
@@ -154,8 +154,8 @@ void Node::MainLoop() {
 
                     if (payload.term < current_term_) {
                         send(InstallSnapshotRespPayload{
+                            .client_fd = payload.fd,
                             .server_id = MY_ID,
-                            .client_id = payload.leader_id,
                             .term = current_term_}, el);
                         return {};
                     }
@@ -165,8 +165,8 @@ void Node::MainLoop() {
                     leader_contact = true;
                     // TODO: chunk reassembly, install snapshot to state machine.
                     send(InstallSnapshotRespPayload{
+                        .client_fd = payload.fd,
                         .server_id = MY_ID,
-                        .client_id = payload.leader_id,
                         .term = current_term_}, el);
                 }
 
@@ -187,7 +187,7 @@ void Node::MainLoop() {
                     // stored must be >= 2 to avoid uint32_t underflow.
                     if (stored_next < 2) {
                         return UnexpectedF(std::format(
-                            "Failed to process AE reply: next_index {} for client_id {} too small to derive prev_log_idx",
+                            "Failed to process AE reply: next_index {} for server id {} too small to derive prev_log_idx",
                             stored_next, payload.server_id
                         ));
                     }
@@ -208,7 +208,7 @@ void Node::MainLoop() {
                     if (payload.success == 0) {
                         if (last_log_idx < next_idx) {
                             return UnexpectedF(std::format(
-                                "Failed to process AE reply: failed to retry AE RPC to client_id {}; last_log_idx {} is less than decremented next_idx {}",
+                                "Failed to process AE reply: failed to retry AE RPC to server id {}; last_log_idx {} is less than decremented next_idx {}",
                                 payload.server_id, last_log_idx, next_idx
                             ));
                         };
@@ -267,7 +267,7 @@ void Node::MainLoop() {
                         || !payload.vote_granted
                         || !voters_.insert(payload.server_id).second
                     ) return UnexpectedF(std::format(
-                        "Failed to process RequestVote reply: payload term ({}) either does not match current term of {}, or sender did not grant vote, or client_id {} has already voted for this node.",
+                        "Failed to process RequestVote reply: payload term ({}) either does not match current term of {}, or sender did not grant vote, or server id {} has already voted for this node.",
                         payload.term, current_term_, payload.server_id
                     ));
 
@@ -308,7 +308,7 @@ void Node::MainLoop() {
                         // prev_log_idx = next_idx - 1 requires next_idx >= 1.
                         if (next_idx == 0) {
                             return UnexpectedF(std::format(
-                                "Failed to process HeartbeatTimeout: next_index 0 for client_id {} cannot derive prev_log_idx",
+                                "Failed to process HeartbeatTimeout: next_index 0 for node id {} cannot derive prev_log_idx",
                                 payload.source_id
                             ));
                         }

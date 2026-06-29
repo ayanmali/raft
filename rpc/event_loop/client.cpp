@@ -164,16 +164,16 @@ void EventLoop::CloseClient(ClientConn* c) {
 }
 
 VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload) {
-    #ifdef DEBUG
-    std::cout << "posting AE reply to outbound queue to node " << payload.client_id << "\n";
-    #endif
-    auto it = client_conns.find(payload.client_id);
+    auto it = client_conns.find(payload.client_fd);
     if (it == client_conns.end()) {
         return UnexpectedF(
-            std::format("client id {} not found\n", payload.client_id)
+            std::format("client fd {} not found\n", payload.client_fd)
         );
     } // message gets dropped
     ClientConn* c = it->second;
+    #ifdef DEBUG
+    std::cout << "posting AE reply to outbound queue to node w/ ip " << c->client_ip_addr << "\n";
+    #endif
     //++c.pending_tasks;
 
     ByteWriter writer{c->wbuf};
@@ -190,16 +190,16 @@ VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload) {
 }
 
 VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload) {
-    #ifdef DEBUG
-    std::cout << "posting RV reply to outbound queue to node " << payload.client_id << "\n";
-    #endif
-    auto it = client_conns.find(payload.client_id);
+    auto it = client_conns.find(payload.client_fd);
     if (it == client_conns.end()) {
         return UnexpectedF(
-            std::format("client id {} not found\n", payload.client_id)
+            std::format("client id {} not found\n", payload.client_fd)
         );
     } // message gets dropped
     ClientConn* c = it->second;
+    #ifdef DEBUG
+    std::cout << "posting RV reply to outbound queue to node w/ ip " << c->client_ip_addr << "\n";
+    #endif
     //++c.pending_tasks;
 
     ByteWriter writer{c->wbuf};
@@ -219,16 +219,16 @@ VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload) {
 }
 
 VoidExpectedF EventLoop::post_reply(InstallSnapshotRespPayload& payload) {
-    #ifdef DEBUG
-    std::cout << "posting IS reply to outbound queue to node " << payload.client_id << "\n";
-    #endif
-    auto it = client_conns.find(payload.client_id);
+    auto it = client_conns.find(payload.client_fd);
     if (it == client_conns.end()) {
         return UnexpectedF(
-            std::format("client id {} not found\n", payload.client_id)
+            std::format("client id {} not found\n", payload.client_fd)
         );
     } // message gets dropped
     ClientConn* c = it->second;
+    #ifdef DEBUG
+    std::cout << "posting IS reply to outbound queue to node w/ ip " << c->client_ip_addr << "\n";
+    #endif
     //++c.pending_tasks;
 
     ByteWriter writer{c->wbuf};

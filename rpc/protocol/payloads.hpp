@@ -29,7 +29,7 @@ struct LogEntry {
 
 struct AppendEntriesReqPayload {
     std::vector<LogEntry> entries;
-    FD fd; // populated by the event loop; not serialized across network
+    FD fd; // populated by the event loop on client read; not serialized across network
     NodeID dest_id; // for routing purposes only; not serialized across network
     uint32_t term;
     uint32_t leader_id;
@@ -75,8 +75,8 @@ struct AppendEntriesReqPayload {
 
 struct AppendEntriesRespPayload {
     uint64_t entries_len;
+    FD client_fd; // not serialized across network; only used for routing purposes
     NodeID server_id;
-    NodeID client_id; // not serialized across network; only used for routing purposes
     uint32_t term;
     uint8_t success; // 0 = fail, 1 = success
 
@@ -87,7 +87,7 @@ struct AppendEntriesRespPayload {
 };
 
 struct RequestVoteReqPayload {
-    FD fd; // populated by the event loop; not serialized across network
+    FD fd; // populated by the event loop on client read; not serialized across network
     NodeID dest_id; // for routing purposes only; not serialized across network
     uint32_t term;
     uint32_t candidate_id;
@@ -111,8 +111,8 @@ struct RequestVoteReqPayload {
 };
 
 struct RequestVoteRespPayload {
+    FD client_fd; // not serialized across network; only used for routing purposes
     NodeID server_id;
-    NodeID client_id; // not serialized across network; only used for routing purposes
     uint32_t term;
     uint8_t vote_granted;
 
@@ -124,7 +124,7 @@ struct RequestVoteRespPayload {
 
 struct InstallSnapshotReqPayload {
     std::vector<std::byte> snapshot;
-    FD fd; // populated by the event loop; not serialized across network
+    FD fd; // populated by the event loop on client read; not serialized across network
     NodeID dest_id; // for routing purposes only; populated by the event loop
     uint32_t term;
     uint32_t leader_id; // 0 is null value
@@ -165,8 +165,8 @@ struct InstallSnapshotReqPayload {
 };
 
 struct InstallSnapshotRespPayload {
+    FD client_fd; // not serialized across network; only used for routing purposes
     NodeID server_id;
-    NodeID client_id; // not serialized across network; only used for routing purposes
     uint32_t term;
 
     auto size() const {
