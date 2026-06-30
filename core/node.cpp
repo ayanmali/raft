@@ -247,7 +247,7 @@ void Node::become_leader() {
     #ifdef DEBUG
     std::cout << "This node (id = " << MY_ID << ") won the election\n";
     #endif
-    const int32_t last_log_idx = static_cast<int32_t>(log_.size());
+    const int32_t last_log_idx = static_cast<int32_t>(log_.size() - 1);
     for (int32_t& i : next_indexes_) {
         if (i < 0) continue;
         i = last_log_idx + 1;

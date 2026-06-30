@@ -55,6 +55,7 @@ void Node::MainLoop() {
                     || log_[payload.prev_log_idx].term != payload.prev_log_term
                     ) {
                         send(AppendEntriesRespPayload{
+                            .entries_len = 0,
                             .client_fd = payload.fd,
                             .server_id = MY_ID,
                             .term = current_term_,
@@ -94,8 +95,10 @@ void Node::MainLoop() {
                     leader_contact = true;
 
                     send(AppendEntriesRespPayload{
+                        .entries_len = payload.entries.size(),
                         .client_fd = payload.fd,
                         .server_id = MY_ID,
+                        .term = current_term_,
                         .success = 1}, el);
                 }
 
@@ -304,18 +307,26 @@ void Node::MainLoop() {
                     #endif
 
                     if (state_ != NodeState::Candidate
-                        || payload.term != current_term_
-                        || payload.vote_granted == 0
                         || !voters_.insert(payload.server_id).second
                     ) {
                         #ifdef DEBUG
-                        std::cout << "payload term " << payload.term << " does not match current term " << current_term_ << ", or sender did not grant vote, or server id " << payload.server_id << " has already voted for this node; skipping\n";
+                        std::cout << "this node is no longer a candidate, or node " << payload.server_id << " has already voted for this node; skipping\n";
                         #endif
                         return {};
                     }
 
+                    if (payload.term > current_term_) {
+                        current_term_ = payload.term;
+                        demote();
+                    }
+
+                    if (payload.term != current_term_
+                        || payload.vote_granted == 0) {
+                        return {};
+                    }
+
                     // become leader if quorum of votes achieved
-                    if (voters_.size() + 1 > (node_ids_.size() + 1) / 2) {
+                    if (voters_.size() > (node_ids_.size() + 1) / 2) {
                         become_leader();
                     }
                     return {};
@@ -429,13 +440,14 @@ void Node::MainLoop() {
         state_ = NodeState::Candidate;
         ++current_term_;
         voted_for_ = MY_ID;
+        voters_.insert(MY_ID);
         last_leader_contact_ = std::chrono::steady_clock::now();
 
         // A node always votes for itself. If that single vote is already a
         // majority (e.g. a single-node cluster with no peers), win the
         // election immediately rather than waiting for RequestVote replies
         // that will never come.
-        if (voters_.size() + 1 > (node_ids_.size() + 1) / 2) {
+        if (voters_.size() > (node_ids_.size() + 1) / 2) {
             become_leader();
             continue;
         }
