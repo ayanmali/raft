@@ -370,6 +370,8 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "Received drop peer message - dropping peer " << payload.source_id << "\n";
                     #endif
+                    auto it = std::find(node_ids_.begin(), node_ids_.end(), payload.source_id);
+                    node_ids_.erase(it);
                     next_indexes_[payload.source_id] = -1;
                     match_indexes_[payload.source_id] = -1;
 
@@ -433,6 +435,10 @@ void Node::MainLoop() {
         // majority (e.g. a single-node cluster with no peers), win the
         // election immediately rather than waiting for RequestVote replies
         // that will never come.
+        if (voters_.size() + 1 > (node_ids_.size() + 1) / 2) {
+            become_leader();
+            continue;
+        }
         request_votes();
     }
 }

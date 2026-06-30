@@ -79,6 +79,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         ));
     }
 
+    n->node_ids_.reserve(BASE_CLUSTER_SIZE - 1);
     int i{0};
     for (auto it = init_peers.begin(); it < init_peers.begin() + MY_ID; ++it) {
         n->node_ids_.push_back(i);
