@@ -145,16 +145,23 @@ struct ByteReader {
 
 };
 
-struct ByteWriter {
+struct VecByteWriter {
     public:
-    ByteWriter(std::vector<std::byte>& buf_, size_t offset_ = 0) : buf{buf_}, offset{offset_} {}
+    VecByteWriter(std::vector<std::byte>& vec_, size_t offset_ = 0) : vec{vec_}, offset{offset_} {}
     void serialize(const AppendEntriesReqPayload& payload);
     void serialize(const RequestVoteReqPayload& payload);
     void serialize(const InstallSnapshotReqPayload& payload);
+    private:
+    std::vector<std::byte>& vec;
+    size_t offset;
+};
+
+struct BufByteWriter {
+    public:
+    BufByteWriter(std::byte* buf_) : buf{buf_} {}
     void serialize(const AppendEntriesRespPayload& payload);
     void serialize(const RequestVoteRespPayload& payload);
     void serialize(const InstallSnapshotRespPayload& payload);
     private:
-    std::vector<std::byte>& buf;
-    size_t offset;
+    std::byte* buf;
 };

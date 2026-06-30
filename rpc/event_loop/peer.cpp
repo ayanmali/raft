@@ -284,7 +284,7 @@ VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload) {
     }
     PeerConn& p = it->second;
 
-    ByteWriter writer{p.wbuf, p.wbuf.size()};
+    VecByteWriter writer{p.wbuf, p.wbuf.size()};
     writer.serialize(payload);
 
     if (p.state == PeerConn::State::Connected) {
@@ -312,7 +312,7 @@ VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload) {
     }
     PeerConn& p = it->second;
 
-    ByteWriter writer{p.wbuf, p.wbuf.size()};
+    VecByteWriter writer{p.wbuf, p.wbuf.size()};
     writer.serialize(payload);
 
     if (p.state == PeerConn::State::Connected) {
@@ -340,7 +340,7 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload) {
     }
     PeerConn& p = it->second;
 
-    ByteWriter writer{p.wbuf, p.wbuf.size()};
+    VecByteWriter writer{p.wbuf, p.wbuf.size()};
     writer.serialize(payload);
 
     if (p.state == PeerConn::State::Connected) {

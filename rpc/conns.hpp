@@ -24,19 +24,29 @@ Buffering convention (used by both flavors):
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <algorithm>
 
 enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot };
+constexpr uint32_t WBUF_SIZE = static_cast<uint32_t>(
+    std::max(
+        {
+            AppendEntriesRespPayload::size(),
+            RequestVoteRespPayload::size(),
+            InstallSnapshotRespPayload::size()
+        }
+    )
+    + sizeof(RpcKind));
 
 struct ClientConn {
     std::vector<std::byte> rbuf;
-    std::vector<std::byte> wbuf;
+    std::byte wbuf_[WBUF_SIZE + sizeof(WBUF_SIZE) + sizeof(RpcKind)];
 
     char client_ip_addr[INET_ADDRSTRLEN];
 
     ClientConn* next_free  = nullptr; // freelist link, valid only when free
 
     size_t wbuf_offset     =  0; // to track how much of the wbuf has been sent (for chunked sends)
-
+    size_t wbuf_size       =  0; // tracks the number of serialized bytes in wbuf to send over the network
     FD fd                  = -1;
     //ClientID client_id     =  0;
     // NodeID id;
@@ -153,9 +163,9 @@ struct ClientConnSlab {
     void Release(ClientConn* c) {
         c->rbuf.clear();
         c->rbuf.shrink_to_fit();
-        c->wbuf.clear();
-        c->wbuf.shrink_to_fit();
+        std::memset(c->wbuf_, 0, sizeof(c->wbuf_));
         c->wbuf_offset = 0;
+        c->wbuf_size = 0;
         std::memset(c->client_ip_addr, 0, sizeof(c->client_ip_addr));
         c->fd = -1;
         //c->client_id = 0;

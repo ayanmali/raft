@@ -71,7 +71,7 @@ std::expected<RpcMessage, const char*> parse_rbuf(std::vector<std::byte>& rbuf) 
 
 /* Outbound */
 
-void ByteWriter::serialize(const AppendEntriesReqPayload& payload) {
+void VecByteWriter::serialize(const AppendEntriesReqPayload& payload) {
     auto msg_size           =  htonl(payload.size() + sizeof(uint8_t));
     auto net_id             =  AE_RPC_ID;
     auto net_entries_len    =  htonll(payload.entries.size());
@@ -81,47 +81,47 @@ void ByteWriter::serialize(const AppendEntriesReqPayload& payload) {
     auto net_prev_log_term  =  htonl(payload.prev_log_term);
     auto net_leader_commit  =  htonl(payload.leader_commit);
 
-    buf.resize(offset + payload.size() + sizeof(msg_size) + sizeof(net_id));
+    vec.resize(offset + payload.size() + sizeof(msg_size) + sizeof(net_id));
     size_t ptr = offset;
 
-    std::memcpy(buf.data() + ptr, &msg_size, sizeof(msg_size));
+    std::memcpy(vec.data() + ptr, &msg_size, sizeof(msg_size));
     ptr += sizeof(msg_size);
 
-    std::memcpy(buf.data() + ptr, &net_id, sizeof(net_id));
+    std::memcpy(vec.data() + ptr, &net_id, sizeof(net_id));
     ptr += sizeof(net_id);
 
-    std::memcpy(buf.data() + ptr, &net_entries_len, sizeof(net_entries_len));
+    std::memcpy(vec.data() + ptr, &net_entries_len, sizeof(net_entries_len));
     ptr += sizeof(net_entries_len);
 
     for (const auto& entry : payload.entries) {
         uint64_t entry_data_len = htonll(entry.data.size());
-        std::memcpy(buf.data() + ptr, &entry_data_len, sizeof(entry_data_len));
+        std::memcpy(vec.data() + ptr, &entry_data_len, sizeof(entry_data_len));
         ptr += sizeof(entry_data_len);
 
-        std::memcpy(buf.data() + ptr, entry.data.data(), entry.data.size());
+        std::memcpy(vec.data() + ptr, entry.data.data(), entry.data.size());
         ptr += entry.data.size();
 
         uint32_t entry_term = htonl(entry.term);
-        std::memcpy(buf.data() + ptr, &entry_term, sizeof(entry_term));
+        std::memcpy(vec.data() + ptr, &entry_term, sizeof(entry_term));
         ptr += sizeof(entry_term);
     }
 
-    std::memcpy(buf.data() + ptr, &net_term, sizeof(net_term));
+    std::memcpy(vec.data() + ptr, &net_term, sizeof(net_term));
     ptr += sizeof(net_term);
 
-    std::memcpy(buf.data() + ptr, &net_leader_id, sizeof(net_leader_id));
+    std::memcpy(vec.data() + ptr, &net_leader_id, sizeof(net_leader_id));
     ptr += sizeof(net_leader_id);
 
-    std::memcpy(buf.data() + ptr, &net_prev_log_idx, sizeof(net_prev_log_idx));
+    std::memcpy(vec.data() + ptr, &net_prev_log_idx, sizeof(net_prev_log_idx));
     ptr += sizeof(net_prev_log_idx);
 
-    std::memcpy(buf.data() + ptr, &net_prev_log_term, sizeof(net_prev_log_term));
+    std::memcpy(vec.data() + ptr, &net_prev_log_term, sizeof(net_prev_log_term));
     ptr += sizeof(net_prev_log_term);
 
-    std::memcpy(buf.data() + ptr, &net_leader_commit, sizeof(net_leader_commit));
+    std::memcpy(vec.data() + ptr, &net_leader_commit, sizeof(net_leader_commit));
 }
 
-void ByteWriter::serialize(const RequestVoteReqPayload& payload) {
+void VecByteWriter::serialize(const RequestVoteReqPayload& payload) {
     auto msg_size          = htonl(payload.size() + sizeof(uint8_t));
     auto net_id            = RV_RPC_ID;
     auto net_term          = htonl(payload.term);
@@ -129,29 +129,29 @@ void ByteWriter::serialize(const RequestVoteReqPayload& payload) {
     auto net_last_log_idx  = htonl(payload.last_log_idx);
     auto net_last_log_term = htonl(payload.last_log_term);
 
-    buf.resize(offset + payload.size() + sizeof(msg_size) + sizeof(net_id));
+    vec.resize(offset + payload.size() + sizeof(msg_size) + sizeof(net_id));
     size_t ptr = offset;
 
-    std::memcpy(buf.data() + ptr, &msg_size, sizeof(msg_size));
+    std::memcpy(vec.data() + ptr, &msg_size, sizeof(msg_size));
     ptr += sizeof(msg_size);
 
-    std::memcpy(buf.data() + ptr, &net_id, sizeof(net_id));
+    std::memcpy(vec.data() + ptr, &net_id, sizeof(net_id));
     ptr += sizeof(net_id);
 
-    std::memcpy(buf.data() + ptr, &net_term, sizeof(net_term));
+    std::memcpy(vec.data() + ptr, &net_term, sizeof(net_term));
     ptr += sizeof(net_term);
 
-    std::memcpy(buf.data() + ptr, &net_candidate_id, sizeof(net_candidate_id));
+    std::memcpy(vec.data() + ptr, &net_candidate_id, sizeof(net_candidate_id));
     ptr += sizeof(net_candidate_id);
 
-    std::memcpy(buf.data() + ptr, &net_last_log_idx, sizeof(net_last_log_idx));
+    std::memcpy(vec.data() + ptr, &net_last_log_idx, sizeof(net_last_log_idx));
     ptr += sizeof(net_last_log_idx);
 
-    std::memcpy(buf.data() + ptr, &net_last_log_term, sizeof(net_last_log_term));
+    std::memcpy(vec.data() + ptr, &net_last_log_term, sizeof(net_last_log_term));
 
 };
 
-void ByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
+void VecByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
     auto msg_size               = htonl(payload.size() + sizeof(uint8_t));
     auto net_id                 = IS_RPC_ID;
     auto net_snapshot_len       = htonll(payload.snapshot.size());
@@ -162,36 +162,36 @@ void ByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
     auto net_offset             = htonl(payload.offset);
     auto net_done               = payload.done;
 
-    buf.resize(offset + payload.size() + sizeof(msg_size) + sizeof(net_id));
+    vec.resize(offset + payload.size() + sizeof(msg_size) + sizeof(net_id));
     size_t ptr = offset;
 
-    std::memcpy(buf.data() + ptr, &msg_size, sizeof(msg_size));
+    std::memcpy(vec.data() + ptr, &msg_size, sizeof(msg_size));
     ptr += sizeof(msg_size);
 
-    std::memcpy(buf.data() + ptr, &net_id, sizeof(net_id));
+    std::memcpy(vec.data() + ptr, &net_id, sizeof(net_id));
     ptr += sizeof(net_id);
 
-    std::memcpy(buf.data() + ptr, &net_snapshot_len, sizeof(net_snapshot_len));
+    std::memcpy(vec.data() + ptr, &net_snapshot_len, sizeof(net_snapshot_len));
     ptr += sizeof(net_snapshot_len);
 
-    std::memcpy(buf.data() + ptr, payload.snapshot.data(), payload.snapshot.size());
+    std::memcpy(vec.data() + ptr, payload.snapshot.data(), payload.snapshot.size());
     ptr += payload.snapshot.size();
 
-    std::memcpy(buf.data() + ptr, &net_term, sizeof(net_term));
+    std::memcpy(vec.data() + ptr, &net_term, sizeof(net_term));
     ptr += sizeof(net_term);
 
-    std::memcpy(buf.data() + ptr, &net_leader_id, sizeof(net_leader_id));
+    std::memcpy(vec.data() + ptr, &net_leader_id, sizeof(net_leader_id));
     ptr += sizeof(net_leader_id);
 
-    std::memcpy(buf.data() + ptr, &net_last_included_idx, sizeof(net_last_included_idx));
+    std::memcpy(vec.data() + ptr, &net_last_included_idx, sizeof(net_last_included_idx));
     ptr += sizeof(net_last_included_idx);
 
-    std::memcpy(buf.data() + ptr, &net_last_included_term, sizeof(net_last_included_term));
+    std::memcpy(vec.data() + ptr, &net_last_included_term, sizeof(net_last_included_term));
     ptr += sizeof(net_last_included_term);
 
-    std::memcpy(buf.data() + ptr, &net_offset, sizeof(net_offset));
+    std::memcpy(vec.data() + ptr, &net_offset, sizeof(net_offset));
     ptr += sizeof(net_offset);
 
-    std::memcpy(buf.data() + ptr, &net_done, sizeof(net_done));
+    std::memcpy(vec.data() + ptr, &net_done, sizeof(net_done));
 
 };

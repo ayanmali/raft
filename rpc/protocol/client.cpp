@@ -80,77 +80,74 @@ std::expected<RpcMessage, const char*> parse_rbuf(ClientConn* c) {
 
 /* Outbound */
 
-void ByteWriter::serialize(const AppendEntriesRespPayload& payload) {
-    auto msg_size        = htonl(payload.size() + sizeof(uint8_t));
+void BufByteWriter::serialize(const AppendEntriesRespPayload& payload) {
+    auto msg_size        = htonl(payload.size() + sizeof(RpcKind));
     auto kind            = static_cast<uint8_t>(RpcKind::AppendEntries);
     auto net_entries_len = htonll(payload.entries_len);
     auto net_server_id   = htonl(payload.server_id);
     auto net_term        = htonl(payload.term);
     auto net_success     = payload.success;
 
-    buf.resize(offset + payload.size() + sizeof(msg_size) + sizeof(kind));
-    size_t ptr = offset;
+    size_t ptr = 0;
 
-    std::memcpy(buf.data() + ptr, &msg_size, sizeof(msg_size));
+    std::memcpy(buf, &msg_size, sizeof(msg_size));
     ptr += sizeof(msg_size);
 
-    std::memcpy(buf.data() + ptr, &kind, sizeof(kind));
+    std::memcpy(buf + ptr, &kind, sizeof(kind));
     ptr += sizeof(kind);
 
-    std::memcpy(buf.data() + ptr, &net_entries_len, sizeof(net_entries_len));
+    std::memcpy(buf + ptr, &net_entries_len, sizeof(net_entries_len));
     ptr += sizeof(net_entries_len);
 
-    std::memcpy(buf.data() + ptr, &net_server_id, sizeof(net_server_id));
+    std::memcpy(buf + ptr, &net_server_id, sizeof(net_server_id));
     ptr += sizeof(net_server_id);
 
-    std::memcpy(buf.data() + ptr, &net_term, sizeof(net_term));
+    std::memcpy(buf + ptr, &net_term, sizeof(net_term));
     ptr += sizeof(net_term);
 
-    std::memcpy(buf.data() + ptr, &net_success, sizeof(net_success));
+    std::memcpy(buf + ptr, &net_success, sizeof(net_success));
 }
 
-void ByteWriter::serialize(const RequestVoteRespPayload& payload) {
-    auto msg_size         = htonl(payload.size() + sizeof(uint8_t));
+void BufByteWriter::serialize(const RequestVoteRespPayload& payload) {
+    auto msg_size         = htonl(payload.size() + sizeof(RpcKind));
     auto kind             = static_cast<uint8_t>(RpcKind::RequestVote);
     auto net_server_id    = htonl(payload.server_id);
     auto net_term         = htonl(payload.term);
     auto net_vote_granted = payload.vote_granted;
 
-    buf.resize(offset + payload.size() + sizeof(msg_size) + sizeof(kind));
-    size_t ptr = offset;
+    size_t ptr = 0;
 
-    std::memcpy(buf.data() + ptr, &msg_size, sizeof(msg_size));
+    std::memcpy(buf, &msg_size, sizeof(msg_size));
     ptr += sizeof(msg_size);
 
-    std::memcpy(buf.data() + ptr, &kind, sizeof(kind));
+    std::memcpy(buf + ptr, &kind, sizeof(kind));
     ptr += sizeof(kind);
 
-    std::memcpy(buf.data() + ptr, &net_server_id, sizeof(net_server_id));
+    std::memcpy(buf + ptr, &net_server_id, sizeof(net_server_id));
     ptr += sizeof(net_server_id);
 
-    std::memcpy(buf.data() + ptr, &net_term, sizeof(net_term));
+    std::memcpy(buf + ptr, &net_term, sizeof(net_term));
     ptr += sizeof(net_term);
 
-    std::memcpy(buf.data() + ptr, &net_vote_granted, sizeof(net_vote_granted));
+    std::memcpy(buf + ptr, &net_vote_granted, sizeof(net_vote_granted));
 }
 
-void ByteWriter::serialize(const InstallSnapshotRespPayload& payload) {
-    auto msg_size      = htonl(payload.size() + sizeof(uint8_t));
+void BufByteWriter::serialize(const InstallSnapshotRespPayload& payload) {
+    auto msg_size      = htonl(payload.size() + sizeof(RpcKind));
     auto kind          = static_cast<uint8_t>(RpcKind::InstallSnapshot);
     auto net_server_id = htonl(payload.server_id);
     auto net_term      = htonl(payload.term);
 
-    buf.resize(offset + payload.size() + sizeof(msg_size) + sizeof(kind));
-    size_t ptr = offset;
+    size_t ptr = 0;
 
-    std::memcpy(buf.data() + ptr, &msg_size, sizeof(msg_size));
+    std::memcpy(buf, &msg_size, sizeof(msg_size));
     ptr += sizeof(msg_size);
 
-    std::memcpy(buf.data() + ptr, &kind, sizeof(kind));
+    std::memcpy(buf + ptr, &kind, sizeof(kind));
     ptr += sizeof(kind);
 
-    std::memcpy(buf.data() + ptr, &net_server_id, sizeof(net_server_id));
+    std::memcpy(buf + ptr, &net_server_id, sizeof(net_server_id));
     ptr += sizeof(net_server_id);
 
-    std::memcpy(buf.data() + ptr, &net_term, sizeof(net_term));
+    std::memcpy(buf + ptr, &net_term, sizeof(net_term));
 }

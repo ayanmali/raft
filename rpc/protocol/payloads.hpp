@@ -78,7 +78,7 @@ struct AppendEntriesRespPayload {
     uint32_t term;
     uint8_t success; // 0 = fail, 1 = success
 
-    auto size() const {
+    static constexpr auto size() {
       auto s = sizeof(server_id) + sizeof(entries_len) + sizeof(term) + sizeof(success);
       return s;
     };
@@ -114,7 +114,7 @@ struct RequestVoteRespPayload {
     uint32_t term;
     uint8_t vote_granted;
 
-    auto size() const {
+    static constexpr auto size() {
       auto s = sizeof(server_id) + sizeof(term) + sizeof(vote_granted);
       return s;
     };
@@ -167,7 +167,7 @@ struct InstallSnapshotRespPayload {
     NodeID server_id;
     uint32_t term;
 
-    auto size() const {
+    static constexpr auto size() {
       auto s = sizeof(server_id) + sizeof(term);
       return s;
     }

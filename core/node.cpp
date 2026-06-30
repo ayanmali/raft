@@ -326,7 +326,7 @@ void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLo
 void Node::commit_if_quorum(uint32_t& commit_index) {
     // No peers => no quorum to compute. Guards std::max_element below from
     // dereferencing end() on an empty map.
-    if (match_indexes_.empty()) return;
+    if (node_ids_.empty()) return;
 
     auto freqs = std::unordered_map<int32_t, uint32_t>(match_indexes_.size());
     for (auto match_idx : match_indexes_) {
