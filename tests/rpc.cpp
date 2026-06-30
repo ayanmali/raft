@@ -12,7 +12,7 @@ int main() {
         #endif
         return 1;
     }
-    std::unique_ptr<Node> node = std::move(n.value());
+    std::unique_ptr<Node> node = std::move(*n);
     std::jthread t([&node](){
         // dummy data
         auto data = std::vector<std::vector<std::byte>>{

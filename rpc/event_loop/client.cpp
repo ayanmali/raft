@@ -135,11 +135,10 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
             //CloseClient(c);
             return Unexpected(request_raw.error());
         }
-        RpcMessage& req = request_raw.value();
         #ifdef DEBUG
         //std::cout << "posting inbound request from client with client_ip_addr " << c->client_ip_addr << " to node inbox\n";
         #endif
-        post_node_inbox(std::move(req));
+        post_node_inbox(std::move(*request_raw));
 
         if (c->rbuf.size() == before) break; // need more bytes
     }

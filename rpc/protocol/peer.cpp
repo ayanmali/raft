@@ -1,33 +1,65 @@
 #include "./utils.hpp"
 #include "payloads.hpp"
 #include "../../errors.hpp"
+#include <netinet/in.h>
 
 /* Inbound */
 
-std::expected<RpcMessage, const char*> parse_ae_reply(ByteReader& byte_reader) {
+std::expected<RpcMessage, const char*> parse_ae_reply(std::byte* rbuf) {
     AppendEntriesRespPayload response;
 
-    if (!byte_reader.read(response.entries_len)) return Unexpected("failed to parse AppendEntries response entries_len field");
-    if (!byte_reader.read(response.server_id)) return Unexpected("failed to parse AppendEntries server id field");
-    if (!byte_reader.read(response.term)) return Unexpected("failed to parse AppendEntries response term field");
-    if (!byte_reader.read(response.success)) return Unexpected("failed to parse AppendEntries response success field");
+    size_t ptr = 0;
+
+    std::memcpy(&response.entries_len, rbuf, sizeof(response.entries_len));
+    ptr += sizeof(response.entries_len);
+    response.entries_len = ntohll(response.entries_len);
+
+    std::memcpy(&response.server_id, rbuf + ptr, sizeof(response.server_id));
+    ptr += sizeof(response.server_id);
+    response.server_id = ntohl(response.server_id);
+
+    std::memcpy(&response.term, rbuf + ptr, sizeof(response.term));
+    ptr += sizeof(response.term);
+    response.term = ntohl(response.term);
+
+    std::memcpy(&response.success, rbuf + ptr, sizeof(response.success));
+    ptr += sizeof(response.success);
+
     return response;
 }
 
-std::expected<RpcMessage, const char*> parse_rv_reply(ByteReader& byte_reader) {
+std::expected<RpcMessage, const char*> parse_rv_reply(std::byte* rbuf) {
     RequestVoteRespPayload response;
 
-    if (!byte_reader.read(response.server_id)) return Unexpected("failed to parse RequestVote server id field");
-    if (!byte_reader.read(response.term)) return Unexpected("failed to parse RequestVote response term field");
-    if (!byte_reader.read(response.vote_granted)) return Unexpected("failed to parse RequestVote response success field");
+    size_t ptr = 0;
+
+    std::memcpy(&response.server_id, rbuf, sizeof(response.server_id));
+    ptr += sizeof(response.server_id);
+    response.server_id = ntohl(response.server_id);
+
+    std::memcpy(&response.term, rbuf + ptr, sizeof(response.term));
+    ptr += sizeof(response.term);
+    response.term = ntohl(response.term);
+
+    std::memcpy(&response.vote_granted, rbuf + ptr, sizeof(response.vote_granted));
+    ptr += sizeof(response.vote_granted);
+
     return response;
 }
 
-std::expected<RpcMessage, const char*> parse_is_reply(ByteReader& byte_reader) {
+std::expected<RpcMessage, const char*> parse_is_reply(std::byte* rbuf) {
     InstallSnapshotRespPayload response;
 
-    if (!byte_reader.read(response.server_id)) return Unexpected("failed to parse InstallSnapshot server id field");
-    if (!byte_reader.read(response.term)) return Unexpected("failed to parse InstallSnapshot response term field");
+    size_t ptr = 0;
+
+    std::memcpy(&response.server_id, rbuf, sizeof(response.server_id));
+    ptr += sizeof(response.server_id);
+    response.server_id = ntohl(response.server_id);
+
+    std::memcpy(&response.term, rbuf + ptr, sizeof(response.term));
+    ptr += sizeof(response.term);
+    response.term = ntohl(response.term);
+
     return response;
 }
 
@@ -42,31 +74,31 @@ constexpr std::array<ReplyParserFunc, IS_RPC_ID + 1> make_reply_parser_table() {
 
 constexpr auto REPLY_PARSER_TABLE = make_reply_parser_table();
 
-std::expected<RpcMessage, const char*> parse_rbuf(std::vector<std::byte>& rbuf) {
-    if (rbuf.size() < sizeof(uint32_t))
+std::expected<RpcMessage, const char*> parse_rbuf(std::byte* rbuf, size_t size) {
+    if (size < sizeof(uint32_t)) {
         return Unexpected("not enough data to read");
+    }
 
+    size_t ptr = 0;
     uint32_t total_length;
-    std::memcpy(&total_length, rbuf.data(), sizeof(total_length));
+    std::memcpy(&total_length, rbuf, sizeof(total_length));
+    ptr += sizeof(total_length);
+
     total_length = ntohl(total_length);
 
-    if (rbuf.size() < sizeof(uint32_t) + total_length)
+    if (size < sizeof(total_length) + total_length) {
         return Unexpected("not enough data to read");
-
-    ByteReader byte_reader(
-        std::span<std::byte>(rbuf.begin() + sizeof(uint32_t),
-                             rbuf.begin() + sizeof(uint32_t) + total_length));
+    }
 
     uint8_t kind_byte;
-    if (!byte_reader.read(kind_byte))
-        return Unexpected("failed to read RPC kind");
+    std::memcpy(&kind_byte, rbuf + ptr, sizeof(kind_byte));
+    ptr += sizeof(kind_byte);
 
     auto func = REPLY_PARSER_TABLE[kind_byte];
     if (!func)
         return Unexpected("invalid RPC kind");
 
-    rbuf.erase(rbuf.begin(), rbuf.begin() + sizeof(uint32_t) + total_length);
-    return func(byte_reader);
+    return func(rbuf + sizeof(total_length) + sizeof(kind_byte));
 }
 
 /* Outbound */

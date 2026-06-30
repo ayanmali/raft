@@ -20,34 +20,10 @@
 static constexpr uint32_t MAX_VECTOR_SIZE_SANITY = 8192;
 struct ByteReader;
 
-// Widen any of the narrower variants (RpcRequest/RpcReply) into RpcMessage.
-// Each alternative of the source variant is also an alternative of RpcMessage,
-// so a single std::visit handles the conversion uniformly.
-// template <typename... Ts>
-// inline RpcMessage to_rpc_message(const std::variant<Ts...>& v) {
-//     return std::visit([](auto&& payload) -> RpcMessage { return payload; }, v);
-// }
-
-// template <typename... Ts>
-// inline RpcMessage to_rpc_message(std::variant<Ts...>&& v) {
-//     return std::visit([](auto&& payload) -> RpcMessage {
-//         return std::move(payload);
-//     }, std::move(v));
-// }
-
-// Accept a bare payload type (e.g. DropPeerMsg{}) that is itself an RpcMessage
-// alternative, without requiring callers to wrap it in a variant first.
-// template <typename T,
-//           typename = std::enable_if_t<
-//               std::is_constructible_v<RpcMessage, T&&>>>
-// inline RpcMessage to_rpc_message(T&& payload) {
-//     return RpcMessage(std::forward<T>(payload));
-// }
-
 using ReqParserFunc = std::expected<RpcMessage, const char*>(*)(ByteReader&, FD);
-using ReplyParserFunc = std::expected<RpcMessage, const char*>(*)(ByteReader&);
+using ReplyParserFunc = std::expected<RpcMessage, const char*>(*)(std::byte*);
 
-std::expected<RpcMessage, const char*> parse_rbuf(std::vector<std::byte>& rbuf);
+std::expected<RpcMessage, const char*> parse_rbuf(std::byte* rbuf, size_t size);
 std::expected<RpcMessage, const char*> parse_rbuf(ClientConn* c);
 
 struct ByteReader {

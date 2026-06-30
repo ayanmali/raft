@@ -27,7 +27,7 @@ Buffering convention (used by both flavors):
 #include <algorithm>
 
 enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot };
-constexpr uint32_t WBUF_SIZE = static_cast<uint32_t>(
+constexpr uint32_t RESP_SIZE = static_cast<uint32_t>(
     std::max(
         {
             AppendEntriesRespPayload::size(),
@@ -35,11 +35,11 @@ constexpr uint32_t WBUF_SIZE = static_cast<uint32_t>(
             InstallSnapshotRespPayload::size()
         }
     )
-    + sizeof(RpcKind));
+);
 
 struct ClientConn {
     std::vector<std::byte> rbuf;
-    std::byte wbuf[WBUF_SIZE + sizeof(WBUF_SIZE) + sizeof(RpcKind)];
+    std::byte wbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)];
 
     char client_ip_addr[INET_ADDRSTRLEN];
 
@@ -206,15 +206,14 @@ struct PeerConn {
     // and appended). wbuf_offset tracks chunked-send progress.
     std::vector<std::byte> wbuf;
 
-    // Single read buffer for all inbound reply data. Replies carry their
-    // RpcKind on the wire, so no per-message tracking is needed.
-    std::vector<std::byte> rbuf;
+    std::byte rbuf_[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)];
 
     // Configuration (set once when the peer subset is wired into the loop).
     const char* ip        = nullptr;
     const char* port      = nullptr;
 
     size_t wbuf_offset    = 0;
+    size_t rbuf_offset    = 0;
 
     NodeID      peer_id   = 0;
 
