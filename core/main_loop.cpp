@@ -211,10 +211,16 @@ void Node::MainLoop() {
                     std::cout << "\n";
                     #endif
 
-                    const uint32_t last_log_idx = log_.size() - 1;
+                    if (payload.term > current_term_) {
+                        current_term_ = payload.term;
+                        demote();
+                        return {};
+                    }
+
+                    // Heartbeat reply carries no entries; nothing to update.
+                    if (payload.entries_len == 0) return {};
+
                     const int32_t stored_next = next_indexes_[payload.server_id];
-                    // next_idx = stored - 1 and prev_log_idx = next_idx - 1, so
-                    // stored must be >= 2 to avoid uint32_t underflow.
                     if (stored_next < 2) {
                         return UnexpectedF(std::format(
                             "Failed to process AE reply: next_index {} for server id {} too small to derive prev_log_idx",
@@ -235,6 +241,7 @@ void Node::MainLoop() {
                      on fail:
                      decrement nextIndex and retry
                     */
+                    const uint32_t last_log_idx = log_.size() - 1;
                     if (payload.success == 0) {
                         if (last_log_idx < next_idx) {
                             return UnexpectedF(std::format(
@@ -308,9 +315,10 @@ void Node::MainLoop() {
 
                     if (state_ != NodeState::Candidate
                         || !voters_.insert(payload.server_id).second
+                        || payload.term < current_term_
                     ) {
                         #ifdef DEBUG
-                        std::cout << "this node is no longer a candidate, or node " << payload.server_id << " has already voted for this node; skipping\n";
+                        std::cout << "this node is no longer a candidate, or node " << payload.server_id << " has already voted for this node, or payload term is less than this node's current term; skipping\n";
                         #endif
                         return {};
                     }
@@ -320,10 +328,7 @@ void Node::MainLoop() {
                         demote();
                     }
 
-                    if (payload.term != current_term_
-                        || payload.vote_granted == 0) {
-                        return {};
-                    }
+                    if (payload.vote_granted == 0) { return {}; }
 
                     // become leader if quorum of votes achieved
                     if (voters_.size() > (node_ids_.size() + 1) / 2) {
