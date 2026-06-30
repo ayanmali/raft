@@ -370,6 +370,10 @@ void Node::MainLoop() {
                     ? std::span<LogEntry>(log_.data() + next_idx, log_.size() - next_idx)
                     : std::span<LogEntry>{};
 
+                    #ifdef DEBUG
+                    std::cout << "sending " << s.size() << " entries\n";
+                    #endif
+
                     send(AppendEntriesReqPayload{
                         s,
                         payload.source_id,
@@ -420,11 +424,6 @@ void Node::MainLoop() {
             ? std::chrono::steady_clock::now() // reset only if a leader message came in
             : last_leader_contact_;
 
-        #ifdef DEBUG
-        if (leader_contact) {
-            std::cout << "Leader discovered at a different node\n";
-        }
-        #endif
 
         // poll the election timer
         auto now = std::chrono::steady_clock::now();

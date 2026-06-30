@@ -5,7 +5,7 @@
 #include <sys/timerfd.h>
 #include <format>
 #ifdef DEBUG
-#include <iostream>
+//#include <iostream>
 #endif
 
 VoidExpected EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
@@ -27,7 +27,7 @@ VoidExpectedF EventLoop::AddPeer(NodeID id, const char* ip_addr, const char* por
     VoidExpectedF connect_ok = StartConnect(p);
     if (!connect_ok) {
         #ifdef DEBUG
-        std::cout << "error adding peer " << id << " (ip address = " << ip_addr << ") to configuration: " << connect_ok.error() << "\n";
+        //std::cout << "error adding peer " << id << " (ip address = " << ip_addr << ") to configuration: " << connect_ok.error() << "\n";
         #endif
         return UnexpectedF(std::format(
             "Failed to add peer:\n{}\n", connect_ok.error()
@@ -38,7 +38,7 @@ VoidExpectedF EventLoop::AddPeer(NodeID id, const char* ip_addr, const char* por
 
 VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
     #ifdef DEBUG
-    std::cout << "attempting to connect to peer " << p.peer_id << "\n";
+    //std::cout << "attempting to connect to peer " << p.peer_id << "\n";
     #endif
     addrinfo hints{};
     hints.ai_family   = AF_INET;
@@ -104,7 +104,7 @@ VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
     }
     peer_timer_fd_to_id[p.timer_fd] = p.peer_id;
     #ifdef DEBUG
-    std::cout << "finished connecting: peer " << p.peer_id << " socket state = " << static_cast<int>(p.state) << "\n";
+    //std::cout << "finished connecting: peer " << p.peer_id << " socket state = " << static_cast<int>(p.state) << "\n";
     #endif
     return {};
 }
@@ -112,7 +112,7 @@ VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
 // TODO: use fixed size stack buffers instead of vectors
 VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
     #ifdef DEBUG
-    std::cout << "peer " << p.peer_id << " readable\n";
+    //std::cout << "peer " << p.peer_id << " readable\n";
     #endif
 
     for (;;) {
@@ -136,7 +136,7 @@ VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
         }
         RpcMessage& reply = reply_raw.value();
         #ifdef DEBUG
-        std::cout << "passing reply from peer " << p.peer_id << " back to node\n";
+        //std::cout << "passing reply from peer " << p.peer_id << " back to node\n";
         #endif
         post_node_inbox(std::move(reply));
     }
@@ -145,7 +145,7 @@ VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
 
 VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
     #ifdef DEBUG
-    std::cout << "peer " << p.peer_id << " writable\n";
+    //std::cout << "peer " << p.peer_id << " writable\n";
     #endif
 
     if (p.state == PeerConn::State::Connecting) {
@@ -157,7 +157,7 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
         }
         p.state = PeerConn::State::Connected;
         #ifdef DEBUG
-        std::cout << "Set peer " << p.peer_id << " fd to Connected\n";
+        //std::cout << "Set peer " << p.peer_id << " fd to Connected\n";
         #endif
         VoidExpected modify_ok = modify_peer_interest(p, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET);
         if (!modify_ok) {
@@ -191,7 +191,7 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
 
 VoidExpected EventLoop::OnPeerTimer(PeerConn& p) {
     #ifdef DEBUG
-    std::cout << "heartbeat timer fired for peer " << p.peer_id << "\n";
+    //std::cout << "heartbeat timer fired for peer " << p.peer_id << "\n";
     #endif
     uint64_t expirations = 0;
     ssize_t n = ::read(p.timer_fd, &expirations, sizeof(expirations));
@@ -207,7 +207,7 @@ VoidExpected EventLoop::OnPeerTimer(PeerConn& p) {
 
 void EventLoop::DropPeer(PeerConn& p) {
     #ifdef DEBUG
-    std::cout << "Dropping peer " << p.peer_id << "\n";
+    //std::cout << "Dropping peer " << p.peer_id << "\n";
     #endif
     if (p.fd >= 0) {
         ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, p.fd, nullptr);
@@ -269,11 +269,11 @@ void EventLoop::DropPeer(PeerConn& p) {
 /* called when draining the messages in the event loop's MPSC inbox. */
 VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload) {
     #ifdef DEBUG
-    std::cout << "Posting AE RPC to outbound queue for node " << payload.dest_id << "\n";
-    std::cout << "payload term = " << payload.term << "\n";
-    std::cout << "payload prev log index = " << payload.prev_log_idx << "\n";
-    std::cout << "payload prev log term = " << payload.prev_log_term << "\n";
-    std::cout << "payload leader commit = " << payload.leader_commit << "\n";
+    //std::cout << "Posting AE RPC to outbound queue for node " << payload.dest_id << "\n";
+    //std::cout << "payload term = " << payload.term << "\n";
+    //std::cout << "payload prev log index = " << payload.prev_log_idx << "\n";
+    //std::cout << "payload prev log term = " << payload.prev_log_term << "\n";
+    //std::cout << "payload leader commit = " << payload.leader_commit << "\n";
     #endif
     auto it = peer_conns.find(payload.dest_id);
     if (it == peer_conns.end()) {
@@ -302,7 +302,7 @@ VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload) {
 
 VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload) {
     #ifdef DEBUG
-    std::cout << "Posting RV RPC to outbound queue for node " << payload.dest_id << "\n";
+    //std::cout << "Posting RV RPC to outbound queue for node " << payload.dest_id << "\n";
     #endif
     auto it = peer_conns.find(payload.dest_id);
     if (it == peer_conns.end()) {
@@ -330,7 +330,7 @@ VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload) {
 
 VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload) {
     #ifdef DEBUG
-    std::cout << "Posting IS RPC to outbound queue for node " << payload.dest_id << "\n";
+    //std::cout << "Posting IS RPC to outbound queue for node " << payload.dest_id << "\n";
     #endif
     auto it = peer_conns.find(payload.dest_id);
     if (it == peer_conns.end()) {
@@ -358,7 +358,7 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload) {
 
 VoidExpectedF EventLoop::arm_heartbeat_timer(NodeID peer_id) {
     #ifdef DEBUG
-    std::cout << "arming heartbeat timer for peer " << peer_id << "\n";
+    //std::cout << "arming heartbeat timer for peer " << peer_id << "\n";
     #endif
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end() || it->second.timer_fd < 0) {
@@ -385,7 +385,7 @@ VoidExpectedF EventLoop::arm_heartbeat_timer(NodeID peer_id) {
 
 VoidExpectedF EventLoop::disarm_heartbeat_timer(NodeID peer_id) {
     #ifdef DEBUG
-    std::cout << "disarming heartbeat timer for node " << peer_id << "\n";
+    //std::cout << "disarming heartbeat timer for node " << peer_id << "\n";
     #endif
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end()) {
