@@ -57,13 +57,18 @@ static constexpr size_t MAX_SERVER_CONNS = 512;
 //
 //   return std::array<const char*, 3>{
 //       "",                  // index 0: NodeID 0 (placeholder when MY_ID == 0)
-//       "1.2.3.4",           // index 1: NodeID 1
-//       "1.2.3.5",           // index 2: NodeID 2
+//       "46.225.226.151",    // index 1: NodeID 1
+//       "46.225.226.152",    // index 2: NodeID 2
 //   };
 //
 // The node with MY_ID == k must have "" at index k and real IPs elsewhere.
+static constexpr int BASE_CLUSTER_SIZE = 4;
 constexpr auto setup_peers() {
-    return std::array<const char*, 1>{
-        "", // index 0 == MY_ID (this node)
+    constexpr auto a = std::array<const char*, BASE_CLUSTER_SIZE>{
+        "", // index 0 == MY_ID (this node),
+        "",
+        "",
+        ""
     };
+    return a;
 }
