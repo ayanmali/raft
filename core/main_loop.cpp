@@ -221,14 +221,13 @@ void Node::MainLoop() {
                     if (payload.entries_len == 0) return {};
 
                     const int32_t stored_next = next_indexes_[payload.server_id];
-                    if (stored_next < 2) {
+                    if (stored_next < 1) {
                         return UnexpectedF(std::format(
                             "Failed to process AE reply: next_index {} for server id {} too small to derive prev_log_idx",
                             stored_next, payload.server_id
                         ));
                     }
-                    const uint32_t next_idx = stored_next - 1;
-                    const uint32_t prev_log_idx = next_idx - 1;
+                    const uint32_t prev_log_idx = stored_next - 1;
                     if (prev_log_idx >= log_.size()) {
                         return UnexpectedF(std::format(
                             "Failed to process AE reply: prev_log_idx {} out of bounds (log size {})",
@@ -242,6 +241,7 @@ void Node::MainLoop() {
                      decrement nextIndex and retry
                     */
                     const uint32_t last_log_idx = log_.size() - 1;
+                    const uint32_t next_idx = stored_next;
                     if (payload.success == 0) {
                         if (last_log_idx < next_idx) {
                             return UnexpectedF(std::format(
