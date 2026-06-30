@@ -209,13 +209,7 @@ void Node::MainLoop() {
                     #endif
 
                     const uint32_t last_log_idx = log_.size() - 1;
-                    const auto it = std::find(node_ids_.begin(), node_ids_.end(), payload.server_id);
-                    if (it == node_ids_.end()) {
-                        return UnexpectedF(
-                            std::format("Failed to process AE reply: node ID {} not found in node_ids_", payload.server_id)
-                        );
-                    }
-                    const uint32_t stored_next = next_indexes_[it - node_ids_.begin()];
+                    const int32_t stored_next = next_indexes_[payload.server_id];
                     // next_idx = stored - 1 and prev_log_idx = next_idx - 1, so
                     // stored must be >= 2 to avoid uint32_t underflow.
                     if (stored_next < 2) {
@@ -270,8 +264,8 @@ void Node::MainLoop() {
                      - matchIndex is set to the index of the last entry successfully
                      appended (calculated as prevLogIndex + len(entries))
                      */
-                    next_indexes_[it - node_ids_.begin()] += payload.entries_len;
-                    match_indexes_[it - node_ids_.begin()] = prev_log_idx + payload.entries_len;
+                    next_indexes_[payload.server_id] += payload.entries_len;
+                    match_indexes_[payload.server_id] = prev_log_idx + payload.entries_len;
 
                     /*
                      if there exists an N such that
@@ -340,47 +334,35 @@ void Node::MainLoop() {
                     std::cout << "found heartbeat timeout for node " << payload.source_id << "; sending heartbeat...\n";
                     #endif
                     // if last log index >= this follower's nextIndex,
-                    // then send AE RPC w/ log entries starting at nextIndex. Otherwise, send term w/ no entries.
-                    const auto it = std::find(node_ids_.begin(), node_ids_.end(), payload.source_id);
-                    if (it == node_ids_.end()) {
+                    // then send AE RPC w/ log entries starting at nextIndex. Otherwise, send term w/ no entries
+                    const int32_t next_idx = next_indexes_[payload.source_id];
+                    if (next_idx == 0) {
                         return UnexpectedF(std::format(
-                            "Failed to process HeartbeatTimeout: node id {} not found in node_ids_"
-                            , payload.source_id));
+                            "Failed to process HeartbeatTimeout: next_index 0 for node id {} cannot derive prev_log_idx",
+                            payload.source_id
+                        ));
                     }
-                    const uint32_t next_idx = next_indexes_[it - node_ids_.begin()];
 
                     // Only send entries when the log actually has some at/after
                     // next_idx. log_.size()-1 >= next_idx is restated as
                     // next_idx < log_.size() to avoid uint underflow on size 0.
                     auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
-                    if (next_idx < log_.size()) {
-                        // prev_log_idx = next_idx - 1 requires next_idx >= 1.
-                        if (next_idx == 0) {
-                            return UnexpectedF(std::format(
-                                "Failed to process HeartbeatTimeout: next_index 0 for node id {} cannot derive prev_log_idx",
-                                payload.source_id
-                            ));
-                        }
-                        const uint32_t prev_log_idx = next_idx - 1;
-                        const uint32_t prev_log_term = log_[prev_log_idx].term;
-                        auto s = std::span<LogEntry>(log_.data() + next_idx, log_.size() - next_idx);
-                        send(AppendEntriesReqPayload{
-                            s,
-                            payload.source_id,
-                            current_term_,
-                            MY_ID,
-                            prev_log_idx,
-                            prev_log_term,
-                            commit_index_
-                        }, el);
-                    }
-                    else {
-                        send(AppendEntriesReqPayload{
-                            current_term_,
-                            MY_ID,
-                            payload.source_id
-                        }, el);
-                    }
+                    const uint32_t prev_log_idx = next_idx - 1;
+                    const uint32_t prev_log_term = log_[prev_log_idx].term;
+
+                    auto s = next_idx < log_.size()
+                    ? std::span<LogEntry>(log_.data() + next_idx, log_.size() - next_idx)
+                    : std::span<LogEntry>{};
+
+                    send(AppendEntriesReqPayload{
+                        s,
+                        payload.source_id,
+                        current_term_,
+                        MY_ID,
+                        prev_log_idx,
+                        prev_log_term,
+                        commit_index_
+                    }, el);
 
                 }
 
@@ -388,12 +370,9 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "Received drop peer message - dropping peer " << payload.source_id << "\n";
                     #endif
-                    if (auto it = std::find(node_ids_.begin(), node_ids_.end(), payload.source_id); it != node_ids_.end() ) {
-                        size_t index = std::distance(node_ids_.begin(), it);
-                        node_ids_.erase(it);
-                        next_indexes_.erase(next_indexes_.begin() + index);
-                        match_indexes_.erase(match_indexes_.begin() + index);
-                    }
+                    next_indexes_[payload.source_id] = -1;
+                    match_indexes_[payload.source_id] = -1;
+
                     voters_.erase(payload.source_id);
                     if (voted_for_ == payload.source_id) {
                         voted_for_ = -1;
@@ -454,10 +433,6 @@ void Node::MainLoop() {
         // majority (e.g. a single-node cluster with no peers), win the
         // election immediately rather than waiting for RequestVote replies
         // that will never come.
-        if (voters_.size() + 1 > (node_ids_.size() + 1) / 2) {
-            become_leader();
-            continue;
-        }
         request_votes();
     }
 }

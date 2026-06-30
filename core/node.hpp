@@ -112,8 +112,8 @@ public:
     std::unordered_set<NodeID>                                      voters_;
     std::vector<LogEntry>                                           log_;
     std::vector<NodeID>                                             node_ids_;
-    std::vector<uint32_t>                                           next_indexes_;         // leader-only, one per peer
-    std::vector<uint32_t>                                           match_indexes_;        // leader-only, one per peer
+    std::vector<int32_t>                                            next_indexes_  = std::vector<int32_t>(BASE_CLUSTER_SIZE, 1);         // leader-only, one per peer
+    std::vector<int32_t>                                            match_indexes_ = std::vector<int32_t>(BASE_CLUSTER_SIZE, 0);         // leader-only, one per peer
 
     std::array<std::unique_ptr<EventLoop>, EVENT_LOOP_THREADS>      loops_;
     std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
@@ -121,11 +121,11 @@ public:
     std::chrono::steady_clock::time_point                           last_leader_contact_;
     std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
 
-    int                                                             voted_for_ = -1;
-    uint32_t                                                        current_term_ = 0;
-    uint32_t                                                        commit_index_ = 0;     // index of highest log entry known to be committed
-    uint32_t                                                        last_applied_ = 0;     // index of highest log entry applied to state machine
+    int                                                             voted_for_     = -1;
+    uint32_t                                                        current_term_  = 0;
+    uint32_t                                                        commit_index_  = 0;     // index of highest log entry known to be committed
+    uint32_t                                                        last_applied_  = 0;     // index of highest log entry applied to state machine
     enum class                                                      NodeState { Follower, Candidate, Leader };
-    NodeState                                                       state_ = NodeState::Follower;
-    bool                                                            running_ = false;
+    NodeState                                                       state_         = NodeState::Follower;
+    bool                                                            running_       = false;
 };

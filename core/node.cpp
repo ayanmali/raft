@@ -107,9 +107,9 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     }
 
     n->log_.push_back(LogEntry{});
-    n->next_indexes_.insert(n->next_indexes_.end(), n->node_ids_.size(), 1);
-    n->match_indexes_.resize(n->node_ids_.size());
-    n->voters_.reserve(init_peers.size());
+    n->next_indexes_[MY_ID] = -1;
+    n->match_indexes_[MY_ID] = -1;
+    n->voters_.reserve(BASE_CLUSTER_SIZE);
     n->last_leader_contact_ = std::chrono::steady_clock::now();
     return n;
 }
@@ -224,8 +224,10 @@ void Node::demote() {
 
     voters_.clear();
     voted_for_ = -1;
+    NodeState old = state_;
     state_ = NodeState::Follower;
 
+    if (old != NodeState::Leader) return;
     #ifdef DEBUG
     std::cout << "disarming peer timers\n";
     #endif
@@ -244,11 +246,13 @@ void Node::become_leader() {
     #ifdef DEBUG
     std::cout << "This node (id = " << MY_ID << ") won the election\n";
     #endif
-    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size());
-    for (uint32_t& i : next_indexes_) {
+    const int32_t last_log_idx = static_cast<int32_t>(log_.size());
+    for (int32_t& i : next_indexes_) {
+        if (i < 0) continue;
         i = last_log_idx + 1;
     }
-    for (uint32_t& i : match_indexes_) {
+    for (int32_t& i : match_indexes_) {
+        if (i < 0) continue;
         i = 0;
     }
 
@@ -262,9 +266,19 @@ void Node::become_leader() {
     for (auto id : node_ids_) {
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
         // send heartbeat rpc
+        const uint32_t prev_log_idx = static_cast<uint32_t>(log_.size() - 1);
+        const uint32_t prev_log_term = log_[prev_log_idx].term;
         el->outbound_inbox.PushOne(
             std::make_unique<RpcMessage>(
-                AppendEntriesReqPayload{current_term_, MY_ID, id}
+                AppendEntriesReqPayload{
+                    std::span<LogEntry>{},
+                    id,
+                    current_term_,
+                    MY_ID,
+                    prev_log_idx,
+                    prev_log_term,
+                    commit_index_
+                }
             )
         );
         #ifdef DEBUG
@@ -291,8 +305,12 @@ void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLo
     }
 
     node_ids_.push_back(node_id);
-    next_indexes_.push_back(1);
-    match_indexes_.push_back(0);
+    if (next_indexes_.size() < node_id) {
+        next_indexes_.resize(node_id + 1);
+        match_indexes_.resize(node_id + 1);
+    }
+    next_indexes_[node_id] = 1;
+    match_indexes_[node_id] = 0;
 
     el->outbound_inbox.PushOne(
         std::make_unique<RpcMessage>(
@@ -309,9 +327,10 @@ void Node::commit_if_quorum(uint32_t& commit_index) {
     // dereferencing end() on an empty map.
     if (match_indexes_.empty()) return;
 
-    auto freqs = std::unordered_map<uint32_t, uint32_t>(match_indexes_.size());
+    auto freqs = std::unordered_map<int32_t, uint32_t>(match_indexes_.size());
     for (auto match_idx : match_indexes_) {
-        freqs[match_idx]++;
+        if (match_idx < 0) continue;
+        ++freqs[match_idx];
     }
 
     // fast path
@@ -319,7 +338,7 @@ void Node::commit_if_quorum(uint32_t& commit_index) {
        return a.second < b.second;
     });
     if (kv_max_freq == freqs.end()) return;
-    if (kv_max_freq->second <= match_indexes_.size() / 2) return;
+    if (kv_max_freq->second <= node_ids_.size() / 2) return;
     if (kv_max_freq->first > commit_index
         && kv_max_freq->first < log_.size()
         && log_[kv_max_freq->first].term == current_term_) {
@@ -329,7 +348,7 @@ void Node::commit_if_quorum(uint32_t& commit_index) {
 
     // slow path
     freqs.erase(kv_max_freq);
-    std::vector<std::pair<uint32_t, uint32_t>> freqs_vec;
+    std::vector<std::pair<int32_t, uint32_t>> freqs_vec;
     freqs_vec.reserve(freqs.size());
     for (auto [idx, count] : freqs) {
         freqs_vec.emplace_back(idx, count);
@@ -337,7 +356,7 @@ void Node::commit_if_quorum(uint32_t& commit_index) {
     std::sort(freqs_vec.begin(), freqs_vec.end(), [](auto& a, auto& b){ return a.second > b.second; });
 
     for (auto& [match_idx, count] : freqs_vec) {
-        if (count < match_indexes_.size() / 2) break;
+        if (count <= node_ids_.size() / 2) break;
         if (match_idx > commit_index
             && match_idx < log_.size()
             && log_[match_idx].term == current_term_) {

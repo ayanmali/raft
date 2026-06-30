@@ -37,8 +37,8 @@ struct AppendEntriesReqPayload {
     uint32_t prev_log_term;
     uint32_t leader_commit;
 
-    AppendEntriesReqPayload(std::vector<LogEntry> entries, NodeID dest_id, uint32_t term, uint32_t leader_id, uint32_t prev_log_idx, uint32_t prev_log_term, uint32_t leader_commit) :
-        entries(std::move(entries)),
+    AppendEntriesReqPayload(std::vector<LogEntry>&& entries, NodeID dest_id, uint32_t term, uint32_t leader_id, uint32_t prev_log_idx, uint32_t prev_log_term, uint32_t leader_commit) :
+        entries(std::forward<std::vector<LogEntry>>(entries)),
         dest_id(dest_id),
         term(term),
         leader_id(leader_id),
@@ -56,8 +56,6 @@ struct AppendEntriesReqPayload {
         prev_log_term(prev_log_term),
         leader_commit(leader_commit)
     {};
-
-    AppendEntriesReqPayload(uint32_t term, uint32_t leader_id, NodeID dest_id) : term(term), leader_id(leader_id), dest_id(dest_id) {};
 
     AppendEntriesReqPayload() {};
 
