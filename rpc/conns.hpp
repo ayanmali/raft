@@ -39,7 +39,7 @@ constexpr uint32_t WBUF_SIZE = static_cast<uint32_t>(
 
 struct ClientConn {
     std::vector<std::byte> rbuf;
-    std::byte wbuf_[WBUF_SIZE + sizeof(WBUF_SIZE) + sizeof(RpcKind)];
+    std::byte wbuf[WBUF_SIZE + sizeof(WBUF_SIZE) + sizeof(RpcKind)];
 
     char client_ip_addr[INET_ADDRSTRLEN];
 
@@ -163,7 +163,7 @@ struct ClientConnSlab {
     void Release(ClientConn* c) {
         c->rbuf.clear();
         c->rbuf.shrink_to_fit();
-        std::memset(c->wbuf_, 0, sizeof(c->wbuf_));
+        std::memset(c->wbuf, 0, sizeof(c->wbuf));
         c->wbuf_offset = 0;
         c->wbuf_size = 0;
         std::memset(c->client_ip_addr, 0, sizeof(c->client_ip_addr));

@@ -74,7 +74,7 @@ VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
         #endif
         ssize_t n = ::send(
             c->fd,
-            c->wbuf_ + c->wbuf_offset,
+            c->wbuf + c->wbuf_offset,
             c->wbuf_size - c->wbuf_offset,
             MSG_NOSIGNAL);
         if (n > 0) { c->wbuf_offset += static_cast<size_t>(n); continue; }
@@ -83,7 +83,7 @@ VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
         CloseClient(c);
         return {};
     }
-    std::memset(c->wbuf_, 0, c->wbuf_size);
+    std::memset(c->wbuf, 0, c->wbuf_size);
     c->wbuf_offset = 0;
     VoidExpected modify_ok = modify_client_interest(c, c->epoll_events & ~EPOLLOUT);
     if (!modify_ok) {
@@ -177,7 +177,7 @@ VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload) {
     //++c.pending_tasks;
 
     c->wbuf_size = payload.size() + sizeof(payload.size()) + sizeof(RpcKind);
-    BufByteWriter writer{c->wbuf_};
+    BufByteWriter writer{c->wbuf};
     writer.serialize(payload);
 
     if (c->wbuf_offset < c->wbuf_size) {
@@ -204,7 +204,7 @@ VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload) {
     //++c.pending_tasks;
 
     c->wbuf_size = payload.size() + sizeof(payload.size()) + sizeof(RpcKind);
-    BufByteWriter writer{c->wbuf_};
+    BufByteWriter writer{c->wbuf};
     writer.serialize(payload);
 
     #ifdef DEBUG
@@ -234,7 +234,7 @@ VoidExpectedF EventLoop::post_reply(InstallSnapshotRespPayload& payload) {
     //++c.pending_tasks;
 
     c->wbuf_size = payload.size() + sizeof(payload.size()) + sizeof(RpcKind);
-    BufByteWriter writer{c->wbuf_};
+    BufByteWriter writer{c->wbuf};
     writer.serialize(payload);
 
     if (c->wbuf_offset < c->wbuf_size) {
