@@ -182,7 +182,7 @@ void Node::MainLoop() {
                     }
 
                     current_term_ = payload.term;
-                    if (state_ == NodeState::Leader) demote();
+                    if (state_ != NodeState::Follower) demote();
                     leader_contact = true;
                     // TODO: chunk reassembly, install snapshot to state machine.
                     send(InstallSnapshotRespPayload{
@@ -289,8 +289,9 @@ void Node::MainLoop() {
                      then set commitIndex to N
                      --> entries <= commitIndex become committed. TODO: Send confirmation to client
                      */
-
-                    commit_if_quorum(commit_index_);
+                    uint32_t old_commit_idx = commit_index_;
+                    commit_if_quorum();
+                    // TODO: for i in old_commit_idx --> commit_index_: store each log entry in the log file
 
                 }
 
@@ -342,6 +343,11 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found IS reply from node " << payload.server_id << "\n";
                     #endif
+
+                    if (payload.term > current_term_) {
+                        current_term_ = payload.term;
+                        demote();
+                    }
                 }
 
                 // heartbeats are sent per follower, not all at once.

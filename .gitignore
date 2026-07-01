@@ -10,3 +10,5 @@ rpc/serde.hpp
 thread_pool/*
 unit
 debug.log
+persistence/log
+persistence/snapshot

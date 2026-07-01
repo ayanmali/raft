@@ -34,7 +34,6 @@ Persistence:
 #include "../config.hpp"
 #include "../rpc/event_loop/event_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
-#include <array>
 #include <chrono>
 #include <csignal>
 #include <cstddef>
@@ -106,7 +105,7 @@ public:
     void become_leader();
 
     void add_peer_if_not_exists(NodeID, FD, std::unique_ptr<EventLoop>&);
-    void commit_if_quorum(uint32_t& commit_index);
+    void commit_if_quorum();
 
     NodeInbox& inbox_;
     std::unordered_set<NodeID>                                      voters_;
@@ -115,12 +114,14 @@ public:
     std::vector<int32_t>                                            next_indexes_  = std::vector<int32_t>(BASE_CLUSTER_SIZE, 1);         // leader-only, one per peer
     std::vector<int32_t>                                            match_indexes_ = std::vector<int32_t>(BASE_CLUSTER_SIZE, 0);         // leader-only, one per peer
 
-    std::array<std::unique_ptr<EventLoop>, EVENT_LOOP_THREADS>      loops_;
-    std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
+    std::unique_ptr<EventLoop>                                      loops_[EVENT_LOOP_THREADS];
+    std::thread                                                     threads_[EVENT_LOOP_THREADS];
 
     std::chrono::steady_clock::time_point                           last_leader_contact_;
     std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
 
+    FILE*                                                           log_fp         = nullptr;
+    FILE*                                                           snapshot_fp    = nullptr;
     int                                                             voted_for_     = -1;
     uint32_t                                                        current_term_  = 0;
     uint32_t                                                        commit_index_  = 0;     // index of highest log entry known to be committed

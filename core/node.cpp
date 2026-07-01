@@ -41,6 +41,21 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     std::cout << "election timeout set to " << n->election_timeout_ << "\n";
     #endif
 
+    n->log_fp = ::fopen(LOG_FILE_PATH, "w");
+    if (n->log_fp == NULL) {
+        return UnexpectedF(std::format(
+            "Error opening log file with path {}\n",
+            LOG_FILE_PATH
+        ));
+    }
+    n->snapshot_fp = ::fopen(SNAPSHOT_FILE_PATH, "w");
+    if (n->snapshot_fp == NULL) {
+        return UnexpectedF(std::format(
+            "Error opening snapshot file with path {}\n",
+            SNAPSHOT_FILE_PATH
+        ));
+    }
+
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
         std::expected<std::unique_ptr<EventLoop>, std::string> loop_raw = EventLoop::CreateEventLoop(
             MAX_SERVER_CONNS,
@@ -70,41 +85,34 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     // itself at index MY_ID using the placeholder "" in place of its own IP;
     // we skip that slot (the loop counter still advances so peer indices stay
     // aligned with their array positions).
-    const auto init_peers = setup_peers();
-    static_assert(MY_ID >= 0, "MY_ID must be non-negative");
-    if (static_cast<size_t>(MY_ID) >= init_peers.size()) {
-        return UnexpectedF(std::format(
-            "error creating node: MY_ID {} out of range for init_peers (size {})",
-            MY_ID, init_peers.size()
-        ));
-    }
+    const char* init_cluster[BASE_CLUSTER_SIZE];
+    setup_peers(init_cluster);
+    static_assert(static_cast<size_t>(MY_ID) >= 0 && static_cast<size_t>(MY_ID) < BASE_CLUSTER_SIZE);
 
     n->node_ids_.reserve(BASE_CLUSTER_SIZE - 1);
-    int i{0};
-    for (auto it = init_peers.begin(); it < init_peers.begin() + MY_ID; ++it) {
+    int i = 0;
+    for (; i < MY_ID; ++i) {
         n->node_ids_.push_back(i);
 
         VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
-            ->AddPeer(i, *it, SERVER_PORT);
+            ->AddPeer(i, init_cluster[i], SERVER_PORT);
         if (!add_peer_ok) {
             return UnexpectedF(
                 std::format("error creating node:\n{}\n", add_peer_ok.error())
             );
         }
-        ++i;
     }
-    ++i; // to ensure IDs stay universally consistent in the cluster.
-    for (auto it = init_peers.begin() + MY_ID + 1; it < init_peers.end(); ++it) {
+    ++i;
+    for (; i < BASE_CLUSTER_SIZE; ++i) {
         n->node_ids_.push_back(i);
 
         VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
-            ->AddPeer(i, *it, SERVER_PORT);
+            ->AddPeer(i, init_cluster[i], SERVER_PORT);
         if (!add_peer_ok) {
             return UnexpectedF(
                 std::format("error creating node:\n{}\n", add_peer_ok.error())
             );
         }
-        ++i;
     }
 
     n->log_.push_back(LogEntry{});
@@ -323,7 +331,7 @@ void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLo
     #endif
 }
 
-void Node::commit_if_quorum(uint32_t& commit_index) {
+void Node::commit_if_quorum() {
     // No peers => no quorum to compute. Guards std::max_element below from
     // dereferencing end() on an empty map.
     if (node_ids_.empty()) return;
@@ -340,10 +348,10 @@ void Node::commit_if_quorum(uint32_t& commit_index) {
     });
     if (kv_max_freq == freqs.end()) return;
     if (kv_max_freq->second <= node_ids_.size() / 2) return;
-    if (kv_max_freq->first > commit_index
+    if (kv_max_freq->first > commit_index_
         && kv_max_freq->first < log_.size()
         && log_[kv_max_freq->first].term == current_term_) {
-        commit_index = kv_max_freq->first;
+        commit_index_ = kv_max_freq->first;
         return;
     }
 
@@ -358,10 +366,10 @@ void Node::commit_if_quorum(uint32_t& commit_index) {
 
     for (auto& [match_idx, count] : freqs_vec) {
         if (count <= node_ids_.size() / 2) break;
-        if (match_idx > commit_index
+        if (match_idx > commit_index_
             && match_idx < log_.size()
             && log_[match_idx].term == current_term_) {
-            commit_index = match_idx;
+            commit_index_ = match_idx;
             break;
         }
     }
