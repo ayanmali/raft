@@ -47,7 +47,6 @@ std::expected<RpcMessage, const char*> parse_is_req(ByteReader& byte_reader, FD 
     return message;
 }
 
-// TODO: verify this is correct
 constexpr std::array<ReqParserFunc, IS_REPLY_ID - IS_RPC_ID> make_parser_table() {
     std::array<ReqParserFunc, IS_REPLY_ID - IS_RPC_ID> table{};
     table[AE_REPLY_ID - IS_RPC_ID - 1] = parse_ae_req;

@@ -83,7 +83,7 @@ void Node::MainLoop() {
                     // append any entries not already in the log
                     log_.reserve(payload.entries.size());
                     for (auto it = payload.entries.begin() + i; it < payload.entries.end(); ++it) {
-                        log_.emplace_back(std::move(it->data), it->term);
+                        log_.emplace_back(it->data_, CMD_SIZE, it->term);
                     }
 
                     if (payload.leader_commit > commit_index_) {
@@ -290,8 +290,12 @@ void Node::MainLoop() {
                      --> entries <= commitIndex become committed. TODO: Send confirmation to client
                      */
                     uint32_t old_commit_idx = commit_index_;
-                    commit_if_quorum();
-                    // TODO: for i in old_commit_idx --> commit_index_: store each log entry in the log file
+                    bool updated = update_commit_if_quorum();
+                    if (!updated) return {};
+                    // TODO: how can this be done in one syscall?
+                    for (int i = old_commit_idx; i < commit_index_; ++i) {
+                        ::fwrite(log_[i].data_, sizeof(log_[i].data_), commit_index_ - old_commit_idx, log_fp);
+                    }
 
                 }
 

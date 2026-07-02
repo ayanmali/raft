@@ -109,7 +109,6 @@ VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
     return {};
 }
 
-// TODO: use fixed size stack buffers instead of vectors
 VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
     #ifdef DEBUG
     //std::cout << "peer " << p.peer_id << " readable\n";

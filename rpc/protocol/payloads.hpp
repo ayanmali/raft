@@ -2,8 +2,8 @@
 /*
 RPC request/response payload structs.
 */
-#include <cstddef>
-#include <cstdint>
+#include "../../config.hpp"
+#include <cstring>
 #include <netinet/in.h>
 #include <vector>
 #include <variant>
@@ -20,11 +20,14 @@ using NodeID = uint32_t;
 using FD = int;
 
 struct LogEntry {
-    std::vector<std::byte> data;
+    std::byte data_[CMD_SIZE];
     uint32_t term;
 
     LogEntry() {};
-    LogEntry(std::vector<std::byte>&& data, uint32_t term) : data{data}, term{term} {}
+    LogEntry(std::byte* buf, size_t size, uint32_t term) : term(term) {
+        assert(size <= CMD_SIZE);
+        std::memcpy(data_, buf, size);
+    };
 };
 
 struct AppendEntriesReqPayload {
@@ -60,13 +63,7 @@ struct AppendEntriesReqPayload {
     AppendEntriesReqPayload() {};
 
     auto size() const {
-        size_t s = 0;
-        for (const auto& entry : entries) {
-            s += entry.data.size();
-            s += sizeof(entry.term);
-            s += sizeof(uint64_t); // for the length of entry.data itself in serialization
-        }
-        s += sizeof(uint64_t) + sizeof(term) + sizeof(leader_id) + sizeof(prev_log_idx) + sizeof(prev_log_term) + sizeof(leader_commit);
+        size_t s = entries.size() * (CMD_SIZE + sizeof(LogEntry::term)) + sizeof(term) + sizeof(leader_id) + sizeof(prev_log_idx) + sizeof(prev_log_term) + sizeof(leader_commit);
         return s;
     };
 };

@@ -63,7 +63,6 @@ VoidExpected EventLoop::Accept() {
     return {};
 }
 
-// TODO: use fixed size stack buffers instead of vectors
 VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
     #ifdef DEBUG
     //std::cout << "client with ip " << c->client_ip_addr << " writable\n";

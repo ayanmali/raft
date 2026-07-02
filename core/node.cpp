@@ -41,14 +41,14 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     std::cout << "election timeout set to " << n->election_timeout_ << "\n";
     #endif
 
-    n->log_fp = ::fopen(LOG_FILE_PATH, "w");
+    n->log_fp = ::fopen(LOG_FILE_PATH, "a+");
     if (n->log_fp == NULL) {
         return UnexpectedF(std::format(
             "Error opening log file with path {}\n",
             LOG_FILE_PATH
         ));
     }
-    n->snapshot_fp = ::fopen(SNAPSHOT_FILE_PATH, "w");
+    n->snapshot_fp = ::fopen(SNAPSHOT_FILE_PATH, "a+");
     if (n->snapshot_fp == NULL) {
         return UnexpectedF(std::format(
             "Error opening snapshot file with path {}\n",
@@ -87,7 +87,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     // aligned with their array positions).
     const char* init_cluster[BASE_CLUSTER_SIZE];
     setup_peers(init_cluster);
-    static_assert(static_cast<size_t>(MY_ID) >= 0 && static_cast<size_t>(MY_ID) < BASE_CLUSTER_SIZE);
+    //static_assert(static_cast<size_t>(MY_ID) < BASE_CLUSTER_SIZE, "This node's ID exceeds the cluster size");
 
     n->node_ids_.reserve(BASE_CLUSTER_SIZE - 1);
     int i = 0;
@@ -159,7 +159,7 @@ void Node::request_votes() {
     for (auto& loop : loops_) { loop->Wake(); }
 }
 
-void Node::append_commands(std::vector<std::vector<std::byte>>& commands) {
+void Node::append_commands(std::vector<std::byte*>& commands) {
     //const uint32_t last_log_idx = log_.size() - 1;
     if (state_ != NodeState::Leader) {
         #ifdef DEBUG
@@ -176,22 +176,22 @@ void Node::append_commands(std::vector<std::vector<std::byte>>& commands) {
     std::cout << "Existing log:\n";
     for (const LogEntry& e : log_) {
         std::cout << "[(";
-        for (const auto& b : e.data) {
+        for (std::byte b : e.data_) {
             std::cout << static_cast<int>(b) << ", ";
         }
         std::cout << "), " << e.term << "]\n";
     }
     #endif
 
-    for (auto& command : commands) {
-        log_.emplace_back(std::move(command), current_term_);
+    for (std::byte* command : commands) {
+        log_.emplace_back(command, CMD_SIZE, current_term_);
     }
 
     #ifdef DEBUG
     std::cout << "New log:\n";
     for (const LogEntry& e : log_) {
         std::cout << "[(";
-        for (const auto& b : e.data) {
+        for (std::byte b : e.data_) {
             std::cout << static_cast<int>(b) << ", ";
         }
         std::cout << "), " << e.term << "]\n";
@@ -314,7 +314,7 @@ void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLo
     }
 
     node_ids_.push_back(node_id);
-    if (next_indexes_.size() < node_id) {
+    if (next_indexes_.size() <= node_id) {
         next_indexes_.resize(node_id + 1);
         match_indexes_.resize(node_id + 1);
     }
@@ -331,10 +331,10 @@ void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLo
     #endif
 }
 
-void Node::commit_if_quorum() {
+bool Node::update_commit_if_quorum() {
     // No peers => no quorum to compute. Guards std::max_element below from
     // dereferencing end() on an empty map.
-    if (node_ids_.empty()) return;
+    if (node_ids_.empty()) return false;
 
     auto freqs = std::unordered_map<int32_t, uint32_t>(match_indexes_.size());
     for (auto match_idx : match_indexes_) {
@@ -346,13 +346,13 @@ void Node::commit_if_quorum() {
     auto kv_max_freq = std::max_element(freqs.begin(), freqs.end(), [](const std::pair<uint32_t, uint32_t>& a, const std::pair<uint32_t, uint32_t>& b){
        return a.second < b.second;
     });
-    if (kv_max_freq == freqs.end()) return;
-    if (kv_max_freq->second <= node_ids_.size() / 2) return;
+    if (kv_max_freq == freqs.end()) return false;
+    if (kv_max_freq->second <= node_ids_.size() / 2) return false;
     if (kv_max_freq->first > commit_index_
         && kv_max_freq->first < log_.size()
         && log_[kv_max_freq->first].term == current_term_) {
         commit_index_ = kv_max_freq->first;
-        return;
+        return true;
     }
 
     // slow path
@@ -370,7 +370,8 @@ void Node::commit_if_quorum() {
             && match_idx < log_.size()
             && log_[match_idx].term == current_term_) {
             commit_index_ = match_idx;
-            break;
+            return true;
         }
     }
+    return false;
 }

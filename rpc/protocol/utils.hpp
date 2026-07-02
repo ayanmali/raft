@@ -6,7 +6,6 @@
 #include <cstring>
 #include <netinet/in.h>
 #include <span>
-#include <utility>
 #include <expected>
 
 #if __BIG_ENDIAN__
@@ -93,8 +92,15 @@ struct ByteReader {
         return true;
     }
 
+    bool read(std::byte* out, size_t size) {
+        if (remaining() < size) return false;
+        std::memcpy(out, ptr, size);
+        ptr += size;
+        return true;
+    }
+
     bool read(LogEntry& out) {
-        if (!read(out.data)) return false;
+        if (!read(out.data_, sizeof(out.data_))) return false;
         if (!read(out.term)) return false;
         return true;
     }
@@ -106,7 +112,7 @@ struct ByteReader {
         for (uint64_t i = 0; i < size; ++i) {
             LogEntry entry;
             if (!read(entry)) return false;
-            out.push_back(std::move(entry));
+            out.push_back(entry);
         }
         return true;
     }

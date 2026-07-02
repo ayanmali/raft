@@ -125,13 +125,9 @@ void VecByteWriter::serialize(const AppendEntriesReqPayload& payload) {
     std::memcpy(vec.data() + ptr, &net_entries_len, sizeof(net_entries_len));
     ptr += sizeof(net_entries_len);
 
-    for (const auto& entry : payload.entries) {
-        uint64_t entry_data_len = htonll(entry.data.size());
-        std::memcpy(vec.data() + ptr, &entry_data_len, sizeof(entry_data_len));
-        ptr += sizeof(entry_data_len);
-
-        std::memcpy(vec.data() + ptr, entry.data.data(), entry.data.size());
-        ptr += entry.data.size();
+    for (const LogEntry& entry : payload.entries) {
+        std::memcpy(vec.data() + ptr, entry.data_, sizeof(entry.data_));
+        ptr += sizeof(entry.data_);
 
         uint32_t entry_term = htonl(entry.term);
         std::memcpy(vec.data() + ptr, &entry_term, sizeof(entry_term));

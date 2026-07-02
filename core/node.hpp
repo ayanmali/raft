@@ -63,7 +63,7 @@ public:
 
     void MainLoop();
 
-    void append_commands(std::vector<std::vector<std::byte>>&);
+    void append_commands(std::vector<std::byte*>&);
 
     // Raft leadership transitions. Both must run on an event-loop thread
     // (i.e. as part of a state-machine reaction to an inbound RPC, reply,
@@ -105,7 +105,7 @@ public:
     void become_leader();
 
     void add_peer_if_not_exists(NodeID, FD, std::unique_ptr<EventLoop>&);
-    void commit_if_quorum();
+    bool update_commit_if_quorum();
 
     NodeInbox& inbox_;
     std::unordered_set<NodeID>                                      voters_;
