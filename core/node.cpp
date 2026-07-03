@@ -68,6 +68,8 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         ));
     }
 
+    n->recover();
+
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
         std::expected<std::unique_ptr<EventLoop>, std::string> loop_raw = EventLoop::CreateEventLoop(
             MAX_SERVER_CONNS,
@@ -406,6 +408,7 @@ void Node::write_snapshot() {
 
     log_.erase(log_.begin() + 1, log_.begin() + (log_.size() / 2));
     // TODO: clear entries in the log file in the specified range
+    // fseek
 }
 
 // update in memory sm_state_ and the snapshot file
@@ -432,5 +435,59 @@ void Node::apply_entry_to_sm(const LogEntry& entry) {
             break;
     }
     ByteArray tmpa = std::bit_cast<ByteArray<sizeof(snapshot.state)>>(tmp_state);
-    std::memcpy(&snapshot, &tmpa, sizeof(tmpa.bytes));
+    std::memcpy(&snapshot.state, &tmpa, sizeof(tmpa.bytes));
+}
+
+void Node::recover() {
+    // Read existing snapshot
+    FILE* snap_r = ::fopen(SNAPSHOT_FILE_PATH, "r");
+    if (snap_r) {
+        ::fread(&snapshot, sizeof(snapshot), 1, snap_r);
+        ::fclose(snap_r);
+    }
+
+    ::fseek(log_fp, 0, SEEK_END);
+    long file_size = ::ftell(log_fp);
+    ::rewind(log_fp);
+    if (file_size <= 0) return;
+
+    size_t num_entries = static_cast<size_t>(file_size) / sizeof(LogEntry);
+    if (num_entries == 0) return;
+
+    //log_.reserve(num_entries);
+    size_t i = 0;
+    uint32_t last_term;
+    for (; i < num_entries; ++i) {
+        LogEntry entry;
+        if (::fread(&entry, sizeof(LogEntry), 1, log_fp) != 1) break;
+        apply_entry_to_sm(entry);
+        last_term = entry.term;
+    }
+    snapshot.last_included_idx = static_cast<uint32_t>(i);
+    snapshot.last_included_term = last_term;
+
+    // size_t start = 0;
+    // if (snapshot.last_included_idx > 0 && snapshot.last_included_idx < log_.size()) {
+    //     start = snapshot.last_included_idx;
+    // }
+
+    // for (size_t i = start; i < log_.size(); ++i) {
+    //     apply_entry_to_sm(log_[i]);
+    // }
+
+    // snapshot.last_included_idx += static_cast<uint32_t>(log_.size() - start);
+    // snapshot.last_included_term = log_.back().term;
+
+    ::rewind(snapshot_fp);
+    ::fwrite(&snapshot, sizeof(Snapshot), 1, snapshot_fp);
+    ::fflush(snapshot_fp);
+    ::fsync(fileno(snapshot_fp));
+
+    // ::freopen(LOG_FILE_PATH, "w", log_fp); // TODO: mark the file stream as write-only?
+
+    // only needed if this function outside the CreateNode factory function
+    commit_index_ = snapshot.last_included_idx;
+    state_ = NodeState::Follower;
+    voters_.clear();
+    voted_for_ = -1;
 }

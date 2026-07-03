@@ -88,6 +88,7 @@ public:
     // log compaction/snapshotting
     void write_snapshot();
     void apply_entry_to_sm(const LogEntry& entry);
+    void recover();
 
     NodeInbox& inbox_;
     std::unordered_set<NodeID>                                      voters_;
