@@ -240,6 +240,10 @@ void Node::append_commands(std::vector<std::byte*>& commands) {
         //}
 }
 
+NodeID Node::get_leader() {
+    return leader_id;
+}
+
 void Node::demote() {
     #ifdef DEBUG
     std::cout << "this node (id " << MY_ID << ") was demoted\n";

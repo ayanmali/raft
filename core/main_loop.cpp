@@ -93,6 +93,7 @@ void Node::MainLoop() {
 
                     current_term_ = payload.term;
                     if (state_ != NodeState::Follower) demote();
+                    leader_id = payload.leader_id;
                     leader_contact = true;
 
                     send(AppendEntriesRespPayload{
@@ -144,6 +145,7 @@ void Node::MainLoop() {
                         return {};
                     }
 
+                    leader_id = payload.candidate_id;
                     leader_contact = true;
                     const uint32_t last_log_term = log_.back().term;
                     const uint32_t last_log_idx = log_.size() + snapshot.last_included_idx; // logical index
@@ -174,7 +176,15 @@ void Node::MainLoop() {
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
                     add_peer_if_not_exists(payload.leader_id, payload.fd, el);
 
-                    if (payload.term < current_term_) {
+                    if (payload.term > current_term_) {
+                        current_term_ = payload.term;
+                        demote();
+                    }
+
+                    else if (payload.term < current_term_) {
+                        #ifdef DEBUG
+                        std::cout << "rejecting RV RPC from node " << payload.leader_id << "\n";
+                        #endif
                         send(InstallSnapshotRespPayload{
                             .client_fd = payload.fd,
                             .server_id = MY_ID,
@@ -182,10 +192,12 @@ void Node::MainLoop() {
                         return {};
                     }
 
-                    current_term_ = payload.term;
-                    if (state_ != NodeState::Follower) demote();
+                    leader_id = payload.leader_id;
                     leader_contact = true;
+
                     // TODO: chunk reassembly, install snapshot to state machine.
+                    // ...
+
                     send(InstallSnapshotRespPayload{
                         .client_fd = payload.fd,
                         .server_id = MY_ID,
@@ -290,7 +302,7 @@ void Node::MainLoop() {
                      i.e. if a majority of servers have a matchIndex greater than or equal to index N,
                      and the entry at N is in the current term,
                      then set commitIndex to N
-                     --> entries <= commitIndex become committed. TODO: Send confirmation to client
+                     --> entries <= commitIndex become committed.
                      */
                     uint32_t old_commit_idx = commit_index_;
                     bool updated = update_commit_if_quorum();

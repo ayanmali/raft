@@ -67,6 +67,8 @@ public:
     void append_commands(std::vector<int16_t>&);
     void append_commands(std::vector<int32_t>&);
     void append_commands(std::vector<int64_t>&);
+
+    NodeID get_leader();
     // TODO: replace AoS EventLoop w/ SoA pattern
     private:
     Node(NodeInbox&);
@@ -113,6 +115,7 @@ public:
     // TODO
     // FILE*                                                           metadata_fp    = nullptr; // to store currentTerm and votedFor
     FILE*                                                           snapshot_fp    = nullptr;
+    NodeID                                                          leader_id;
     int                                                             voted_for_     = -1;
     uint32_t                                                        current_term_  = 0;
     uint32_t                                                        commit_index_  = 0;     // index of highest log entry known to be committed
