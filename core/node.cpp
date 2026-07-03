@@ -2,9 +2,11 @@
 // Implementation
 // =============================================================================
 
-#include "node.hpp"
+#include "./node.hpp"
+#include "./helpers.hpp"
 #include <csignal>
 #include <random>
+#include <bit>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #ifdef DEBUG
@@ -48,7 +50,17 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
             LOG_FILE_PATH
         ));
     }
-    n->snapshot_fp = ::fopen(SNAPSHOT_FILE_PATH, "a+");
+
+    // TODO: persist current_term_ and voted_for_ on disk
+    // n->metadata_fp = ::fopen(METADATA_FILE_PATH, "a+");
+    // if (n->log_fp == NULL) {
+    //     return UnexpectedF(std::format(
+    //         "Error opening log file with path {}\n",
+    //         LOG_FILE_PATH
+    //     ));
+    // }
+
+    n->snapshot_fp = ::fopen(SNAPSHOT_FILE_PATH, "w+");
     if (n->snapshot_fp == NULL) {
         return UnexpectedF(std::format(
             "Error opening snapshot file with path {}\n",
@@ -151,7 +163,7 @@ void Node::request_votes() {
                 .dest_id = id,
                 .term = current_term_,
                 .candidate_id = MY_ID,
-                .last_log_idx = static_cast<uint32_t>(log_.size() - 1),
+                .last_log_idx = static_cast<uint32_t>(log_.size() + snapshot.last_included_idx),
                 .last_log_term = log_.back().term
             })
         );
@@ -255,7 +267,7 @@ void Node::become_leader() {
     #ifdef DEBUG
     std::cout << "This node (id = " << MY_ID << ") won the election\n";
     #endif
-    const int32_t last_log_idx = static_cast<int32_t>(log_.size() - 1);
+    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size()) + snapshot.last_included_idx; // logical index
     for (int32_t& i : next_indexes_) {
         if (i < 0) continue;
         i = last_log_idx + 1;
@@ -275,8 +287,7 @@ void Node::become_leader() {
     for (auto id : node_ids_) {
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
         // send heartbeat rpc
-        const uint32_t prev_log_idx = static_cast<uint32_t>(log_.size() - 1);
-        const uint32_t prev_log_term = log_[prev_log_idx].term;
+        const uint32_t prev_log_term = log_.back().term;
         el->outbound_inbox.PushOne(
             std::make_unique<RpcMessage>(
                 AppendEntriesReqPayload{
@@ -284,7 +295,7 @@ void Node::become_leader() {
                     id,
                     current_term_,
                     MY_ID,
-                    prev_log_idx,
+                    last_log_idx,
                     prev_log_term,
                     commit_index_
                 }
@@ -349,8 +360,8 @@ bool Node::update_commit_if_quorum() {
     if (kv_max_freq == freqs.end()) return false;
     if (kv_max_freq->second <= node_ids_.size() / 2) return false;
     if (kv_max_freq->first > commit_index_
-        && kv_max_freq->first < log_.size()
-        && log_[kv_max_freq->first].term == current_term_) {
+        && kv_max_freq->first - snapshot.last_included_idx - 1 < log_.size()
+        && log_[kv_max_freq->first - snapshot.last_included_idx - 1].term == current_term_) {
         commit_index_ = kv_max_freq->first;
         return true;
     }
@@ -367,11 +378,59 @@ bool Node::update_commit_if_quorum() {
     for (auto& [match_idx, count] : freqs_vec) {
         if (count <= node_ids_.size() / 2) break;
         if (match_idx > commit_index_
-            && match_idx < log_.size()
-            && log_[match_idx].term == current_term_) {
+            && match_idx - snapshot.last_included_idx - 1 < log_.size()
+            && log_[match_idx - snapshot.last_included_idx - 1].term == current_term_) {
             commit_index_ = match_idx;
             return true;
         }
     }
     return false;
+}
+
+// Nodes periodically write a snapshot consisting of:
+// - last included index
+// - last included term
+// - state machine state
+
+void Node::write_snapshot() {
+    // coalesce previous snapshot + half of all previous log entries in range (last_applied, log_.size() - 1); into one state
+    for (auto it = log_.begin() + 1; it < log_.begin() + (log_.size() / 2); ++it) {
+        apply_entry_to_sm(*it);
+    }
+    snapshot.last_included_idx += (log_.size() / 2) - 1;
+    snapshot.last_included_term = log_[(log_.size() / 2) - 1].term;
+
+    ::fwrite(&snapshot, sizeof(Snapshot), 1, snapshot_fp);
+    ::fflush(snapshot_fp);
+    ::fsync(fileno(snapshot_fp));
+
+    log_.erase(log_.begin() + 1, log_.begin() + (log_.size() / 2));
+    // TODO: clear entries in the log file in the specified range
+}
+
+// update in memory sm_state_ and the snapshot file
+// TODO: this function should be adjustable based on the size of each command and what the raw bytes represent
+void Node::apply_entry_to_sm(const LogEntry& entry) {
+    // get the operation (add, sub, mul, div)
+    int8_t op = bytes_to_int8(entry.data_);
+    int8_t amt1 = bytes_to_int8(entry.data_ + 1);
+    int16_t amt2 = bytes_to_int16(entry.data_ + 2);
+    int32_t amt = static_cast<uint32_t>(amt1) << 16 | static_cast<uint32_t>(amt2);
+    int64_t tmp_state = bytes_to_int64(snapshot.state);
+    switch (op) {
+        case 0:
+            tmp_state += amt;
+            break;
+        case 1:
+            tmp_state -= amt;
+            break;
+        case 2:
+            tmp_state *= amt;
+            break;
+        case 3:
+            tmp_state /= amt;
+            break;
+    }
+    ByteArray tmpa = std::bit_cast<ByteArray<sizeof(snapshot.state)>>(tmp_state);
+    std::memcpy(&snapshot, &tmpa, sizeof(tmpa.bytes));
 }

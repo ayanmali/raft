@@ -49,10 +49,11 @@ void Node::MainLoop() {
                     // reply false if:
                     // term < current_term
                     // log doesn't contain an entry at prev_log_index whose term matches prev_log_term
+                    const size_t log_offset = payload.prev_log_idx - snapshot.last_included_idx - 1;
 
                     if (current_term_ > payload.term
-                    || payload.prev_log_idx >= log_.size()
-                    || log_[payload.prev_log_idx].term != payload.prev_log_term
+                    || log_offset >= log_.size()
+                    || log_[log_offset].term != payload.prev_log_term
                     ) {
                         send(AppendEntriesRespPayload{
                             .entries_len = 0,
@@ -68,11 +69,11 @@ void Node::MainLoop() {
                     // follow it. The scan is bounded by BOTH the number of local
                     // log entries after prev_log_idx and the number of incoming
                     // entries, so neither log_ nor payload.entries is indexed OOB.
-                    const size_t existing_after_prev = log_.size() - payload.prev_log_idx - 1;
+                    const size_t existing_after_prev = log_.size() - log_offset - 1;
                     const size_t scan_limit = std::min(existing_after_prev, payload.entries.size());
                     size_t i = 1;
                     for (; i < scan_limit; ++i) {
-                        const size_t log_idx = payload.prev_log_idx + i + 1;
+                        const size_t log_idx = log_offset + i + 1;
                         if (log_[log_idx].term != payload.entries[i].term) {
                             // conflict: truncate the local log from this index on.
                             log_.erase(log_.begin() + log_idx, log_.end());
@@ -145,7 +146,7 @@ void Node::MainLoop() {
 
                     leader_contact = true;
                     const uint32_t last_log_term = log_.back().term;
-                    const uint32_t last_log_idx = log_.size() - 1;
+                    const uint32_t last_log_idx = log_.size() + snapshot.last_included_idx; // logical index
                     if (payload.last_log_term > last_log_term
                     || (payload.last_log_term == last_log_term
                         && payload.last_log_idx >= last_log_idx))
@@ -228,13 +229,14 @@ void Node::MainLoop() {
                         ));
                     }
                     const uint32_t prev_log_idx = stored_next - 1;
-                    if (prev_log_idx >= log_.size()) {
+                    const size_t prev_log_idx_offset = prev_log_idx - snapshot.last_included_idx - 1;
+                    if (prev_log_idx_offset >= log_.size()) {
                         return UnexpectedF(std::format(
-                            "Failed to process AE reply: prev_log_idx {} out of bounds (log size {})",
-                            prev_log_idx, log_.size()
+                            "Failed to process AE reply: prev_log_idx offset {} out of bounds (log size {})",
+                            prev_log_idx_offset, log_.size()
                         ));
                     }
-                    const uint32_t prev_log_term = log_[prev_log_idx].term;
+                    const uint32_t prev_log_term = log_[prev_log_idx_offset].term;
 
                     /*
                      on fail:
@@ -242,15 +244,16 @@ void Node::MainLoop() {
                     */
                     const uint32_t last_log_idx = log_.size() - 1;
                     const uint32_t next_idx = stored_next;
+                    const size_t next_idx_offset = next_idx - snapshot.last_included_idx - 1;
                     if (payload.success == 0) {
-                        if (last_log_idx < next_idx) {
+                        if (last_log_idx < next_idx_offset) {
                             return UnexpectedF(std::format(
                                 "Failed to process AE reply: failed to retry AE RPC to server id {}; last_log_idx {} is less than decremented next_idx {}",
                                 payload.server_id, last_log_idx, next_idx
                             ));
                         };
 
-                        auto entries_to_append = std::span<LogEntry>(log_.data() + next_idx, log_.size() - next_idx);
+                        auto entries_to_append = std::span<LogEntry>(log_.data() + next_idx_offset, log_.size() - next_idx_offset);
 
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
                         send(AppendEntriesReqPayload{
@@ -292,10 +295,14 @@ void Node::MainLoop() {
                     uint32_t old_commit_idx = commit_index_;
                     bool updated = update_commit_if_quorum();
                     if (!updated) return {};
-                    // TODO: how can this be done in one syscall?
-                    for (int i = old_commit_idx; i < commit_index_; ++i) {
-                        ::fwrite(log_[i].data_, sizeof(log_[i].data_), commit_index_ - old_commit_idx, log_fp);
-                    }
+
+                    auto it = log_.begin() + (old_commit_idx - snapshot.last_included_idx + 1);
+                    ::fwrite(&*it, sizeof(LogEntry), commit_index_ - old_commit_idx, log_fp);
+                    // to ensure crash-safety
+                    ::fflush(log_fp);
+                    ::fsync(fileno(log_fp));
+
+                    // TODO: notify client that this entry/entries were committed
 
                 }
 
@@ -374,10 +381,11 @@ void Node::MainLoop() {
                     // next_idx < log_.size() to avoid uint underflow on size 0.
                     auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
                     const uint32_t prev_log_idx = next_idx - 1;
-                    const uint32_t prev_log_term = log_[prev_log_idx].term;
-
-                    auto s = next_idx < log_.size()
-                    ? std::span<LogEntry>(log_.data() + next_idx, log_.size() - next_idx)
+                    const size_t prev_log_idx_offset = prev_log_idx - snapshot.last_included_idx - 1;
+                    const uint32_t prev_log_term = log_[prev_log_idx_offset].term;
+                    const size_t next_idx_offset = next_idx - snapshot.last_included_idx - 1;
+                    auto s = next_idx_offset < log_.size()
+                    ? std::span<LogEntry>(log_.begin() + next_idx_offset, log_.end())
                     : std::span<LogEntry>{};
 
                     #ifdef DEBUG
@@ -427,6 +435,12 @@ void Node::MainLoop() {
             (void)ok;
             #endif
         });
+
+        if (log_.size() >= LOG_COMPACT_THRESHOLD) {
+            // TODO: if this is too slow, could try running it in a separate thread
+            // std::jthread ws(&Node::write_snapshot, this);
+            write_snapshot();
+        }
 
         if (state_ == NodeState::Leader) continue;
 

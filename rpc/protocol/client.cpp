@@ -36,7 +36,7 @@ std::expected<RpcMessage, const char*> parse_is_req(ByteReader& byte_reader, FD 
     InstallSnapshotReqPayload message;
 
     message.fd = fd;
-    if (!byte_reader.read(message.snapshot)) return Unexpected("failed to parse InstallSnapshot snapshot field");
+    if (!byte_reader.read(message.snapshot_state, sizeof(message.snapshot_state))) return Unexpected("failed to parse InstallSnapshot snapshot field");
     if (!byte_reader.read(message.term)) return Unexpected("failed to parse InstallSnapshot term field");
     if (!byte_reader.read(message.leader_id)) return Unexpected("failed to parse InstallSnapshot leader_id field");
     if (!byte_reader.read(message.last_included_idx)) return Unexpected("failed to parse InstallSnapshot last_included_idx field");

@@ -1,20 +1,31 @@
 #pragma once
 
+#include "../../queues/mpsc.hpp"
 #include "../conns.hpp"
-#include "../../cross_thread.hpp"
 #include "../../errors.hpp"
+#include "../protocol/payloads.hpp"
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <unordered_map>
+#include <memory>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <unordered_map>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 
 constexpr int EPOLL_BATCH = 64; // max # of fds processed per loop iteration
 constexpr int MAX_ATTEMPTS = 10;
+
+constexpr size_t RECV_CHUNK = 4096;
+constexpr size_t INBOX_RING_CAP = 64; // per producer; must be power of 2
+
+// for processing incoming requests/replies
+using NodeInbox = MPSC<std::unique_ptr<RpcMessage>, INBOX_RING_CAP, EVENT_LOOP_THREADS>;
+
+struct ReplyHandlerVisitor;
+struct RequestHandlerVisitor;
 
 /*
 One event loop runs on one thread.

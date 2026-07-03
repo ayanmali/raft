@@ -182,7 +182,6 @@ void VecByteWriter::serialize(const RequestVoteReqPayload& payload) {
 void VecByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
     auto msg_size               = htonl(payload.size() + sizeof(uint8_t));
     auto net_id                 = IS_RPC_ID;
-    auto net_snapshot_len       = htonll(payload.snapshot.size());
     auto net_term               = htonl(payload.term);
     auto net_leader_id          = htonl(payload.leader_id);
     auto net_last_included_idx  = htonl(payload.last_included_idx);
@@ -199,11 +198,8 @@ void VecByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
     std::memcpy(vec.data() + ptr, &net_id, sizeof(net_id));
     ptr += sizeof(net_id);
 
-    std::memcpy(vec.data() + ptr, &net_snapshot_len, sizeof(net_snapshot_len));
-    ptr += sizeof(net_snapshot_len);
-
-    std::memcpy(vec.data() + ptr, payload.snapshot.data(), payload.snapshot.size());
-    ptr += payload.snapshot.size();
+    std::memcpy(vec.data() + ptr, payload.snapshot_state, sizeof(payload.snapshot_state));
+    ptr += sizeof(payload.snapshot_state);
 
     std::memcpy(vec.data() + ptr, &net_term, sizeof(net_term));
     ptr += sizeof(net_term);

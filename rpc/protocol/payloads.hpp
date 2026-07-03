@@ -118,7 +118,7 @@ struct RequestVoteRespPayload {
 };
 
 struct InstallSnapshotReqPayload {
-    std::vector<std::byte> snapshot;
+    std::byte snapshot_state[SM_STATE_SIZE];
     FD fd; // populated by the event loop on client read; not serialized across network
     NodeID dest_id; // for routing purposes only; populated by the event loop
     uint32_t term;
@@ -153,7 +153,7 @@ struct InstallSnapshotReqPayload {
     InstallSnapshotReqPayload() {};
 
     auto size() const {
-      auto s = snapshot.size() + sizeof(uint64_t) + sizeof(term) + sizeof(leader_id) + sizeof(last_included_idx) + sizeof(last_included_term) + sizeof(offset) + sizeof(done);
+      auto s = sizeof(snapshot_state) + sizeof(term) + sizeof(leader_id) + sizeof(last_included_idx) + sizeof(last_included_term) + sizeof(offset) + sizeof(done);
       return s;
     };
 

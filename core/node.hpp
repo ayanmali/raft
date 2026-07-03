@@ -37,6 +37,7 @@ Persistence:
 #include <chrono>
 #include <csignal>
 #include <cstddef>
+#include <cstdint>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -49,7 +50,6 @@ Persistence:
 
 struct Node {
 public:
-    //Node(NodeInbox&);
     static std::expected<std::unique_ptr<Node>, std::string> CreateNode(NodeInbox&);
     ~Node();
 
@@ -64,34 +64,12 @@ public:
     void MainLoop();
 
     void append_commands(std::vector<std::byte*>&);
-
-    // Raft leadership transitions. Both must run on an event-loop thread
-    // (i.e. as part of a state-machine reaction to an inbound RPC, reply,
-    // or timer fire) so g_loop_producer_id is set and the Enqueue* path
-    // routes correctly. Snapshot the decision under state_mu_ in the
-    // caller, release it, and then call these.
-    //
-    // Each peer's heartbeat timer is armed on the loop that owns that
-    // peer (peer.id % N), via an inbox-routed control message. The
-    // owning loop performs timerfd_settime; no cross-loop syscalls.
-    // void on_leader_elected();
-    // void on_leader_demoted();
-
-    // Inbound handlers. Locked under state_mu_; called by event loops
-    // when they finish parsing one full request frame from a client.
-
-    // RpcReply handle_request(const RpcRequest& message);
-
-    // AppendEntriesRespPayload     handle_append_entries(const AppendEntriesReqPayload&);
-    // RequestVoteRespPayload       handle_request_vote(const RequestVoteReqPayload&);
-    // InstallSnapshotRespPayload   handle_install_snapshot(const InstallSnapshotReqPayload&);
-
+    void append_commands(std::vector<int16_t>&);
+    void append_commands(std::vector<int32_t>&);
+    void append_commands(std::vector<int64_t>&);
     // TODO: replace AoS EventLoop w/ SoA pattern
     private:
     Node(NodeInbox&);
-    // Outbound RPC entry points. Resolve the owning loop by
-    // peer_id % N and post the request into its inbox. The reply
-    // callback fires on that loop's thread.
     template <typename T>
     void send(T&& payload, std::unique_ptr<EventLoop>& el) {
         el->outbound_inbox.PushOne(
@@ -107,6 +85,10 @@ public:
     void add_peer_if_not_exists(NodeID, FD, std::unique_ptr<EventLoop>&);
     bool update_commit_if_quorum();
 
+    // log compaction/snapshotting
+    void write_snapshot();
+    void apply_entry_to_sm(const LogEntry& entry);
+
     NodeInbox& inbox_;
     std::unordered_set<NodeID>                                      voters_;
     std::vector<LogEntry>                                           log_;
@@ -120,12 +102,19 @@ public:
     std::chrono::steady_clock::time_point                           last_leader_contact_;
     std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
 
+    struct Snapshot {
+        std::byte state[SM_STATE_SIZE];
+        uint32_t last_included_idx                                                 = 0;    // index of highest log entry applied to state machine
+        uint32_t last_included_term                                                = 0;    // term of the log entry at the last included index
+    };
+    Snapshot                                                        snapshot;
     FILE*                                                           log_fp         = nullptr;
+    // TODO
+    // FILE*                                                           metadata_fp    = nullptr; // to store currentTerm and votedFor
     FILE*                                                           snapshot_fp    = nullptr;
     int                                                             voted_for_     = -1;
     uint32_t                                                        current_term_  = 0;
     uint32_t                                                        commit_index_  = 0;     // index of highest log entry known to be committed
-    uint32_t                                                        last_applied_  = 0;     // index of highest log entry applied to state machine
     enum class                                                      NodeState { Follower, Candidate, Leader };
     NodeState                                                       state_         = NodeState::Follower;
     bool                                                            running_       = false;

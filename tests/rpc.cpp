@@ -14,9 +14,9 @@ int main() {
     }
     std::unique_ptr<Node> node = std::move(*n);
     std::jthread t([&node](){
-        std::byte one[CMD_SIZE] = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
-        std::byte two[CMD_SIZE] = {std::byte{0x42}, std::byte{0x69}, std::byte{0x67}, std::byte{0x91}};
-        std::byte three[CMD_SIZE] = {std::byte{0xAB}, std::byte{0xCD}, std::byte{0xEF}};
+        std::byte one[CMD_SIZE] = {std::byte{0x00}, std::byte{0x12}, std::byte{0x34}, std::byte{0x56}};
+        std::byte two[CMD_SIZE] = {std::byte{0x01}, std::byte{0x69}, std::byte{0x67}, std::byte{0x91}};
+        std::byte three[CMD_SIZE] = {std::byte{0x02}, std::byte{0x11}, std::byte{0x22}, std::byte{0x33}};
 
         auto data = std::vector<std::byte*>{
             one,
