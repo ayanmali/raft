@@ -3,6 +3,7 @@
 RPC request/response payload structs.
 */
 #include "../../config.hpp"
+#include "../../snapshot.hpp"
 #include <cstring>
 #include <netinet/in.h>
 #include <vector>
@@ -118,14 +119,12 @@ struct RequestVoteRespPayload {
 };
 
 struct InstallSnapshotReqPayload {
-    std::byte snapshot_state[SM_STATE_SIZE];
+    Snapshot snapshot;
     uint64_t offset;
     FD fd; // populated by the event loop on client read; not serialized across network
     NodeID dest_id; // for routing purposes only; populated by the event loop
     uint32_t term;
     uint32_t leader_id; // 0 is null value
-    uint32_t last_included_idx;
-    uint32_t last_included_term;
     uint8_t done; // non-zero if this is the last chunk
 
     // InstallSnapshotReqPayload(std::vector<std::byte>& snapshot, NodeID node_id, uint32_t term, uint32_t leader_id, uint32_t last_included_idx, uint32_t last_included_term, uint32_t offset, uint8_t done)
@@ -153,7 +152,7 @@ struct InstallSnapshotReqPayload {
     InstallSnapshotReqPayload() {};
 
     auto size() const {
-      auto s = sizeof(snapshot_state) + sizeof(term) + sizeof(leader_id) + sizeof(last_included_idx) + sizeof(last_included_term) + sizeof(offset) + sizeof(done);
+      auto s = sizeof(snapshot) + sizeof(term) + sizeof(leader_id) + sizeof(offset) + sizeof(done);
       return s;
     };
 

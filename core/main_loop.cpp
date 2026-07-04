@@ -1,5 +1,6 @@
 #include "./node.hpp"
 #include <algorithm>
+#include <cstdio>
 #ifdef DEBUG
 #include <iostream>
 #include <chrono>
@@ -198,8 +199,8 @@ void Node::MainLoop() {
                     // TODO: chunk reassembly, install snapshot to state machine.
                     // ...
                     // write data into snapshot file at given offset
-                    // ::rewind(snapshot_fp);
-                    // ::fwrite(snapshot_fp);
+                    ::freopen(SNAPSHOT_FILE_PATH, "w+", snapshot_fp);
+                    ::fwrite(&payload.snapshot, sizeof(Snapshot), 1, snapshot_fp);
                     if (payload.done == 0) return {};
                     //
                 }

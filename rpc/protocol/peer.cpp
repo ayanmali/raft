@@ -182,11 +182,11 @@ void VecByteWriter::serialize(const RequestVoteReqPayload& payload) {
 void VecByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
     auto msg_size               = htonl(payload.size() + sizeof(uint8_t));
     auto net_id                 = IS_RPC_ID;
+    auto net_last_included_idx  = htonl(payload.snapshot.last_included_idx);
+    auto net_last_included_term = htonl(payload.snapshot.last_included_term);
     auto net_offset             = htonll(payload.offset);
     auto net_term               = htonl(payload.term);
     auto net_leader_id          = htonl(payload.leader_id);
-    auto net_last_included_idx  = htonl(payload.last_included_idx);
-    auto net_last_included_term = htonl(payload.last_included_term);
     auto net_done               = payload.done;
 
     vec.resize(offset + payload.size() + sizeof(msg_size) + sizeof(net_id));
@@ -198,8 +198,14 @@ void VecByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
     std::memcpy(vec.data() + ptr, &net_id, sizeof(net_id));
     ptr += sizeof(net_id);
 
-    std::memcpy(vec.data() + ptr, payload.snapshot_state, sizeof(payload.snapshot_state));
-    ptr += sizeof(payload.snapshot_state);
+    std::memcpy(vec.data() + ptr, payload.snapshot.state, sizeof(payload.snapshot.state));
+    ptr += sizeof(payload.snapshot.state);
+
+    std::memcpy(vec.data() + ptr, &net_last_included_idx, sizeof(net_last_included_idx));
+    ptr += sizeof(net_last_included_idx);
+
+    std::memcpy(vec.data() + ptr, &net_last_included_term, sizeof(net_last_included_term));
+    ptr += sizeof(net_last_included_term);
 
     std::memcpy(vec.data() + ptr, &net_offset, sizeof(net_offset));
     ptr += sizeof(net_offset);
@@ -209,12 +215,6 @@ void VecByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
 
     std::memcpy(vec.data() + ptr, &net_leader_id, sizeof(net_leader_id));
     ptr += sizeof(net_leader_id);
-
-    std::memcpy(vec.data() + ptr, &net_last_included_idx, sizeof(net_last_included_idx));
-    ptr += sizeof(net_last_included_idx);
-
-    std::memcpy(vec.data() + ptr, &net_last_included_term, sizeof(net_last_included_term));
-    ptr += sizeof(net_last_included_term);
 
     std::memcpy(vec.data() + ptr, &net_done, sizeof(net_done));
 

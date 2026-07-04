@@ -34,6 +34,7 @@ Persistence:
 #include "../config.hpp"
 #include "../rpc/event_loop/event_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
+#include "../snapshot.hpp"
 #include <chrono>
 #include <csignal>
 #include <cstddef>
@@ -104,12 +105,6 @@ public:
 
     std::chrono::steady_clock::time_point                           last_leader_contact_;
     std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
-
-    struct Snapshot {
-        std::byte state[SM_STATE_SIZE];
-        uint32_t last_included_idx                                                 = 0;    // index of highest log entry applied to state machine
-        uint32_t last_included_term                                                = 0;    // term of the log entry at the last included index
-    };
     Snapshot                                                        snapshot;
     FILE*                                                           log_fp         = nullptr;
     // TODO
