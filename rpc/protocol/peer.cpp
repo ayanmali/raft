@@ -182,8 +182,8 @@ void VecByteWriter::serialize(const RequestVoteReqPayload& payload) {
 void VecByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
     auto msg_size               = htonl(payload.size() + sizeof(uint8_t));
     auto net_id                 = IS_RPC_ID;
-    auto net_last_included_idx  = htonl(payload.snapshot.last_included_idx);
-    auto net_last_included_term = htonl(payload.snapshot.last_included_term);
+    auto net_last_included_idx  = htonl(payload.last_included_idx);
+    auto net_last_included_term = htonl(payload.last_included_term);
     auto net_offset             = htonll(payload.offset);
     auto net_term               = htonl(payload.term);
     auto net_leader_id          = htonl(payload.leader_id);
@@ -198,8 +198,8 @@ void VecByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
     std::memcpy(vec.data() + ptr, &net_id, sizeof(net_id));
     ptr += sizeof(net_id);
 
-    std::memcpy(vec.data() + ptr, payload.snapshot.state, sizeof(payload.snapshot.state));
-    ptr += sizeof(payload.snapshot.state);
+    std::memcpy(vec.data() + ptr, payload.partial_state, sizeof(payload.partial_state));
+    ptr += sizeof(payload.partial_state);
 
     std::memcpy(vec.data() + ptr, &net_last_included_idx, sizeof(net_last_included_idx));
     ptr += sizeof(net_last_included_idx);

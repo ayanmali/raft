@@ -34,7 +34,7 @@ Persistence:
 #include "../config.hpp"
 #include "../rpc/event_loop/event_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
-#include "../snapshot.hpp"
+#include "./snapshot.hpp"
 #include <chrono>
 #include <csignal>
 #include <cstddef>

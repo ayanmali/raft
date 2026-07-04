@@ -200,7 +200,7 @@ void Node::MainLoop() {
                     // ...
                     // write data into snapshot file at given offset
                     ::freopen(SNAPSHOT_FILE_PATH, "w+", snapshot_fp);
-                    ::fwrite(&payload.snapshot, sizeof(Snapshot), 1, snapshot_fp);
+                    ::fwrite(&payload.partial_state, sizeof(Snapshot), 1, snapshot_fp);
                     if (payload.done == 0) return {};
                     //
                 }

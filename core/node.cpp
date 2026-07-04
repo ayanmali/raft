@@ -424,7 +424,7 @@ void Node::apply_entry_to_sm(const LogEntry& entry) {
     int8_t amt1 = bytes_to_int8(entry.data_ + 1);
     int16_t amt2 = bytes_to_int16(entry.data_ + 2);
     int32_t amt = static_cast<uint32_t>(amt1) << 16 | static_cast<uint32_t>(amt2);
-    int64_t tmp_state = bytes_to_int64(snapshot.state);
+    int64_t tmp_state = bytes_to_int64(snapshot.state->data());
     switch (op) {
         case 0:
             tmp_state += amt;
@@ -439,8 +439,8 @@ void Node::apply_entry_to_sm(const LogEntry& entry) {
             tmp_state /= amt;
             break;
     }
-    ByteArray tmpa = std::bit_cast<ByteArray<SM_STATE_SIZE>>(tmp_state);
-    std::memcpy(&snapshot.state, &tmpa.bytes, sizeof(tmpa.bytes));
+    SMStateBytes tmpa = std::bit_cast<SMStateBytes>(tmp_state);
+    *snapshot.state = std::move(tmpa);
 }
 
 void Node::recover() {
