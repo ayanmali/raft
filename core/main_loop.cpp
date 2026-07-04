@@ -168,7 +168,6 @@ void Node::MainLoop() {
                     return {};
                 }
 
-                // TODO
                 else if constexpr (std::is_same_v<T, InstallSnapshotReqPayload>) {
                     #ifdef DEBUG
                     std::cout << "found IS RPC from node " << payload.leader_id << "\n";
@@ -176,32 +175,33 @@ void Node::MainLoop() {
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
                     add_peer_if_not_exists(payload.leader_id, payload.fd, el);
 
-                    if (payload.term > current_term_) {
+                    if (payload.term < current_term_) {
+                        #ifdef DEBUG
+                        std::cout << "rejecting RV RPC from node " << payload.leader_id << "\n";
+                        #endif
+                        return {};
+                    }
+
+                    else if (payload.term > current_term_) {
                         current_term_ = payload.term;
                         demote();
                     }
 
-                    else if (payload.term < current_term_) {
-                        #ifdef DEBUG
-                        std::cout << "rejecting RV RPC from node " << payload.leader_id << "\n";
-                        #endif
-                        send(InstallSnapshotRespPayload{
-                            .client_fd = payload.fd,
-                            .server_id = MY_ID,
-                            .term = current_term_}, el);
-                        return {};
-                    }
+                    send(InstallSnapshotRespPayload{
+                        .client_fd = payload.fd,
+                        .server_id = MY_ID,
+                        .term = current_term_}, el);
 
                     leader_id = payload.leader_id;
                     leader_contact = true;
 
                     // TODO: chunk reassembly, install snapshot to state machine.
                     // ...
-
-                    send(InstallSnapshotRespPayload{
-                        .client_fd = payload.fd,
-                        .server_id = MY_ID,
-                        .term = current_term_}, el);
+                    // write data into snapshot file at given offset
+                    // ::rewind(snapshot_fp);
+                    // ::fwrite(snapshot_fp);
+                    if (payload.done == 0) return {};
+                    //
                 }
 
                 else if constexpr (std::is_same_v<T, AppendEntriesRespPayload>) {
@@ -305,15 +305,16 @@ void Node::MainLoop() {
                      --> entries <= commitIndex become committed.
                      */
                     uint32_t old_commit_idx = commit_index_;
-                    bool updated = update_commit_if_quorum();
-                    if (!updated) return {};
+                    uint32_t new_commit_idx = compute_new_commit_idx();
+                    if (new_commit_idx == old_commit_idx) return {};
 
-                    auto it = log_.begin() + (old_commit_idx - snapshot.last_included_idx + 1);
-                    ::fwrite(&*it, sizeof(LogEntry), commit_index_ - old_commit_idx, log_fp);
+                    auto it = log_.begin() + (old_commit_idx - snapshot.last_included_idx - 1);
+                    ::fwrite(&*it, sizeof(LogEntry), new_commit_idx - old_commit_idx, log_fp);
                     // to ensure crash-safety
                     ::fflush(log_fp);
                     ::fsync(fileno(log_fp));
 
+                    commit_index_ = new_commit_idx;
                     // TODO: notify client that this entry/entries were committed
 
                 }

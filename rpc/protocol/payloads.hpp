@@ -119,13 +119,13 @@ struct RequestVoteRespPayload {
 
 struct InstallSnapshotReqPayload {
     std::byte snapshot_state[SM_STATE_SIZE];
+    uint64_t offset;
     FD fd; // populated by the event loop on client read; not serialized across network
     NodeID dest_id; // for routing purposes only; populated by the event loop
     uint32_t term;
     uint32_t leader_id; // 0 is null value
     uint32_t last_included_idx;
     uint32_t last_included_term;
-    uint32_t offset;
     uint8_t done; // non-zero if this is the last chunk
 
     // InstallSnapshotReqPayload(std::vector<std::byte>& snapshot, NodeID node_id, uint32_t term, uint32_t leader_id, uint32_t last_included_idx, uint32_t last_included_term, uint32_t offset, uint8_t done)

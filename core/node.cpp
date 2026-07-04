@@ -348,10 +348,10 @@ void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLo
     #endif
 }
 
-bool Node::update_commit_if_quorum() {
+uint32_t Node::compute_new_commit_idx() {
     // No peers => no quorum to compute. Guards std::max_element below from
     // dereferencing end() on an empty map.
-    if (node_ids_.empty()) return false;
+    if (node_ids_.empty()) return commit_index_;
 
     auto freqs = std::unordered_map<int32_t, uint32_t>(match_indexes_.size());
     for (auto match_idx : match_indexes_) {
@@ -368,8 +368,7 @@ bool Node::update_commit_if_quorum() {
     if (kv_max_freq->first > commit_index_
         && kv_max_freq->first - snapshot.last_included_idx - 1 < log_.size()
         && log_[kv_max_freq->first - snapshot.last_included_idx - 1].term == current_term_) {
-        commit_index_ = kv_max_freq->first;
-        return true;
+        return kv_max_freq->first;
     }
 
     // slow path
@@ -386,11 +385,10 @@ bool Node::update_commit_if_quorum() {
         if (match_idx > commit_index_
             && match_idx - snapshot.last_included_idx - 1 < log_.size()
             && log_[match_idx - snapshot.last_included_idx - 1].term == current_term_) {
-            commit_index_ = match_idx;
-            return true;
+            return match_idx;
         }
     }
-    return false;
+    return commit_index_;
 }
 
 // Nodes periodically write a snapshot consisting of:
@@ -411,8 +409,11 @@ void Node::write_snapshot() {
     ::fsync(fileno(snapshot_fp));
 
     log_.erase(log_.begin() + 1, log_.begin() + (log_.size() / 2));
-    // TODO: clear entries in the log file in the specified range
-    // fseek
+    // clear entries in the log file in the specified range
+    ::freopen(LOG_FILE_PATH, "w+", log_fp); // clears the file and sets the file position to the beginning
+    ::fwrite(log_.data(), sizeof(LogEntry), (log_.size() / 2) - 1, log_fp);
+    ::fflush(log_fp);
+    ::fsync(fileno(log_fp));
 }
 
 // update in memory sm_state_ and the snapshot file
@@ -438,12 +439,12 @@ void Node::apply_entry_to_sm(const LogEntry& entry) {
             tmp_state /= amt;
             break;
     }
-    ByteArray tmpa = std::bit_cast<ByteArray<sizeof(snapshot.state)>>(tmp_state);
-    std::memcpy(&snapshot.state, &tmpa, sizeof(tmpa.bytes));
+    ByteArray tmpa = std::bit_cast<ByteArray<SM_STATE_SIZE>>(tmp_state);
+    std::memcpy(&snapshot.state, &tmpa.bytes, sizeof(tmpa.bytes));
 }
 
 void Node::recover() {
-    // Read existing snapshot
+    // Read existing snapshot if it exists
     FILE* snap_r = ::fopen(SNAPSHOT_FILE_PATH, "r");
     if (snap_r) {
         ::fread(&snapshot, sizeof(snapshot), 1, snap_r);
@@ -458,17 +459,19 @@ void Node::recover() {
     size_t num_entries = static_cast<size_t>(file_size) / sizeof(LogEntry);
     if (num_entries == 0) return;
 
-    //log_.reserve(num_entries);
-    size_t i = 0;
     uint32_t last_term;
-    for (; i < num_entries; ++i) {
-        LogEntry entry;
-        if (::fread(&entry, sizeof(LogEntry), 1, log_fp) != 1) break;
-        apply_entry_to_sm(entry);
-        last_term = entry.term;
+    std::vector<LogEntry> entries;
+    entries.reserve(num_entries);
+    ::fread(entries.data(), sizeof(LogEntry), num_entries, log_fp);
+
+    for (auto& e : entries) {
+        apply_entry_to_sm(e);
+        last_term = e.term;
     }
-    snapshot.last_included_idx = static_cast<uint32_t>(i);
+    snapshot.last_included_idx += static_cast<uint32_t>(num_entries);
     snapshot.last_included_term = last_term;
+
+    ::freopen(LOG_FILE_PATH, "w+", log_fp); // clears the file
 
     // size_t start = 0;
     // if (snapshot.last_included_idx > 0 && snapshot.last_included_idx < log_.size()) {
@@ -482,16 +485,14 @@ void Node::recover() {
     // snapshot.last_included_idx += static_cast<uint32_t>(log_.size() - start);
     // snapshot.last_included_term = log_.back().term;
 
-    ::rewind(snapshot_fp);
+    //::rewind(snapshot_fp); // not needed if this function only runs in the factory function
     ::fwrite(&snapshot, sizeof(Snapshot), 1, snapshot_fp);
     ::fflush(snapshot_fp);
     ::fsync(fileno(snapshot_fp));
 
-    // ::freopen(LOG_FILE_PATH, "w", log_fp); // TODO: mark the file stream as write-only?
-
-    // only needed if this function outside the CreateNode factory function
-    commit_index_ = snapshot.last_included_idx;
-    state_ = NodeState::Follower;
-    voters_.clear();
-    voted_for_ = -1;
+    // only needed if this function is called outside the CreateNode factory function
+    // commit_index_ = snapshot.last_included_idx;
+    // state_ = NodeState::Follower;
+    // voters_.clear();
+    // voted_for_ = -1;
 }

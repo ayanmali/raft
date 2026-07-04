@@ -85,7 +85,7 @@ public:
     void become_leader();
 
     void add_peer_if_not_exists(NodeID, FD, std::unique_ptr<EventLoop>&);
-    bool update_commit_if_quorum();
+    uint32_t compute_new_commit_idx();
 
     // log compaction/snapshotting
     void write_snapshot();
