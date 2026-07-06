@@ -24,6 +24,7 @@ struct LogEntry {
     uint32_t term;
 
     LogEntry() {};
+    LogEntry(uint32_t term) : term(term) {};
     LogEntry(std::byte* buf, size_t size, uint32_t term) : term(term) {
         assert(size <= CMD_SIZE);
         std::memcpy(data_, buf, size);
@@ -118,7 +119,7 @@ struct RequestVoteRespPayload {
 };
 
 struct InstallSnapshotReqPayload {
-    std::byte partial_state[SM_STATE_SIZE]; // IS RPCs send smaller chunks of the state at a time
+    std::byte partial_state[SNAPSHOT_CHUNK_SIZE]; // IS RPCs send smaller chunks of the state at a time
     uint32_t last_included_idx;
     uint32_t last_included_term;
     uint64_t offset;
@@ -150,7 +151,7 @@ struct InstallSnapshotReqPayload {
     //   done(done)
     // {}
 
-    InstallSnapshotReqPayload() {};
+    // InstallSnapshotReqPayload() {};
 
     auto size() const {
       auto s = sizeof(partial_state) + sizeof(last_included_idx) + sizeof(last_included_term) + sizeof(term) + sizeof(leader_id) + sizeof(offset) + sizeof(done);

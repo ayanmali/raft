@@ -34,7 +34,6 @@ Persistence:
 #include "../config.hpp"
 #include "../rpc/event_loop/event_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
-#include "./snapshot.hpp"
 #include <chrono>
 #include <csignal>
 #include <cstddef>
@@ -51,7 +50,7 @@ Persistence:
 
 struct Node {
 public:
-    static std::expected<std::unique_ptr<Node>, std::string> CreateNode(NodeInbox&);
+    static std::expected<std::unique_ptr<Node>, std::string> CreateNode(NodeInbox&, void(*)(const LogEntry&), void(*)(FILE*, FILE*));
     ~Node();
 
     Node(const Node&)            = delete;
@@ -88,33 +87,40 @@ public:
     void add_peer_if_not_exists(NodeID, FD, std::unique_ptr<EventLoop>&);
     uint32_t compute_new_commit_idx();
 
-    // log compaction/snapshotting
-    void write_snapshot();
-    void apply_entry_to_sm(const LogEntry& entry);
-    void recover();
+    /* log compaction/snapshotting/recovery */
+    VoidExpected recover();
 
     NodeInbox& inbox_;
     std::unordered_set<NodeID>                                      voters_;
     std::vector<LogEntry>                                           log_;
     std::vector<NodeID>                                             node_ids_;
-    std::vector<int32_t>                                            next_indexes_  = std::vector<int32_t>(BASE_CLUSTER_SIZE, 1);         // leader-only, one per peer
-    std::vector<int32_t>                                            match_indexes_ = std::vector<int32_t>(BASE_CLUSTER_SIZE, 0);         // leader-only, one per peer
+    std::vector<size_t>                                             chunks_sent              = std::vector<size_t>(BASE_CLUSTER_SIZE, 0); // after every IS RPC send, increment by 1
+    std::vector<int32_t>                                            next_indexes_            = std::vector<int32_t>(BASE_CLUSTER_SIZE, 1);         // leader-only, one per peer
+    std::vector<int32_t>                                            match_indexes_           = std::vector<int32_t>(BASE_CLUSTER_SIZE, 0);         // leader-only, one per peer
 
     std::unique_ptr<EventLoop>                                      loops_[EVENT_LOOP_THREADS];
     std::thread                                                     threads_[EVENT_LOOP_THREADS];
 
     std::chrono::steady_clock::time_point                           last_leader_contact_;
     std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
-    Snapshot                                                        snapshot;
-    FILE*                                                           log_fp         = nullptr;
+    FILE*                                                           log_fp_                  = nullptr;
     // TODO
     // FILE*                                                           metadata_fp    = nullptr; // to store currentTerm and votedFor
-    FILE*                                                           snapshot_fp    = nullptr;
+    FILE*                                                           snapshot_fp_             = nullptr;
+    FILE*                                                           snapshot_tmp_fp_         = nullptr;
+    FILE*                                                           sm_fp_                   = nullptr;
+    void(*apply_entry)(const LogEntry&);
+    void(*create_snapshot)(FILE*, FILE*);
     NodeID                                                          leader_id;
-    int                                                             voted_for_     = -1;
-    uint32_t                                                        current_term_  = 0;
-    uint32_t                                                        commit_index_  = 0;     // index of highest log entry known to be committed
+    int                                                             voted_for_              = -1;
+    uint32_t                                                        last_applied_idx_       = 0;
+    uint32_t                                                        last_applied_term_      = 0;
+    uint32_t                                                        last_applied_idx_ss_    = 0;
+    uint32_t                                                        last_applied_term_ss_   = 0;
+    uint32_t                                                        current_term_           = 0;
+    uint32_t                                                        commit_index_           = 0;     // index of highest log entry known to be committed
     enum class                                                      NodeState { Follower, Candidate, Leader };
-    NodeState                                                       state_         = NodeState::Follower;
-    bool                                                            running_       = false;
+    NodeState                                                       state_                  = NodeState::Follower;
+    bool                                                            running_                = false;
+    bool                                                            installing_snapshot_    = false;
 };

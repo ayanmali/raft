@@ -50,7 +50,7 @@ void Node::MainLoop() {
                     // reply false if:
                     // term < current_term
                     // log doesn't contain an entry at prev_log_index whose term matches prev_log_term
-                    const size_t log_offset = payload.prev_log_idx - snapshot.last_included_idx - 1;
+                    const size_t log_offset = payload.prev_log_idx - last_applied_idx_;
 
                     if (current_term_ > payload.term
                     || log_offset >= log_.size()
@@ -91,6 +91,11 @@ void Node::MainLoop() {
                     if (payload.leader_commit > commit_index_) {
                         commit_index_ = std::min(payload.leader_commit, static_cast<uint32_t>(payload.prev_log_idx + payload.entries.size()));
                     }
+
+                    for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
+                        apply_entry(log_[i - last_applied_idx_]);
+                    }
+                    last_applied_idx_ = commit_index_;
 
                     current_term_ = payload.term;
                     if (state_ != NodeState::Follower) demote();
@@ -149,23 +154,22 @@ void Node::MainLoop() {
                     leader_id = payload.candidate_id;
                     leader_contact = true;
                     const uint32_t last_log_term = log_.back().term;
-                    const uint32_t last_log_idx = log_.size() + snapshot.last_included_idx; // logical index
+                    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size() - 1) + last_applied_idx_; // logical index
                     if (payload.last_log_term > last_log_term
                     || (payload.last_log_term == last_log_term
                         && payload.last_log_idx >= last_log_idx))
                     {
                         voted_for_ = payload.candidate_id;
+                        send(RequestVoteRespPayload{
+                            .client_fd = payload.fd,
+                            .server_id = MY_ID,
+                            .term = current_term_,
+                            .vote_granted = 1}, el);
+                        #ifdef DEBUG
+                        std::cout << "voting for node " << payload.candidate_id << "\n";
+                        #endif
                     }
 
-                    send(RequestVoteRespPayload{
-                        .client_fd = payload.fd,
-                        .server_id = MY_ID,
-                        .term = current_term_,
-                        .vote_granted = 1}, el);
-
-                    #ifdef DEBUG
-                    std::cout << "voting for node " << payload.candidate_id << "\n";
-                    #endif
                     return {};
                 }
 
@@ -176,9 +180,14 @@ void Node::MainLoop() {
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
                     add_peer_if_not_exists(payload.leader_id, payload.fd, el);
 
-                    if (payload.term < current_term_) {
+                    if (payload.term < current_term_ || payload.last_included_idx < last_applied_idx_) {
                         #ifdef DEBUG
-                        std::cout << "rejecting RV RPC from node " << payload.leader_id << "\n";
+                        if (payload.term < current_term_) {
+                            std::cout << "payload.term = " << payload.term << ", current term = " << current_term_ << "; rejecting IS RPC from node " << payload.leader_id << "\n";
+                        }
+                        else {
+                            std::cout << "payload last included index = " << payload.last_included_idx << ", this last included index = " << last_applied_idx_ << "; rejecting IS RPC from node " << payload.leader_id << "\n";
+                        }
                         #endif
                         return {};
                     }
@@ -196,13 +205,51 @@ void Node::MainLoop() {
                     leader_id = payload.leader_id;
                     leader_contact = true;
 
-                    // TODO: chunk reassembly, install snapshot to state machine.
-                    // ...
+                    // TODO: include cluster state in snapshots; replace node_ids_ vector w/ std::bit_set
+
                     // write data into snapshot file at given offset
-                    ::freopen(SNAPSHOT_FILE_PATH, "w+", snapshot_fp);
-                    ::fwrite(&payload.partial_state, sizeof(Snapshot), 1, snapshot_fp);
+                    if (payload.offset == 0) {
+                        snapshot_tmp_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "w+");
+                        if (snapshot_tmp_fp_ == NULL) return Unexpected(
+                            "error in InstallSnapshotRPC handler; failed to open snapshot tmp file\n"
+                        );
+                    }
+                    else ::fseek(snapshot_tmp_fp_, payload.offset, SEEK_SET); // is this needed?
+
+                    ::fwrite(&payload.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_tmp_fp_);
+
                     if (payload.done == 0) return {};
-                    //
+                    // leader sent the last chunk
+                    ::fwrite(&payload.last_included_idx, sizeof(uint32_t), 2, snapshot_tmp_fp_); // add the last_included_idx and last_included_term at the end
+
+                    // commit the temp file to disk
+                    ::fflush(snapshot_tmp_fp_);
+                    ::fsync(fileno(snapshot_tmp_fp_));
+
+                    // atomically replace the snapshot file with the temporary
+                    ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
+
+                    if (payload.last_included_idx - last_applied_idx_ > 0
+                        && payload.last_included_idx - last_applied_idx_ < log_.size()) {
+                            // if the last included entry of the snapshot matches with that of this node's log, discard all entries up to last_included_idx
+                            if (log_[payload.last_included_idx - last_applied_idx_].term == payload.last_included_term) {
+                                log_.erase(log_.begin() + 1, log_.begin() + (payload.last_included_idx - last_applied_idx_) + 1);
+                                ::freopen(LOG_FILE_PATH, "w+", log_fp_);
+                                ::fseek(log_fp_, 1, SEEK_SET);
+                                // copy the log to the file
+                                ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
+                                ::fflush(log_fp_);
+                                ::fsync(fileno(log_fp_));
+                            }
+                            // otherwise, there is a conflict, so this node's log must be cleared entirely.
+                            else {
+                                log_.clear();
+                                ::freopen(LOG_FILE_PATH, "w+", log_fp_);
+                            }
+                    }
+                    last_applied_idx_ = payload.last_included_idx;
+                    last_applied_term_ = payload.last_included_term;
+                    return {};
                 }
 
                 else if constexpr (std::is_same_v<T, AppendEntriesRespPayload>) {
@@ -231,9 +278,6 @@ void Node::MainLoop() {
                         return {};
                     }
 
-                    // Heartbeat reply carries no entries; nothing to update.
-                    if (payload.entries_len == 0) return {};
-
                     const int32_t stored_next = next_indexes_[payload.server_id];
                     if (stored_next < 1) {
                         return UnexpectedF(std::format(
@@ -242,10 +286,10 @@ void Node::MainLoop() {
                         ));
                     }
                     const uint32_t prev_log_idx = stored_next - 1;
-                    const size_t prev_log_idx_offset = prev_log_idx - snapshot.last_included_idx - 1;
+                    const size_t prev_log_idx_offset = prev_log_idx - last_applied_idx_;
                     if (prev_log_idx_offset >= log_.size()) {
                         return UnexpectedF(std::format(
-                            "Failed to process AE reply: prev_log_idx offset {} out of bounds (log size {})",
+                            "Failed to process AE reply: prev_log_idx offset {} out of bounds (log size = {})",
                             prev_log_idx_offset, log_.size()
                         ));
                     }
@@ -255,18 +299,9 @@ void Node::MainLoop() {
                      on fail:
                      decrement nextIndex and retry
                     */
-                    const uint32_t last_log_idx = log_.size() - 1;
-                    const uint32_t next_idx = stored_next;
-                    const size_t next_idx_offset = next_idx - snapshot.last_included_idx - 1;
+                    next_indexes_[payload.server_id] = prev_log_idx;
                     if (payload.success == 0) {
-                        if (last_log_idx < next_idx_offset) {
-                            return UnexpectedF(std::format(
-                                "Failed to process AE reply: failed to retry AE RPC to server id {}; last_log_idx {} is less than decremented next_idx {}",
-                                payload.server_id, last_log_idx, next_idx
-                            ));
-                        };
-
-                        auto entries_to_append = std::span<LogEntry>(log_.data() + next_idx_offset, log_.size() - next_idx_offset);
+                        auto entries_to_append = std::span<LogEntry>(log_.data() + prev_log_idx_offset, log_.size() - prev_log_idx_offset);
 
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
                         send(AppendEntriesReqPayload{
@@ -307,15 +342,20 @@ void Node::MainLoop() {
                      */
                     uint32_t old_commit_idx = commit_index_;
                     uint32_t new_commit_idx = compute_new_commit_idx();
-                    if (new_commit_idx == old_commit_idx) return {};
-
-                    auto it = log_.begin() + (old_commit_idx - snapshot.last_included_idx - 1);
-                    ::fwrite(&*it, sizeof(LogEntry), new_commit_idx - old_commit_idx, log_fp);
-                    // to ensure crash-safety
-                    ::fflush(log_fp);
-                    ::fsync(fileno(log_fp));
-
+                    if (old_commit_idx == new_commit_idx) return {};
                     commit_index_ = new_commit_idx;
+
+                    for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
+                        apply_entry(log_[i - last_applied_idx_]);
+                    }
+                    last_applied_idx_ = commit_index_;
+
+                    // auto it = log_.begin() + (old_commit_idx - (snapshot.last_applied_idx + 1));
+                    // ::fwrite(&*it, sizeof(LogEntry), new_commit_idx - old_commit_idx, log_fp);
+                    // // to ensure crash-safety
+                    // ::fflush(log_fp);
+                    // ::fsync(fileno(log_fp));
+
                     // TODO: notify client that this entry/entries were committed
 
                 }
@@ -363,7 +403,7 @@ void Node::MainLoop() {
                     return {};
                 }
 
-                // TODO
+                // TODO: retry sending a chunk if the leader doesn't get a reply
                 else if constexpr (std::is_same_v<T, InstallSnapshotRespPayload>) {
                     #ifdef DEBUG
                     std::cout << "found IS reply from node " << payload.server_id << "\n";
@@ -373,6 +413,32 @@ void Node::MainLoop() {
                         current_term_ = payload.term;
                         demote();
                     }
+
+                    if (++chunks_sent[payload.server_id] * SNAPSHOT_CHUNK_SIZE < SM_STATE_SIZE) {
+                        auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
+                        InstallSnapshotReqPayload p = InstallSnapshotReqPayload{
+                            .last_included_idx = last_applied_idx_ss_,
+                            .last_included_term = last_applied_term_ss_,
+                            .offset = chunks_sent[payload.server_id] * SNAPSHOT_CHUNK_SIZE,
+                            .dest_id = payload.server_id,
+                            .leader_id = MY_ID,
+                            .done = (chunks_sent[payload.server_id] + 1) * SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE,
+                        };
+                        ::fseek(snapshot_fp_, chunks_sent[payload.server_id] * SNAPSHOT_CHUNK_SIZE, SEEK_SET);
+                        if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
+                            return UnexpectedF(std::format(
+                                "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset {}",
+                                payload.server_id, chunks_sent[payload.server_id] * SNAPSHOT_CHUNK_SIZE
+                            ));
+                        }
+                        send(std::move(p), el);
+                        return {};
+                    };
+
+                    chunks_sent[payload.server_id] = 0;
+                    next_indexes_[payload.server_id] = last_applied_idx_ + 1;
+                    match_indexes_[payload.server_id] = last_applied_idx_;
+                    installing_snapshot_ = false;
                 }
 
                 // heartbeats are sent per follower, not all at once.
@@ -390,14 +456,39 @@ void Node::MainLoop() {
                         ));
                     }
 
+                    auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
+                    if (next_idx < last_applied_idx_) {
+                        installing_snapshot_ = true;
+                        last_applied_idx_ss_ = last_applied_idx_;
+                        last_applied_term_ss_ = last_applied_term_;
+
+                        InstallSnapshotReqPayload p = InstallSnapshotReqPayload{
+                            .last_included_idx = last_applied_idx_ss_,
+                            .last_included_term = last_applied_term_ss_,
+                            .offset = 0,
+                            .dest_id = payload.source_id,
+                            .leader_id = MY_ID,
+                            .done = SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE,
+                        };
+
+                        ::rewind(snapshot_fp_);
+                        if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
+                            return UnexpectedF(std::format(
+                                "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset 0",
+                                payload.source_id
+                            ));
+                        }
+                        send(std::move(p), el);
+                        return {};
+                    }
+
                     // Only send entries when the log actually has some at/after
                     // next_idx. log_.size()-1 >= next_idx is restated as
                     // next_idx < log_.size() to avoid uint underflow on size 0.
-                    auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
                     const uint32_t prev_log_idx = next_idx - 1;
-                    const size_t prev_log_idx_offset = prev_log_idx - snapshot.last_included_idx - 1;
+                    const size_t prev_log_idx_offset = prev_log_idx - last_applied_idx_;
                     const uint32_t prev_log_term = log_[prev_log_idx_offset].term;
-                    const size_t next_idx_offset = next_idx - snapshot.last_included_idx - 1;
+                    const size_t next_idx_offset = next_idx - last_applied_idx_;
                     auto s = next_idx_offset < log_.size()
                     ? std::span<LogEntry>(log_.begin() + next_idx_offset, log_.end())
                     : std::span<LogEntry>{};
@@ -426,6 +517,7 @@ void Node::MainLoop() {
                     node_ids_.erase(it);
                     next_indexes_[payload.source_id] = -1;
                     match_indexes_[payload.source_id] = -1;
+                    chunks_sent[payload.source_id] = -1;
 
                     voters_.erase(payload.source_id);
                     if (voted_for_ == payload.source_id) {
@@ -452,8 +544,15 @@ void Node::MainLoop() {
 
         if (log_.size() >= LOG_COMPACT_THRESHOLD) {
             // TODO: if this is too slow, could try running it in a separate thread
-            // std::jthread ws(&Node::write_snapshot, this);
-            write_snapshot();
+            // discard log entries
+            log_.erase(log_.begin() + 1, log_.end());
+
+            ::freopen(LOG_FILE_PATH, "w+", log_fp_); // clears the file and sets the file position to the beginning
+            ::fflush(log_fp_);
+            ::fsync(fileno(log_fp_));
+
+            // create the snapshot and write to disk
+            create_snapshot(snapshot_fp_, sm_fp_); // caller-defined
         }
 
         if (state_ == NodeState::Leader) continue;
@@ -461,7 +560,6 @@ void Node::MainLoop() {
         last_leader_contact_ = leader_contact
             ? std::chrono::steady_clock::now() // reset only if a leader message came in
             : last_leader_contact_;
-
 
         // poll the election timer
         auto now = std::chrono::steady_clock::now();
