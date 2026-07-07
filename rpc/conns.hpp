@@ -214,7 +214,7 @@ struct PeerConn {
     // and appended). wbuf_offset tracks chunked-send progress.
     std::byte wbuf[REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind)];
 
-    std::byte rbuf_[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)];
+    std::byte rbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)];
 
     // Configuration (set once when the peer subset is wired into the loop).
     const char* ip        = nullptr;

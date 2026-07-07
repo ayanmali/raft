@@ -116,7 +116,7 @@ VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
 
     size_t end = p.rbuf_offset;
     for (;;) {
-        ssize_t n = ::recv(p.fd, p.rbuf_ + end, sizeof(p.rbuf_) - end, 0);
+        ssize_t n = ::recv(p.fd, p.rbuf + end, sizeof(p.rbuf) - end, 0);
         if (n > 0) { end += n; continue; }
         if (n == 0) { return {}; }
         if (errno == EINTR) continue;
@@ -128,12 +128,12 @@ VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
     size_t parsed = 0;
     while (end - parsed >= sizeof(uint32_t)) {
         uint32_t net_len;
-        std::memcpy(&net_len, p.rbuf_ + parsed, sizeof(net_len));
+        std::memcpy(&net_len, p.rbuf + parsed, sizeof(net_len));
         uint32_t msg_len = ntohl(net_len);
         size_t frame_size = msg_len + sizeof(msg_len);
         if (end - parsed < frame_size) break;
 
-        auto result = parse_rbuf(p.rbuf_ + sizeof(msg_len) + parsed, msg_len);
+        auto result = parse_rbuf(p.rbuf + sizeof(msg_len) + parsed, msg_len);
         if (!result) break;
         parsed += frame_size;
 
@@ -143,7 +143,7 @@ VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
         post_node_inbox(std::move(*result));
     }
     p.rbuf_offset = end - parsed;
-    if (p.rbuf_offset > 0) std::memmove(p.rbuf_, p.rbuf_ + parsed, p.rbuf_offset); // overwrite at the beginning of the buffer
+    if (p.rbuf_offset > 0) std::memmove(p.rbuf, p.rbuf + parsed, p.rbuf_offset); // overwrite at the beginning of the buffer
     return {};
 }
 
@@ -227,7 +227,7 @@ void EventLoop::DropPeer(PeerConn& p) {
     p.epoll_events = 0;
     std::memset(p.wbuf, 0, sizeof(p.wbuf));
     p.wbuf_offset = 0;
-    std::memset(p.rbuf_, 0, sizeof(p.rbuf_));
+    std::memset(p.rbuf, 0, sizeof(p.rbuf));
     peer_conns.erase(p.peer_id);
     // send message to node thread to remove this peer from its nodes list
     post_node_inbox(RpcMessage{DropPeerMsg{.source_id = p.peer_id}});
