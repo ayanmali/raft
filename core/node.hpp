@@ -31,6 +31,7 @@ Persistence:
     - nextIndex[]
     - matchIndex[]
 */
+#include "./helpers.hpp"
 #include "../config.hpp"
 #include "../rpc/event_loop/event_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
@@ -93,7 +94,7 @@ public:
     NodeInbox& inbox_;
     std::unordered_set<NodeID>                                      voters_;
     std::vector<LogEntry>                                           log_;
-    std::vector<NodeID>                                             node_ids_;
+    DynamicBitset                                                   node_ids_                = DynamicBitset(BASE_CLUSTER_SIZE);
     std::vector<size_t>                                             chunks_sent              = std::vector<size_t>(BASE_CLUSTER_SIZE, 0); // after every IS RPC send, increment by 1
     std::vector<int32_t>                                            next_indexes_            = std::vector<int32_t>(BASE_CLUSTER_SIZE, 1);         // leader-only, one per peer
     std::vector<int32_t>                                            match_indexes_           = std::vector<int32_t>(BASE_CLUSTER_SIZE, 0);         // leader-only, one per peer

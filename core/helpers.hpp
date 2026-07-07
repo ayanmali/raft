@@ -1,8 +1,9 @@
+#pragma once
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
-template <size_t N>
-struct ByteArray { std::byte bytes[N]; };
+static constexpr int BITS_PER_BYTE = 8;
 
 inline int8_t bytes_to_int8(const std::byte* bytes) {
     uint8_t u = std::to_integer<uint8_t>(bytes[0]);
@@ -40,3 +41,56 @@ inline int64_t bytes_to_int64(const std::byte* bytes) {
 
     return static_cast<int64_t>(u);
 }
+
+struct DynamicBitset {
+    std::vector<uint8_t> v;
+    size_t num_set = 0;
+    DynamicBitset(size_t sz) : v(((sz-1) / BITS_PER_BYTE) + 1) {};
+
+    bool operator[](size_t pos) {
+        size_t idx = pos / BITS_PER_BYTE;
+        return static_cast<bool>((v[idx] >> pos) & 1);
+    };
+
+    void set(size_t pos) {
+        size_t idx = pos / BITS_PER_BYTE;
+        int prev = (v[idx] >> pos) & 1;
+        v[idx] |= (1 << pos);
+        if (!prev) ++num_set;
+    }
+
+    void unset(size_t pos) {
+        size_t idx = pos / BITS_PER_BYTE;
+        int prev = (v[idx] >> pos) & 1;
+        v[idx] |= (1 << pos); // set the bit
+        v[idx] ^= (1 << pos); // flip it
+        if (prev) --num_set;
+    }
+
+    // void flip(size_t pos) {
+    //     size_t idx = pos / 8;
+    //     v[idx] ^= (1 << pos);
+    // }
+
+    void add(size_t id) {
+        size_t idx = id / BITS_PER_BYTE;
+        //if (idx < v.size()) return;
+        if (idx >= v.size()) v.resize(idx + 1);
+
+        int prev = (v[idx] >> id) & 1;
+        v[idx] |= (1 << id);
+        if (!prev) ++num_set;
+    }
+
+    size_t size() {
+        return num_set;
+    }
+
+    size_t total_size() {
+        return v.size() * 8;
+    }
+
+    bool empty() {
+        return num_set == 0;
+    }
+};

@@ -120,11 +120,8 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     setup_peers(init_cluster);
     //static_assert(static_cast<size_t>(MY_ID) < BASE_CLUSTER_SIZE, "This node's ID exceeds the cluster size");
 
-    n->node_ids_.reserve(BASE_CLUSTER_SIZE - 1);
     int i = 0;
     for (; i < MY_ID; ++i) {
-        n->node_ids_.push_back(i);
-
         VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
             ->AddPeer(i, init_cluster[i], SERVER_PORT);
         if (!add_peer_ok) {
@@ -132,11 +129,10 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
                 std::format("error creating node:\n{}\n", add_peer_ok.error())
             );
         }
+        n->node_ids_.set(i);
     }
     ++i;
     for (; i < BASE_CLUSTER_SIZE; ++i) {
-        n->node_ids_.push_back(i);
-
         VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
             ->AddPeer(i, init_cluster[i], SERVER_PORT);
         if (!add_peer_ok) {
@@ -144,6 +140,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
                 std::format("error creating node:\n{}\n", add_peer_ok.error())
             );
         }
+        n->node_ids_.set(i);
     }
 
     n->log_.push_back(LogEntry{});
@@ -176,7 +173,8 @@ void Node::Stop() {
 // ---- outbound --------------------------------------------------------
 
 void Node::request_votes() {
-    for (NodeID id : node_ids_) {
+    for (NodeID id = 0; id < node_ids_.total_size(); ++id) {
+        if (!node_ids_[id] || id == MY_ID) continue;
         #ifdef DEBUG
         std::cout << "sending RV to peer " << id << " on event loop " << static_cast<int>(id & (EVENT_LOOP_THREADS - 1)) << "\n";
         #endif
@@ -293,7 +291,9 @@ void Node::demote() {
     #ifdef DEBUG
     std::cout << "disarming peer timers\n";
     #endif
-    for (auto id : node_ids_) {
+    for (NodeID id = 0; id < node_ids_.total_size(); ++id) {
+        if (!node_ids_[id] || id == MY_ID) continue;
+
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
         el->outbound_inbox.PushOne(
             std::make_unique<RpcMessage>(
@@ -336,7 +336,9 @@ void Node::become_leader() {
     #ifdef DEBUG
     std::cout << "Arming peer timers\n";
     #endif
-    for (auto id : node_ids_) {
+    for (NodeID id = 0; id < node_ids_.size(); ++id) {
+        if (!node_ids_[id] || id == MY_ID) continue;
+
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
         // send heartbeat rpc
         // const uint32_t prev_log_term = log_.back().term;
@@ -372,11 +374,9 @@ void Node::become_leader() {
 }
 
 void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLoop>& el) {
-    if (std::find(node_ids_.begin(), node_ids_.end(), node_id) != node_ids_.end()) {
-        return;
-    }
+    if (node_id < 0 || (node_id < node_ids_.size() && node_ids_[node_id])) return;
+    node_ids_.add(node_id);
 
-    node_ids_.push_back(node_id);
     if (next_indexes_.size() <= node_id) {
         next_indexes_.resize(node_id + 1);
         match_indexes_.resize(node_id + 1);

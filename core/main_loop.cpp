@@ -118,8 +118,9 @@ void Node::MainLoop() {
 
                     #ifdef DEBUG
                     std:: cout << "current cluster: " << MY_ID << ", ";
-                    for (auto n : node_ids_) {
-                        std::cout << n << ", ";
+                    for (NodeID id = 0; id < node_ids_.total_size(); ++id) {
+                        if (!node_ids_[id] || id == MY_ID) continue;
+                        std::cout << id << ", ";
                     }
                     std::cout << "\n";
 
@@ -369,8 +370,9 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found RV reply from node " << payload.server_id << "\n";
                     std:: cout << "current cluster: " << MY_ID << ", ";
-                    for (auto n : node_ids_) {
-                        std::cout << n << ", ";
+                    for (NodeID id = 0; id < node_ids_.total_size(); ++id) {
+                        if (!node_ids_[id] || id == MY_ID) continue;
+                        std::cout << id << ", ";
                     }
                     std::cout << "\n";
 
@@ -521,8 +523,9 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "Received drop peer message - dropping peer " << payload.source_id << "\n";
                     #endif
-                    auto it = std::find(node_ids_.begin(), node_ids_.end(), payload.source_id);
-                    node_ids_.erase(it);
+                    if (payload.source_id < node_ids_.total_size()) {
+                        node_ids_.unset(payload.source_id);
+                    }
                     next_indexes_[payload.source_id] = -1;
                     match_indexes_[payload.source_id] = -1;
                     chunks_sent[payload.source_id] = -1;
