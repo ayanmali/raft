@@ -10,7 +10,8 @@ std::expected<RpcMessage, const char*> parse_ae_req(ByteReader& byte_reader, FD 
     AppendEntriesReqPayload message;
 
     message.fd = fd;
-    if (!byte_reader.read(message.entries)) return Unexpected("failed to parse AppendEntries entries field");
+    if (!byte_reader.read(message.entries_len)) return Unexpected("failed to parse AppendEntries entries_len field");
+    if (!byte_reader.read(message.entries, message.entries_len)) return Unexpected("failed to parse AppendEntries entries field");
     if (!byte_reader.read(message.term)) return Unexpected("failed to parse AppendEntries term field");
     if (!byte_reader.read(message.leader_id)) return Unexpected("failed to parse AppendEntries leader_id field");
     if (!byte_reader.read(message.prev_log_idx)) return Unexpected("failed to parse AppendEntries prev_log_idx field");
@@ -58,14 +59,10 @@ constexpr std::array<ReqParserFunc, IS_REPLY_ID - IS_RPC_ID> make_parser_table()
 
 constexpr auto PARSER_TABLE = make_parser_table();
 
-std::expected<RpcMessage, const char*> parse_rbuf(ClientConn* c) {
-    if (c->rbuf.size() < sizeof(uint32_t)) { return Unexpected("not enough data to read"); } // need to see message size first
-
-    uint32_t message_size;
-    std::memcpy(&message_size, c->rbuf.data(), sizeof(message_size));
-    message_size = ntohl(message_size);
-
-    ByteReader byte_reader(std::span<std::byte>(c->rbuf.begin() + sizeof(message_size), c->rbuf.begin() + sizeof(message_size) + message_size));
+std::expected<RpcMessage, const char*> parse_rbuf(ClientConn* c, uint32_t message_size, size_t end, size_t parsed) {
+    // if (sizeof(c->rbuf_) < sizeof(uint32_t)) { return Unexpected("not enough data to read"); } // need to see message size first
+    // ByteReader byte_reader(std::span<std::byte>(c->rbuf_ + sizeof(message_size), c->rbuf_ + sizeof(message_size) + message_size));
+    ByteReader byte_reader(std::span<std::byte>(c->rbuf + parsed + sizeof(message_size), end - sizeof(message_size) - parsed));
     uint8_t rpc_id;
 
     if (!byte_reader.read(rpc_id)) return Unexpected("failed to parse RPC id");
@@ -73,7 +70,6 @@ std::expected<RpcMessage, const char*> parse_rbuf(ClientConn* c) {
     auto func = PARSER_TABLE[rpc_id];
     if (!func) return Unexpected("invalid RPC id");
 
-    c->rbuf.erase(c->rbuf.begin(), c->rbuf.begin() + sizeof(message_size) + message_size);
     return func(byte_reader, c->fd);
 }
 

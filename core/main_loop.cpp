@@ -71,7 +71,7 @@ void Node::MainLoop() {
                     // log entries after prev_log_idx and the number of incoming
                     // entries, so neither log_ nor payload.entries is indexed OOB.
                     const size_t existing_after_prev = log_.size() - log_offset - 1;
-                    const size_t scan_limit = std::min(existing_after_prev, payload.entries.size());
+                    const size_t scan_limit = std::min(existing_after_prev, payload.entries_len);
                     size_t i = 1;
                     for (; i < scan_limit; ++i) {
                         const size_t log_idx = log_offset + i + 1;
@@ -83,13 +83,12 @@ void Node::MainLoop() {
                     }
 
                     // append any entries not already in the log
-                    log_.reserve(payload.entries.size());
-                    for (auto it = payload.entries.begin() + i; it < payload.entries.end(); ++it) {
-                        log_.emplace_back(it->data_, CMD_SIZE, it->term);
-                    }
+                    size_t start = log_.size();
+                    log_.resize(log_.size() + payload.entries_len);
+                    std::memcpy(&log_[start], payload.entries, payload.entries_len * sizeof(LogEntry));
 
                     if (payload.leader_commit > commit_index_) {
-                        commit_index_ = std::min(payload.leader_commit, static_cast<uint32_t>(payload.prev_log_idx + payload.entries.size()));
+                        commit_index_ = std::min(payload.leader_commit, static_cast<uint32_t>(payload.prev_log_idx + payload.entries_len));
                     }
 
                     for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
@@ -103,7 +102,7 @@ void Node::MainLoop() {
                     leader_contact = true;
 
                     send(AppendEntriesRespPayload{
-                        .entries_len = payload.entries.size(),
+                        .entries_len = payload.entries_len,
                         .client_fd = payload.fd,
                         .server_id = MY_ID,
                         .term = current_term_,
@@ -301,18 +300,24 @@ void Node::MainLoop() {
                     */
                     next_indexes_[payload.server_id] = prev_log_idx;
                     if (payload.success == 0) {
-                        auto entries_to_append = std::span<LogEntry>(log_.data() + prev_log_idx_offset, log_.size() - prev_log_idx_offset);
-
-                        auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
-                        send(AppendEntriesReqPayload{
-                            entries_to_append,
+                        auto p = AppendEntriesReqPayload{
+                            log_.size() - prev_log_idx_offset,
                             payload.server_id,
                             current_term_,
                             MY_ID,
                             prev_log_idx,
                             prev_log_term,
                             commit_index_
-                        }, el);
+                        };
+
+                        #ifdef DEBUG
+                        assert(log_.size() - prev_log_idx_offset <= MAX_ENTRIES);
+                        #endif
+
+                        std::memcpy(p.entries, log_.data() + prev_log_idx_offset, (log_.size() - prev_log_idx_offset) * sizeof(LogEntry));
+
+                        auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
+                        send(std::move(p), el);
 
                         return {};
                     }
@@ -494,18 +499,21 @@ void Node::MainLoop() {
                     : std::span<LogEntry>{};
 
                     #ifdef DEBUG
+                    assert(s.size() <= MAX_ENTRIES);
                     std::cout << "sending " << s.size() << " entries\n";
                     #endif
 
-                    send(AppendEntriesReqPayload{
-                        s,
+                    auto p = AppendEntriesReqPayload{
+                        s.size(),
                         payload.source_id,
                         current_term_,
                         MY_ID,
                         prev_log_idx,
                         prev_log_term,
                         commit_index_
-                    }, el);
+                    };
+                    std::memcpy(p.entries, s.data(), sizeof(LogEntry) * s.size());
+                    send(std::move(p), el);
 
                 }
 

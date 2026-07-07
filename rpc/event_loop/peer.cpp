@@ -133,7 +133,7 @@ VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
         size_t frame_size = msg_len + sizeof(msg_len);
         if (end - parsed < frame_size) break;
 
-        auto result = parse_rbuf(p.rbuf_ + parsed, end - parsed);
+        auto result = parse_rbuf(p.rbuf_ + sizeof(msg_len) + parsed, msg_len);
         if (!result) break;
         parsed += frame_size;
 
@@ -169,10 +169,10 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
         }
     }
 
-    while (p.wbuf_offset < p.wbuf.size()) {
+    while (p.wbuf_offset < sizeof(p.wbuf)) {
         ssize_t n = ::send(p.fd,
-            p.wbuf.data() + p.wbuf_offset,
-            p.wbuf.size() - p.wbuf_offset,
+            p.wbuf + p.wbuf_offset,
+            sizeof(p.wbuf) - p.wbuf_offset,
             MSG_NOSIGNAL);
         if (n > 0) { p.wbuf_offset += static_cast<size_t>(n); continue; }
         if (n < 0 && errno == EINTR) continue;
@@ -184,8 +184,8 @@ VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
     // All bytes sent — but only clear if no new data was appended by
     // post_inflight while we were sending (same-thread interleaving via
     // DrainInbox in the same epoll batch).
-    if (p.wbuf_offset >= p.wbuf.size()) {
-        p.wbuf.clear();
+    if (p.wbuf_offset >= sizeof(p.wbuf)) {
+        std::memset(p.wbuf, 0, sizeof(p.wbuf));
         p.wbuf_offset = 0;
         VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
         if (!modify_ok) return modify_ok;
@@ -225,7 +225,7 @@ void EventLoop::DropPeer(PeerConn& p) {
     }
     p.state        = PeerConn::State::Disconnected;
     p.epoll_events = 0;
-    p.wbuf.clear();
+    std::memset(p.wbuf, 0, sizeof(p.wbuf));
     p.wbuf_offset = 0;
     std::memset(p.rbuf_, 0, sizeof(p.rbuf_));
     peer_conns.erase(p.peer_id);
@@ -288,7 +288,7 @@ VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload) {
     }
     PeerConn& p = it->second;
 
-    VecByteWriter writer{p.wbuf, p.wbuf.size()};
+    BufByteWriter writer{p.wbuf};
     writer.serialize(payload);
 
     if (p.state == PeerConn::State::Connected) {
@@ -316,7 +316,7 @@ VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload) {
     }
     PeerConn& p = it->second;
 
-    VecByteWriter writer{p.wbuf, p.wbuf.size()};
+    BufByteWriter writer{p.wbuf};
     writer.serialize(payload);
 
     if (p.state == PeerConn::State::Connected) {
@@ -344,7 +344,7 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload) {
     }
     PeerConn& p = it->second;
 
-    VecByteWriter writer{p.wbuf, p.wbuf.size()};
+    BufByteWriter writer{p.wbuf};
     writer.serialize(payload);
 
     if (p.state == PeerConn::State::Connected) {

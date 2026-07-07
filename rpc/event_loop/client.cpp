@@ -103,44 +103,45 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
     #ifdef DEBUG
     //std::cout << "client with ip " << c->client_ip_addr << " readable\n";
     #endif
+    size_t end = c->rbuf_offset;
     for (;;) {
-        size_t old = c->rbuf.size();
-        c->rbuf.resize(old + RECV_CHUNK);
-        ssize_t n = ::recv(c->fd, c->rbuf.data() + old, RECV_CHUNK, 0);
-
-        if (n > 0) { c->rbuf.resize(old + n); continue; }
+        ssize_t n = ::recv(c->fd, c->rbuf + end, sizeof(c->rbuf) - end, 0);
+        if (n > 0) { end += n; continue; }
         if (n == 0) {
-            c->rbuf.resize(old);
-            CloseClient(c);
+            //CloseClient(c);
             break;
+            // return {};
         }
         if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) { c->rbuf.resize(old); break; }
-
+        if (errno == EAGAIN || errno == EWOULDBLOCK) { break; }
         CloseClient(c);
         return Unexpected("unexpected error attempting to read client message\n");
     }
 
     // drain as many complete request frames as the buffer can hold
-    while (!c->closing && !c->rbuf.empty()) {
+    size_t parsed = 0;
+    while (!c->closing && end - parsed >= sizeof(uint32_t)) {
         #ifdef DEBUG
         //std::cout << "reading request" << "\n";
         #endif
 
-        size_t before = c->rbuf.size();
+        uint32_t net_len;
+        std::memcpy(&net_len, c->rbuf + parsed, sizeof(net_len));
+        uint32_t msg_len = ntohl(net_len);
+        size_t frame_size = msg_len + sizeof(msg_len);
+        if (end - parsed < frame_size) break;
 
-        auto request_raw = parse_rbuf(c); // erases the read bytes in rbuf
-        if (!request_raw) {
-            //CloseClient(c);
-            return Unexpected(request_raw.error());
-        }
+        auto request_raw = parse_rbuf(c, msg_len, end, parsed); // erases the read bytes in rbuf
+        if (!request_raw) break;
+        parsed += frame_size;
+
         #ifdef DEBUG
         //std::cout << "posting inbound request from client with client_ip_addr " << c->client_ip_addr << " to node inbox\n";
         #endif
         post_node_inbox(std::move(*request_raw));
-
-        if (c->rbuf.size() == before) break; // need more bytes
     }
+    c->rbuf_offset = end - parsed;
+    if (c->rbuf_offset > 0) std::memmove(c->rbuf, c->rbuf + parsed, c->rbuf_offset);
     return {};
 }
 

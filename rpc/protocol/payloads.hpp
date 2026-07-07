@@ -5,9 +5,7 @@ RPC request/response payload structs.
 #include "../../config.hpp"
 #include <cstring>
 #include <netinet/in.h>
-#include <vector>
 #include <variant>
-#include <span>
 
 static constexpr uint8_t AE_RPC_ID = 0;
 static constexpr uint8_t RV_RPC_ID = 1;
@@ -32,7 +30,8 @@ struct LogEntry {
 };
 
 struct AppendEntriesReqPayload {
-    std::vector<LogEntry> entries;
+    LogEntry entries[MAX_ENTRIES];
+    size_t entries_len;
     FD fd; // populated by the event loop on client read; not serialized across network
     NodeID dest_id; // for routing purposes only; not serialized across network
     uint32_t term;
@@ -41,30 +40,18 @@ struct AppendEntriesReqPayload {
     uint32_t prev_log_term;
     uint32_t leader_commit;
 
-    AppendEntriesReqPayload(std::vector<LogEntry>&& entries, NodeID dest_id, uint32_t term, uint32_t leader_id, uint32_t prev_log_idx, uint32_t prev_log_term, uint32_t leader_commit) :
-        entries(std::forward<std::vector<LogEntry>>(entries)),
+    AppendEntriesReqPayload(size_t entries_len, NodeID dest_id, uint32_t term, uint32_t leader_id, uint32_t prev_log_idx, uint32_t prev_log_term, uint32_t leader_commit) :
         dest_id(dest_id),
         term(term),
         leader_id(leader_id),
         prev_log_idx(prev_log_idx),
         prev_log_term(prev_log_term),
-        leader_commit(leader_commit)
-    {};
-
-    AppendEntriesReqPayload(std::span<const LogEntry> entries_span, NodeID dest_id, uint32_t term, uint32_t leader_id, uint32_t prev_log_idx, uint32_t prev_log_term, uint32_t leader_commit) :
-        entries(entries_span.begin(), entries_span.end()),
-        dest_id(dest_id),
-        term(term),
-        leader_id(leader_id),
-        prev_log_idx(prev_log_idx),
-        prev_log_term(prev_log_term),
-        leader_commit(leader_commit)
-    {};
+        leader_commit(leader_commit) {};
 
     AppendEntriesReqPayload() {};
 
-    auto size() const {
-        size_t s = entries.size() * (CMD_SIZE + sizeof(LogEntry::term)) + sizeof(term) + sizeof(leader_id) + sizeof(prev_log_idx) + sizeof(prev_log_term) + sizeof(leader_commit);
+    static constexpr auto size() {
+        size_t s = sizeof(entries) + sizeof(entries_len) + sizeof(term) + sizeof(leader_id) + sizeof(prev_log_idx) + sizeof(prev_log_term) + sizeof(leader_commit);
         return s;
     };
 };
@@ -100,9 +87,9 @@ struct RequestVoteReqPayload {
 
     // RequestVoteReqPayload() {};
 
-    auto size() const {
-      auto s = sizeof(term) + sizeof(candidate_id) + sizeof(last_log_idx) + sizeof(last_log_term);
-      return s;
+    static constexpr auto size() {
+        auto s = sizeof(term) + sizeof(candidate_id) + sizeof(last_log_idx) + sizeof(last_log_term);
+        return s;
     }
 };
 
@@ -113,8 +100,8 @@ struct RequestVoteRespPayload {
     uint8_t vote_granted;
 
     static constexpr auto size() {
-      auto s = sizeof(server_id) + sizeof(term) + sizeof(vote_granted);
-      return s;
+        auto s = sizeof(server_id) + sizeof(term) + sizeof(vote_granted);
+        return s;
     };
 };
 
@@ -153,9 +140,9 @@ struct InstallSnapshotReqPayload {
 
     // InstallSnapshotReqPayload() {};
 
-    auto size() const {
-      auto s = sizeof(partial_state) + sizeof(last_included_idx) + sizeof(last_included_term) + sizeof(term) + sizeof(leader_id) + sizeof(offset) + sizeof(done);
-      return s;
+    static constexpr auto size() {
+        auto s = sizeof(partial_state) + sizeof(last_included_idx) + sizeof(last_included_term) + sizeof(term) + sizeof(leader_id) + sizeof(offset) + sizeof(done);
+        return s;
     };
 
 };

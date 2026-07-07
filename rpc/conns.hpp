@@ -23,10 +23,16 @@ Buffering convention (used by both flavors):
 #include <sys/types.h>
 #include <type_traits>
 #include <utility>
-#include <vector>
 #include <algorithm>
 
 enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot };
+constexpr size_t REQ_SIZE = std::max(
+  {
+      AppendEntriesReqPayload::size(),
+      RequestVoteReqPayload::size(),
+      InstallSnapshotReqPayload::size()
+  }
+);
 constexpr uint32_t RESP_SIZE = static_cast<uint32_t>(
     std::max(
         {
@@ -38,7 +44,8 @@ constexpr uint32_t RESP_SIZE = static_cast<uint32_t>(
 );
 
 struct ClientConn {
-    std::vector<std::byte> rbuf;
+    // std::vector<std::byte> rbuf;
+    std::byte rbuf[REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind)];
     std::byte wbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)];
 
     char client_ip_addr[INET_ADDRSTRLEN];
@@ -47,6 +54,7 @@ struct ClientConn {
 
     size_t wbuf_offset     =  0; // to track how much of the wbuf has been sent (for chunked sends)
     size_t wbuf_size       =  0; // tracks the number of serialized bytes in wbuf to send over the network
+    size_t rbuf_offset     =  0;
     FD fd                  = -1;
     //ClientID client_id     =  0;
     // NodeID id;
@@ -161,11 +169,11 @@ struct ClientConnSlab {
     ClientConn* Acquire() { return slab.Acquire(); }
 
     void Release(ClientConn* c) {
-        c->rbuf.clear();
-        c->rbuf.shrink_to_fit();
+        std::memset(c->rbuf, 0, sizeof(c->rbuf));
         std::memset(c->wbuf, 0, sizeof(c->wbuf));
         c->wbuf_offset = 0;
         c->wbuf_size = 0;
+        c->rbuf_offset = 0;
         std::memset(c->client_ip_addr, 0, sizeof(c->client_ip_addr));
         c->fd = -1;
         //c->client_id = 0;
@@ -204,7 +212,7 @@ Buffering (mirrors ClientConn):
 struct PeerConn {
     // Single write buffer for all outbound data (requests are serialized
     // and appended). wbuf_offset tracks chunked-send progress.
-    std::vector<std::byte> wbuf;
+    std::byte wbuf[REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind)];
 
     std::byte rbuf_[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)];
 
