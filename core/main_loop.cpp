@@ -97,6 +97,7 @@ void Node::MainLoop() {
                     last_applied_idx_ = commit_index_;
 
                     current_term_ = payload.term;
+                    write_current_term();
                     if (state_ != NodeState::Follower) demote();
                     leader_id = payload.leader_id;
                     leader_contact = true;
@@ -136,6 +137,7 @@ void Node::MainLoop() {
 
                     if (payload.term > current_term_) {
                         current_term_ = payload.term;
+                        write_current_term();
                         demote();
                     }
 
@@ -160,6 +162,7 @@ void Node::MainLoop() {
                         && payload.last_log_idx >= last_log_idx))
                     {
                         voted_for_ = payload.candidate_id;
+                        write_voted_for();
                         send(RequestVoteRespPayload{
                             .client_fd = payload.fd,
                             .server_id = MY_ID,
@@ -194,6 +197,7 @@ void Node::MainLoop() {
 
                     else if (payload.term > current_term_) {
                         current_term_ = payload.term;
+                        write_current_term();
                         demote();
                     }
 
@@ -205,11 +209,11 @@ void Node::MainLoop() {
                     leader_id = payload.leader_id;
                     leader_contact = true;
 
-                    // TODO: include cluster state in snapshots; replace node_ids_ vector w/ std::bit_set
+                    // TODO: include cluster state in snapshots
 
                     // write data into snapshot file at given offset
                     if (payload.offset == 0) {
-                        snapshot_tmp_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "w+");
+                        snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
                         if (snapshot_tmp_fp_ == NULL) return Unexpected(
                             "error in InstallSnapshotRPC handler; failed to open snapshot tmp file\n"
                         );
@@ -220,7 +224,8 @@ void Node::MainLoop() {
 
                     if (payload.done == 0) return {};
                     // leader sent the last chunk
-                    ::fwrite(&payload.last_included_idx, sizeof(uint32_t), 2, snapshot_tmp_fp_); // add the last_included_idx and last_included_term at the end
+                    ::fwrite(&payload.last_included_idx, sizeof(uint32_t), 1, snapshot_tmp_fp_);
+                    ::fwrite(&payload.last_included_term, sizeof(uint32_t), 1, snapshot_tmp_fp_);
 
                     // commit the temp file to disk
                     ::fflush(snapshot_tmp_fp_);
@@ -235,7 +240,10 @@ void Node::MainLoop() {
                             if (log_[payload.last_included_idx - last_applied_idx_].term == payload.last_included_term) {
                                 log_.erase(log_.begin() + 1, log_.begin() + (payload.last_included_idx - last_applied_idx_) + 1);
                                 ::freopen(LOG_FILE_PATH, "w+", log_fp_);
-                                ::fseek(log_fp_, 1, SEEK_SET);
+                                ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
+                                ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
+                                ::fseek(log_fp_, sizeof(LogEntry), SEEK_CUR);
+
                                 // copy the log to the file
                                 ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
                                 ::fflush(log_fp_);
@@ -245,6 +253,11 @@ void Node::MainLoop() {
                             else {
                                 log_.clear();
                                 ::freopen(LOG_FILE_PATH, "w+", log_fp_);
+                                ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
+                                ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
+                                ::fseek(log_fp_, sizeof(LogEntry), SEEK_CUR);
+                                ::fflush(log_fp_);
+                                ::fsync(fileno(log_fp_));
                             }
                     }
                     last_applied_idx_ = payload.last_included_idx;
@@ -274,6 +287,7 @@ void Node::MainLoop() {
 
                     if (payload.term > current_term_) {
                         current_term_ = payload.term;
+                        write_current_term();
                         demote();
                         return {};
                     }
@@ -398,6 +412,7 @@ void Node::MainLoop() {
 
                     if (payload.term > current_term_) {
                         current_term_ = payload.term;
+                        write_current_term();
                         demote();
                     }
 
@@ -418,6 +433,7 @@ void Node::MainLoop() {
 
                     if (payload.term > current_term_) {
                         current_term_ = payload.term;
+                        write_current_term();
                         demote();
                     }
 
@@ -533,6 +549,7 @@ void Node::MainLoop() {
                     voters_.erase(payload.source_id);
                     if (voted_for_ == payload.source_id) {
                         voted_for_ = -1;
+                        write_voted_for();
                     }
                 }
 
@@ -554,11 +571,14 @@ void Node::MainLoop() {
         });
 
         if (log_.size() >= LOG_COMPACT_THRESHOLD) {
-            // TODO: if this is too slow, could try running it in a separate thread
+            // TODO: may need to optimize this if its too slow
             // discard log entries
             log_.erase(log_.begin() + 1, log_.end());
 
             ::freopen(LOG_FILE_PATH, "w+", log_fp_); // clears the file and sets the file position to the beginning
+            ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
+            ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
+            ::fseek(log_fp_, sizeof(LogEntry), SEEK_CUR);
             ::fflush(log_fp_);
             ::fsync(fileno(log_fp_));
 
@@ -591,6 +611,7 @@ void Node::MainLoop() {
         state_ = NodeState::Candidate;
         ++current_term_;
         voted_for_ = MY_ID;
+        write_voted_for();
         voters_.insert(MY_ID);
         last_leader_contact_ = std::chrono::steady_clock::now();
 

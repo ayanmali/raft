@@ -15,7 +15,7 @@ int main() {
 
         size_t bytes_read;
         while ((bytes_read = ::fread(buffer, 1, SNAPSHOT_WRITE_BUFFER_SIZE, state_machine_fp)) > 0) {
-              fwrite(buffer, 1, bytes_read, snapshot_fp);
+              ::fwrite(buffer, 1, bytes_read, snapshot_fp);
         }
     };
 

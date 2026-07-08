@@ -54,15 +54,6 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         ));
     }
 
-    // TODO: persist current_term_ and voted_for_ on disk
-    // n->metadata_fp = ::fopen(METADATA_FILE_PATH, "a+");
-    // if (n->log_fp == NULL) {
-    //     return UnexpectedF(std::format(
-    //         "Error opening log file with path {}\n",
-    //         LOG_FILE_PATH
-    //     ));
-    // }
-
     VoidExpected recover_ok = n->recover();
     if (!recover_ok) {
         return UnexpectedF(std::format(
@@ -272,6 +263,7 @@ void Node::demote() {
 
     voters_.clear();
     voted_for_ = -1;
+    write_voted_for();
     NodeState old = state_;
     state_ = NodeState::Follower;
     for (size_t i = 0; i < next_indexes_.size(); ++i) {
@@ -324,6 +316,7 @@ void Node::become_leader() {
 
     voters_.clear();
     voted_for_ = -1;
+    write_voted_for();
     state_ = NodeState::Leader;
 
     // placeholder entry allows this node to assert its leadership to other nodes on the next heartbeat
@@ -486,9 +479,12 @@ VoidExpected Node::recover() {
     ::fseek(log_fp_, 0, SEEK_END);
     long file_size = ::ftell(log_fp_);
     if (file_size <= 0) return Unexpected("failed to recover; log file size is <= 0");
-    ::fseek(log_fp_, 1, SEEK_SET); // 1 past the start
+    ::rewind(log_fp_);
+    ::fread(&current_term_, sizeof(current_term_), 1, log_fp_);
+    ::fread(&voted_for_, sizeof(voted_for_), 1, log_fp_);
+    ::fseek(log_fp_, sizeof(LogEntry), SEEK_CUR); // 1 entry past the first entry
 
-    size_t num_entries = static_cast<size_t>(file_size) / sizeof(LogEntry);
+    size_t num_entries = (static_cast<size_t>(file_size) - sizeof(current_term_) - sizeof(voted_for_) - sizeof(LogEntry)) / sizeof(LogEntry);
     if (num_entries == 0) return {};
 
     log_.resize(log_.size() + num_entries);
@@ -517,4 +513,18 @@ VoidExpected Node::recover() {
     // voters_.clear();
     // voted_for_ = -1;
     return {};
+}
+
+void Node::write_current_term() {
+    ::rewind(log_fp_);
+    ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
+    ::fflush(log_fp_);
+    ::fsync(fileno(log_fp_));
+}
+
+void Node::write_voted_for() {
+    ::fseek(log_fp_, sizeof(current_term_), SEEK_SET);
+    ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
+    ::fflush(log_fp_);
+    ::fsync(fileno(log_fp_));
 }

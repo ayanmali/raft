@@ -91,6 +91,9 @@ public:
     /* log compaction/snapshotting/recovery */
     VoidExpected recover();
 
+    void write_current_term();
+    void write_voted_for();
+
     NodeInbox& inbox_;
     std::unordered_set<NodeID>                                      voters_;
     std::vector<LogEntry>                                           log_;
