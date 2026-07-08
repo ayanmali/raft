@@ -160,6 +160,7 @@ void BufByteWriter::serialize(const RequestVoteReqPayload& payload) {
 void BufByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
     auto msg_size               = htonl(payload.size() + sizeof(uint8_t));
     auto net_id                 = IS_RPC_ID;
+    auto net_cluster_raw_size   = htonll(payload.cluster_raw_size);
     auto net_last_included_idx  = htonl(payload.last_included_idx);
     auto net_last_included_term = htonl(payload.last_included_term);
     auto net_offset             = htonll(payload.offset);
@@ -177,6 +178,12 @@ void BufByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
 
     std::memcpy(buf + ptr, payload.partial_state, sizeof(payload.partial_state));
     ptr += sizeof(payload.partial_state);
+
+    std::memcpy(buf + ptr, &payload.cluster_raw_size, sizeof(payload.cluster_raw_size));
+    ptr += sizeof(payload.cluster_raw_size);
+
+    std::memcpy(buf + ptr, payload.cluster, payload.cluster_raw_size);
+    ptr += payload.cluster_raw_size;
 
     std::memcpy(buf + ptr, &net_last_included_idx, sizeof(net_last_included_idx));
     ptr += sizeof(net_last_included_idx);

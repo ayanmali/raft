@@ -108,8 +108,6 @@ public:
     std::chrono::steady_clock::time_point                           last_leader_contact_;
     std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
     FILE*                                                           log_fp_                  = nullptr;
-    // TODO
-    // FILE*                                                           metadata_fp    = nullptr; // to store currentTerm and votedFor
     FILE*                                                           snapshot_fp_             = nullptr;
     FILE*                                                           snapshot_tmp_fp_         = nullptr;
     FILE*                                                           sm_fp_                   = nullptr;

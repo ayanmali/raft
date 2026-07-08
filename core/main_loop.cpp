@@ -120,7 +120,7 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std:: cout << "current cluster: " << MY_ID << ", ";
                     for (NodeID id = 0; id < node_ids_.total_size(); ++id) {
-                        if (!node_ids_[id] || id == MY_ID) continue;
+                        if (!node_ids_[id]) continue;
                         std::cout << id << ", ";
                     }
                     std::cout << "\n";
@@ -209,29 +209,30 @@ void Node::MainLoop() {
                     leader_id = payload.leader_id;
                     leader_contact = true;
 
-                    // TODO: include cluster state in snapshots
-
                     // write data into snapshot file at given offset
                     if (payload.offset == 0) {
                         snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
                         if (snapshot_tmp_fp_ == NULL) return Unexpected(
                             "error in InstallSnapshotRPC handler; failed to open snapshot tmp file\n"
                         );
+                        ::fseek(snapshot_tmp_fp_, payload.cluster_raw_size + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);
+                        ::fwrite(&payload.cluster, payload.cluster_raw_size, 1, snapshot_tmp_fp_);
+                        ::fwrite(&payload.last_included_idx, sizeof(uint32_t), 1, snapshot_tmp_fp_);
+                        ::fwrite(&payload.last_included_term, sizeof(uint32_t), 1, snapshot_tmp_fp_);
+
                     }
-                    else ::fseek(snapshot_tmp_fp_, payload.offset, SEEK_SET); // is this needed?
 
                     ::fwrite(&payload.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_tmp_fp_);
 
                     if (payload.done == 0) return {};
                     // leader sent the last chunk
-                    ::fwrite(&payload.last_included_idx, sizeof(uint32_t), 1, snapshot_tmp_fp_);
-                    ::fwrite(&payload.last_included_term, sizeof(uint32_t), 1, snapshot_tmp_fp_);
 
                     // commit the temp file to disk
                     ::fflush(snapshot_tmp_fp_);
                     ::fsync(fileno(snapshot_tmp_fp_));
 
                     // atomically replace the snapshot file with the temporary
+                    ::fclose(snapshot_tmp_fp_);
                     ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
 
                     if (payload.last_included_idx - last_applied_idx_ > 0
@@ -260,6 +261,7 @@ void Node::MainLoop() {
                                 ::fsync(fileno(log_fp_));
                             }
                     }
+                    node_ids_.reset(payload.cluster, payload.cluster_raw_size);
                     last_applied_idx_ = payload.last_included_idx;
                     last_applied_term_ = payload.last_included_term;
                     return {};
@@ -385,7 +387,7 @@ void Node::MainLoop() {
                     std::cout << "found RV reply from node " << payload.server_id << "\n";
                     std:: cout << "current cluster: " << MY_ID << ", ";
                     for (NodeID id = 0; id < node_ids_.total_size(); ++id) {
-                        if (!node_ids_[id] || id == MY_ID) continue;
+                        if (!node_ids_[id]) continue;
                         std::cout << id << ", ";
                     }
                     std::cout << "\n";
@@ -440,6 +442,7 @@ void Node::MainLoop() {
                     if (++chunks_sent[payload.server_id] * SNAPSHOT_CHUNK_SIZE < SM_STATE_SIZE) {
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
                         InstallSnapshotReqPayload p = InstallSnapshotReqPayload{
+                            .cluster_raw_size = node_ids_.total_size(),
                             .last_included_idx = last_applied_idx_ss_,
                             .last_included_term = last_applied_term_ss_,
                             .offset = chunks_sent[payload.server_id] * SNAPSHOT_CHUNK_SIZE,
@@ -447,7 +450,15 @@ void Node::MainLoop() {
                             .leader_id = MY_ID,
                             .done = (chunks_sent[payload.server_id] + 1) * SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE,
                         };
-                        ::fseek(snapshot_fp_, chunks_sent[payload.server_id] * SNAPSHOT_CHUNK_SIZE, SEEK_SET);
+                        // adjust the cluster config for the receiving node
+                        node_ids_.set(MY_ID);
+                        node_ids_.unset(payload.server_id);
+                        std::memcpy(p.cluster, node_ids_.data(), node_ids_.total_size());
+                        node_ids_.unset(MY_ID);
+                        node_ids_.set(payload.server_id);
+
+                        // write the snapshot chunk to the payload
+                        ::fseek(snapshot_fp_, node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_) + chunks_sent[payload.server_id] * SNAPSHOT_CHUNK_SIZE, SEEK_SET);
                         if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
                             return UnexpectedF(std::format(
                                 "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset {}",
@@ -459,8 +470,8 @@ void Node::MainLoop() {
                     };
 
                     chunks_sent[payload.server_id] = 0;
-                    next_indexes_[payload.server_id] = last_applied_idx_ + 1;
-                    match_indexes_[payload.server_id] = last_applied_idx_;
+                    next_indexes_[payload.server_id] = last_applied_idx_ + 1; // should this be last_applied_idx_ss_?
+                    match_indexes_[payload.server_id] = last_applied_idx_; // should this be last_applied_idx_ss_?
                     installing_snapshot_ = false;
                 }
 
@@ -486,6 +497,7 @@ void Node::MainLoop() {
                         last_applied_term_ss_ = last_applied_term_;
 
                         InstallSnapshotReqPayload p = InstallSnapshotReqPayload{
+                            .cluster_raw_size = node_ids_.total_size(),
                             .last_included_idx = last_applied_idx_ss_,
                             .last_included_term = last_applied_term_ss_,
                             .offset = 0,
@@ -493,8 +505,15 @@ void Node::MainLoop() {
                             .leader_id = MY_ID,
                             .done = SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE,
                         };
+                        // adjust the cluster config for the receiving node
+                        node_ids_.set(MY_ID);
+                        node_ids_.unset(payload.source_id);
+                        std::memcpy(p.cluster, node_ids_.data(), node_ids_.total_size());
+                        node_ids_.unset(MY_ID);
+                        node_ids_.set(payload.source_id);
 
-                        ::rewind(snapshot_fp_);
+                        // Write the first snapshot chunk to the payload
+                        ::fseek(snapshot_fp_, node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);
                         if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
                             return UnexpectedF(std::format(
                                 "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset 0",
@@ -583,7 +602,20 @@ void Node::MainLoop() {
             ::fsync(fileno(log_fp_));
 
             // create the snapshot and write to disk
-            create_snapshot(snapshot_fp_, sm_fp_); // caller-defined
+            if (snapshot_tmp_fp_ == nullptr) {
+                snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
+            }
+            else {
+                ::freopen(SNAPSHOT_TMP_FILE_PATH, "w+", snapshot_tmp_fp_);
+            }
+            ::fwrite(node_ids_.data(), node_ids_.total_size(), 1, snapshot_tmp_fp_);
+            ::fwrite(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_tmp_fp_);
+            ::fwrite(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_tmp_fp_);
+            create_snapshot(snapshot_tmp_fp_, sm_fp_); // caller-defined
+
+            ::fclose(snapshot_tmp_fp_);
+            snapshot_tmp_fp_ = nullptr;
+            ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
         }
 
         if (state_ == NodeState::Leader) continue;

@@ -165,7 +165,7 @@ void Node::Stop() {
 
 void Node::request_votes() {
     for (NodeID id = 0; id < node_ids_.total_size(); ++id) {
-        if (!node_ids_[id] || id == MY_ID) continue;
+        if (!node_ids_[id]) continue;
         #ifdef DEBUG
         std::cout << "sending RV to peer " << id << " on event loop " << static_cast<int>(id & (EVENT_LOOP_THREADS - 1)) << "\n";
         #endif
@@ -284,7 +284,7 @@ void Node::demote() {
     std::cout << "disarming peer timers\n";
     #endif
     for (NodeID id = 0; id < node_ids_.total_size(); ++id) {
-        if (!node_ids_[id] || id == MY_ID) continue;
+        if (!node_ids_[id]) continue;
 
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
         el->outbound_inbox.PushOne(
@@ -329,8 +329,8 @@ void Node::become_leader() {
     #ifdef DEBUG
     std::cout << "Arming peer timers\n";
     #endif
-    for (NodeID id = 0; id < node_ids_.size(); ++id) {
-        if (!node_ids_[id] || id == MY_ID) continue;
+    for (NodeID id = 0; id < node_ids_.total_size(); ++id) {
+        if (!node_ids_[id]) continue;
 
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
         // send heartbeat rpc
@@ -367,9 +367,10 @@ void Node::become_leader() {
 }
 
 void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLoop>& el) {
-    if (node_id < 0 || (node_id < node_ids_.size() && node_ids_[node_id])) return;
+    if (node_id < 0 || (node_id < node_ids_.total_size() && node_ids_[node_id]) || installing_snapshot_) return;
     node_ids_.add(node_id);
 
+    // todo: can this branch be eliminated?
     if (next_indexes_.size() <= node_id) {
         next_indexes_.resize(node_id + 1);
         match_indexes_.resize(node_id + 1);
@@ -392,7 +393,8 @@ void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLo
 uint32_t Node::compute_new_commit_idx() {
     // No peers => no quorum to compute. Guards std::max_element below from
     // dereferencing end() on an empty map.
-    if (node_ids_.empty()) return commit_index_;
+    // if (node_ids_.empty()) return commit_index_;
+    if (node_ids_.empty()) return log_.size() - 1 + last_applied_idx_;
 
     auto freqs = std::unordered_map<int32_t, uint32_t>(match_indexes_.size());
     for (auto match_idx : match_indexes_) {
@@ -469,7 +471,12 @@ VoidExpected Node::recover() {
     FILE* snap_r = ::fopen(SNAPSHOT_FILE_PATH, "r");
     if (snap_r) {
         // restore the state machine
+        ::fclose(snap_r);
+        ::fclose(snapshot_fp_);
+        snapshot_fp_ = nullptr;
         ::rename(SNAPSHOT_FILE_PATH, STATE_MACHINE_FILE_PATH);
+
+        snap_r = ::fopen(SNAPSHOT_FILE_PATH, "r");
         ::fseek(snap_r, -1 * (sizeof(uint32_t) * 2), SEEK_END);
         ::fread(&last_applied_idx_, sizeof(last_applied_idx_), 1, snap_r);
         ::fread(&last_applied_term_, sizeof(last_applied_term_), 1, snap_r);

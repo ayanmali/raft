@@ -38,6 +38,8 @@ std::expected<RpcMessage, const char*> parse_is_req(ByteReader& byte_reader, FD 
 
     message.fd = fd;
     if (!byte_reader.read(message.partial_state, sizeof(message.partial_state))) return Unexpected("failed to parse InstallSnapshot snapshot field");
+    if (!byte_reader.read(message.cluster_raw_size)) return Unexpected("failed to parse InstallSnapshot cluster_raw_size field");
+    if (!byte_reader.read(message.cluster, message.cluster_raw_size)) return Unexpected("failed to parse InstallSnapshot cluster field");
     if (!byte_reader.read(message.last_included_idx)) return Unexpected("failed to parse InstallSnapshot last_included_idx field");
     if (!byte_reader.read(message.last_included_term)) return Unexpected("failed to parse InstallSnapshot last_included_term field");
     if (!byte_reader.read(message.offset)) return Unexpected("failed to parse InstallSnapshot offset field");

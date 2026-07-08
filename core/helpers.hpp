@@ -1,9 +1,10 @@
 #pragma once
+#include "../config.hpp"
+#include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <vector>
-
-static constexpr int BITS_PER_BYTE = 8;
 
 inline int8_t bytes_to_int8(const std::byte* bytes) {
     uint8_t u = std::to_integer<uint8_t>(bytes[0]);
@@ -43,9 +44,18 @@ inline int64_t bytes_to_int64(const std::byte* bytes) {
 }
 
 struct DynamicBitset {
-    std::vector<uint8_t> v;
+    std::vector<uint8_t> v; // Each node has its own ID set to false
     size_t num_set = 0;
     DynamicBitset(size_t sz) : v(((sz-1) / BITS_PER_BYTE) + 1) {};
+
+    void reset(uint8_t* ptr, size_t size) {
+        v.resize(size);
+        std::memcpy(v.data(), ptr, size);
+        num_set = 0;
+        for (uint8_t i : v) {
+            num_set += std::popcount(i);
+        }
+    }
 
     bool operator[](size_t pos) {
         size_t idx = pos / BITS_PER_BYTE;
@@ -92,5 +102,9 @@ struct DynamicBitset {
 
     bool empty() {
         return num_set == 0;
+    }
+
+    uint8_t* data() {
+        return v.data();
     }
 };

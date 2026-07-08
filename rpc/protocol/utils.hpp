@@ -77,6 +77,13 @@ struct ByteReader {
         return true;
     }
 
+    bool read(uint8_t* out, size_t size) {
+        if (remaining() < size) return false;
+        std::memcpy(out, ptr, size);
+        ptr += size;
+        return true;
+    }
+
     bool read (LogEntry* out, size_t n) {
         if (remaining() < n * sizeof(LogEntry)) return false;
         std::memcpy(out, ptr, n * sizeof(LogEntry));
