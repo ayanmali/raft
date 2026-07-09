@@ -367,10 +367,9 @@ void Node::become_leader() {
 }
 
 void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLoop>& el) {
-    if (node_id < 0 || (node_id < node_ids_.total_size() && node_ids_[node_id]) || installing_snapshot_) return;
+    if (node_id < 0 || (node_id < node_ids_.total_size() && node_ids_[node_id]) || installing_snapshot_id_ >= 0) return;
     node_ids_.add(node_id);
 
-    // todo: can this branch be eliminated?
     if (next_indexes_.size() <= node_id) {
         next_indexes_.resize(node_id + 1);
         match_indexes_.resize(node_id + 1);

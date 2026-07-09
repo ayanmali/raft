@@ -427,7 +427,6 @@ void Node::MainLoop() {
                     return {};
                 }
 
-                // TODO: retry sending a chunk if the leader doesn't get a reply
                 else if constexpr (std::is_same_v<T, InstallSnapshotRespPayload>) {
                     #ifdef DEBUG
                     std::cout << "found IS reply from node " << payload.server_id << "\n";
@@ -441,7 +440,7 @@ void Node::MainLoop() {
 
                     if (++chunks_sent[payload.server_id] * SNAPSHOT_CHUNK_SIZE < SM_STATE_SIZE) {
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
-                        InstallSnapshotReqPayload p = InstallSnapshotReqPayload{
+                        auto p = InstallSnapshotReqPayload{
                             .cluster_raw_size = node_ids_.total_size(),
                             .last_included_idx = last_applied_idx_ss_,
                             .last_included_term = last_applied_term_ss_,
@@ -466,13 +465,14 @@ void Node::MainLoop() {
                             ));
                         }
                         send(std::move(p), el);
+                        last_is_chunk_sent_ = std::chrono::steady_clock::now();
                         return {};
                     };
 
                     chunks_sent[payload.server_id] = 0;
                     next_indexes_[payload.server_id] = last_applied_idx_ + 1; // should this be last_applied_idx_ss_?
                     match_indexes_[payload.server_id] = last_applied_idx_; // should this be last_applied_idx_ss_?
-                    installing_snapshot_ = false;
+                    installing_snapshot_id_ = -1;
                 }
 
                 // heartbeats are sent per follower, not all at once.
@@ -480,6 +480,21 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found heartbeat timeout for node " << payload.source_id << "; sending heartbeat...\n";
                     #endif
+                    auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
+                    if (installing_snapshot_id_ == payload.source_id &&
+                        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_is_chunk_sent_) > IS_RPC_TIMEOUT) {
+                        // retry
+                        auto p = InstallSnapshotReqPayload{
+                            .cluster_raw_size = node_ids_.total_size(),
+                            .last_included_idx = last_applied_idx_ss_,
+                            .last_included_term = last_applied_term_ss_,
+                            .offset = chunks_sent[payload.source_id] * SNAPSHOT_CHUNK_SIZE,
+                            .dest_id = payload.source_id,
+                            .leader_id = MY_ID,
+                            .done = (chunks_sent[payload.source_id] + 1) * SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE,
+                        };
+                        send(std::move(p), el);
+                    }
                     // if last log index >= this follower's nextIndex,
                     // then send AE RPC w/ log entries starting at nextIndex. Otherwise, send term w/ no entries
                     const int32_t next_idx = next_indexes_[payload.source_id];
@@ -490,9 +505,9 @@ void Node::MainLoop() {
                         ));
                     }
 
-                    auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
+
                     if (next_idx < last_applied_idx_) {
-                        installing_snapshot_ = true;
+                        installing_snapshot_id_ = payload.source_id;
                         last_applied_idx_ss_ = last_applied_idx_;
                         last_applied_term_ss_ = last_applied_term_;
 
@@ -521,6 +536,7 @@ void Node::MainLoop() {
                             ));
                         }
                         send(std::move(p), el);
+                        last_is_chunk_sent_ = std::chrono::steady_clock::now();
                         return {};
                     }
 

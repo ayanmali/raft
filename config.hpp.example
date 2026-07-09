@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <new>
 #define DEBUG
 
@@ -12,8 +13,8 @@ static constexpr size_t CACHE_LINE_SIZE = std::hardware_destructive_interference
 
 static constexpr uint EVENT_LOOP_THREADS = 1;
 
-static constexpr uint MIN_ELECTION_TIMEOUT_MS = 150;
-static constexpr uint MAX_ELECTION_TIMEOUT_MS = 300;
+static constexpr int MIN_ELECTION_TIMEOUT_MS = 150;
+static constexpr int MAX_ELECTION_TIMEOUT_MS = 300;
 
 static constexpr int BASE_CLUSTER_SIZE = 4;
 static constexpr size_t MAX_NODES = BASE_CLUSTER_SIZE * 2;
@@ -54,6 +55,8 @@ static constexpr size_t MAX_SERVER_CONNS = 512;
 static constexpr int MAX_ENTRIES = 12; // maximum number of entries to append with any given AE RPC
 
 static constexpr size_t LOG_COMPACT_THRESHOLD = 1024;
+
+static constexpr std::chrono::milliseconds IS_RPC_TIMEOUT = std::chrono::milliseconds(MAX_ELECTION_TIMEOUT_MS * 2);
 
 static constexpr const char* LOG_FILE_PATH = "/raft/persistence/log";
 static constexpr const char* METADATA_FILE_PATH = "/raft/persistence/metadata";

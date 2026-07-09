@@ -106,6 +106,7 @@ public:
     std::thread                                                     threads_[EVENT_LOOP_THREADS];
 
     std::chrono::steady_clock::time_point                           last_leader_contact_;
+    std::chrono::steady_clock::time_point                           last_is_chunk_sent_;
     std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
     FILE*                                                           log_fp_                  = nullptr;
     FILE*                                                           snapshot_fp_             = nullptr;
@@ -114,6 +115,7 @@ public:
     void(*apply_entry)(const LogEntry&);
     void(*create_snapshot)(FILE*, FILE*);
     NodeID                                                          leader_id;
+    int                                                             installing_snapshot_id_ = -1;
     int                                                             voted_for_              = -1;
     uint32_t                                                        last_applied_idx_       = 0;
     uint32_t                                                        last_applied_term_      = 0;
@@ -124,5 +126,4 @@ public:
     enum class                                                      NodeState { Follower, Candidate, Leader };
     NodeState                                                       state_                  = NodeState::Follower;
     bool                                                            running_                = false;
-    bool                                                            installing_snapshot_    = false;
 };
