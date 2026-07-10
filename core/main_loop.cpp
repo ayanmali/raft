@@ -286,6 +286,7 @@ void Node::MainLoop() {
                     }
                     std::cout << "\n";
                     #endif
+                    last_ae_sent_[payload.server_id] = std::chrono::steady_clock::time_point::max();
 
                     if (payload.term > current_term_) {
                         current_term_ = payload.term;
@@ -335,6 +336,7 @@ void Node::MainLoop() {
 
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
                         send(std::move(p), el);
+                        last_ae_sent_[payload.server_id] = std::chrono::steady_clock::now();
 
                         return {};
                     }
@@ -401,6 +403,7 @@ void Node::MainLoop() {
                     }
                     std::cout << "\n";
                     #endif
+                    last_rv_sent_[payload.server_id] = std::chrono::steady_clock::time_point::max();
 
                     if (state_ != NodeState::Candidate
                         || !voters_.insert(payload.server_id).second
@@ -438,16 +441,16 @@ void Node::MainLoop() {
                         demote();
                     }
 
-                    if (++chunks_sent[payload.server_id] * SNAPSHOT_CHUNK_SIZE < SM_STATE_SIZE) {
+                    if (++chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE < SM_STATE_SIZE) {
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
                         auto p = InstallSnapshotReqPayload{
                             .cluster_raw_size = node_ids_.total_size(),
                             .last_included_idx = last_applied_idx_ss_,
                             .last_included_term = last_applied_term_ss_,
-                            .offset = chunks_sent[payload.server_id] * SNAPSHOT_CHUNK_SIZE,
+                            .offset = chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE,
                             .dest_id = payload.server_id,
                             .leader_id = MY_ID,
-                            .done = (chunks_sent[payload.server_id] + 1) * SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE,
+                            .done = (chunks_sent_[payload.server_id] + 1) * SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE,
                         };
                         // adjust the cluster config for the receiving node
                         node_ids_.set(MY_ID);
@@ -457,19 +460,19 @@ void Node::MainLoop() {
                         node_ids_.set(payload.server_id);
 
                         // write the snapshot chunk to the payload
-                        ::fseek(snapshot_fp_, node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_) + chunks_sent[payload.server_id] * SNAPSHOT_CHUNK_SIZE, SEEK_SET);
+                        ::fseek(snapshot_fp_, node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_) + chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE, SEEK_SET);
                         if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
                             return UnexpectedF(std::format(
                                 "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset {}",
-                                payload.server_id, chunks_sent[payload.server_id] * SNAPSHOT_CHUNK_SIZE
+                                payload.server_id, chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE
                             ));
                         }
                         send(std::move(p), el);
-                        last_is_chunk_sent_ = std::chrono::steady_clock::now();
+                        last_is_sent_[payload.server_id] = std::chrono::steady_clock::now();
                         return {};
                     };
 
-                    chunks_sent[payload.server_id] = 0;
+                    chunks_sent_[payload.server_id] = 0;
                     next_indexes_[payload.server_id] = last_applied_idx_ + 1; // should this be last_applied_idx_ss_?
                     match_indexes_[payload.server_id] = last_applied_idx_; // should this be last_applied_idx_ss_?
                     installing_snapshot_id_ = -1;
@@ -481,22 +484,6 @@ void Node::MainLoop() {
                     std::cout << "found heartbeat timeout for node " << payload.source_id << "; sending heartbeat...\n";
                     #endif
                     auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
-                    if (installing_snapshot_id_ == payload.source_id &&
-                        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_is_chunk_sent_) > IS_RPC_TIMEOUT) {
-                        // retry
-                        auto p = InstallSnapshotReqPayload{
-                            .cluster_raw_size = node_ids_.total_size(),
-                            .last_included_idx = last_applied_idx_ss_,
-                            .last_included_term = last_applied_term_ss_,
-                            .offset = chunks_sent[payload.source_id] * SNAPSHOT_CHUNK_SIZE,
-                            .dest_id = payload.source_id,
-                            .leader_id = MY_ID,
-                            .done = (chunks_sent[payload.source_id] + 1) * SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE,
-                        };
-                        send(std::move(p), el);
-                    }
-                    // if last log index >= this follower's nextIndex,
-                    // then send AE RPC w/ log entries starting at nextIndex. Otherwise, send term w/ no entries
                     const int32_t next_idx = next_indexes_[payload.source_id];
                     if (next_idx == 0) {
                         return UnexpectedF(std::format(
@@ -504,70 +491,64 @@ void Node::MainLoop() {
                             payload.source_id
                         ));
                     }
-
+                    if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_ae_sent_[payload.source_id]) > RPC_TIMEOUT) {
+                        // retry
+                        VoidExpectedF send_ae_ok = send_append_entries(next_idx, el, payload.source_id);
+                        if (!send_ae_ok) {
+                            return UnexpectedF(std::format(
+                                "error retrying AE RPC:\n{}\n",
+                                send_ae_ok.error()
+                            ));
+                        }
+                    }
+                    if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_rv_sent_[payload.source_id]) > RPC_TIMEOUT) {
+                        // retry
+                        auto p = RequestVoteReqPayload{
+                            .dest_id = payload.source_id,
+                            .term = current_term_,
+                            .candidate_id = MY_ID,
+                            .last_log_idx = static_cast<uint32_t>(log_.size() - 1 + last_applied_idx_),
+                            .last_log_term = log_.back().term,
+                        };
+                        send(std::move(p), el);
+                        last_rv_sent_[payload.source_id] = std::chrono::steady_clock::now();
+                    }
+                    if (installing_snapshot_id_ == payload.source_id &&
+                        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_is_sent_[payload.source_id]) > RPC_TIMEOUT) {
+                        // retry
+                        VoidExpectedF send_is_ok = send_install_snapshot(el, payload.source_id);
+                        if (!send_is_ok) {
+                            return UnexpectedF(std::format(
+                                "error retrying IS RPC:\n{}\n",
+                                send_is_ok.error()
+                            ));
+                        }
+                        return {};
+                    }
+                    // if last log index >= this follower's nextIndex,
+                    // then send AE RPC w/ log entries starting at nextIndex. Otherwise, send term w/ no entries
 
                     if (next_idx < last_applied_idx_) {
                         installing_snapshot_id_ = payload.source_id;
                         last_applied_idx_ss_ = last_applied_idx_;
                         last_applied_term_ss_ = last_applied_term_;
 
-                        InstallSnapshotReqPayload p = InstallSnapshotReqPayload{
-                            .cluster_raw_size = node_ids_.total_size(),
-                            .last_included_idx = last_applied_idx_ss_,
-                            .last_included_term = last_applied_term_ss_,
-                            .offset = 0,
-                            .dest_id = payload.source_id,
-                            .leader_id = MY_ID,
-                            .done = SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE,
-                        };
-                        // adjust the cluster config for the receiving node
-                        node_ids_.set(MY_ID);
-                        node_ids_.unset(payload.source_id);
-                        std::memcpy(p.cluster, node_ids_.data(), node_ids_.total_size());
-                        node_ids_.unset(MY_ID);
-                        node_ids_.set(payload.source_id);
-
-                        // Write the first snapshot chunk to the payload
-                        ::fseek(snapshot_fp_, node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);
-                        if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
+                        VoidExpectedF send_is_ok = send_install_snapshot(el, payload.source_id);
+                        if (!send_is_ok) {
                             return UnexpectedF(std::format(
-                                "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset 0",
-                                payload.source_id
+                                "error retrying IS RPC:\n{}\n",
+                                send_is_ok.error()
                             ));
                         }
-                        send(std::move(p), el);
-                        last_is_chunk_sent_ = std::chrono::steady_clock::now();
                         return {};
                     }
-
-                    // Only send entries when the log actually has some at/after
-                    // next_idx. log_.size()-1 >= next_idx is restated as
-                    // next_idx < log_.size() to avoid uint underflow on size 0.
-                    const uint32_t prev_log_idx = next_idx - 1;
-                    const size_t prev_log_idx_offset = prev_log_idx - last_applied_idx_;
-                    const uint32_t prev_log_term = log_[prev_log_idx_offset].term;
-                    const size_t next_idx_offset = next_idx - last_applied_idx_;
-                    auto s = next_idx_offset < log_.size()
-                    ? std::span<LogEntry>(log_.begin() + next_idx_offset, log_.end())
-                    : std::span<LogEntry>{};
-
-                    #ifdef DEBUG
-                    assert(s.size() <= MAX_ENTRIES);
-                    std::cout << "sending " << s.size() << " entries\n";
-                    #endif
-
-                    auto p = AppendEntriesReqPayload{
-                        s.size(),
-                        payload.source_id,
-                        current_term_,
-                        MY_ID,
-                        prev_log_idx,
-                        prev_log_term,
-                        commit_index_
-                    };
-                    std::memcpy(p.entries, s.data(), sizeof(LogEntry) * s.size());
-                    send(std::move(p), el);
-
+                    VoidExpectedF send_ae_ok = send_append_entries(next_idx, el, payload.source_id);
+                    if (!send_ae_ok) {
+                        return UnexpectedF(std::format(
+                            "error retrying AE RPC:\n{}\n",
+                            send_ae_ok.error()
+                        ));
+                    }
                 }
 
                 else if constexpr (std::is_same_v<T, DropPeerMsg>) {
@@ -579,7 +560,10 @@ void Node::MainLoop() {
                     }
                     next_indexes_[payload.source_id] = -1;
                     match_indexes_[payload.source_id] = -1;
-                    chunks_sent[payload.source_id] = -1;
+                    chunks_sent_[payload.source_id] = -1;
+                    last_ae_sent_[payload.source_id] = std::chrono::steady_clock::time_point::max();
+                    last_rv_sent_[payload.source_id] = std::chrono::steady_clock::time_point::max();
+                    last_is_sent_[payload.source_id] = std::chrono::steady_clock::time_point::max();
 
                     voters_.erase(payload.source_id);
                     if (voted_for_ == payload.source_id) {

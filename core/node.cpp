@@ -137,7 +137,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     n->log_.push_back(LogEntry{});
     n->next_indexes_[MY_ID] = -1;
     n->match_indexes_[MY_ID] = -1;
-    n->chunks_sent[MY_ID] = -1;
+    n->chunks_sent_[MY_ID] = -1;
     n->voters_.reserve(BASE_CLUSTER_SIZE);
     n->last_leader_contact_ = std::chrono::steady_clock::now();
     return n;
@@ -180,6 +180,7 @@ void Node::request_votes() {
                 .last_log_term = log_.back().term
             })
         );
+        last_rv_sent_[id] = std::chrono::steady_clock::now();
     }
     for (auto& loop : loops_) { loop->Wake(); }
 }
@@ -274,9 +275,9 @@ void Node::demote() {
         if (match_indexes_[i] < 0) continue;
         match_indexes_[i] = 0;
     }
-    for (size_t i = 0; i < chunks_sent.size(); ++i) {
-        if (chunks_sent[i] < 0) continue;
-        chunks_sent[i] = 0;
+    for (size_t i = 0; i < chunks_sent_.size(); ++i) {
+        if (chunks_sent_[i] < 0) continue;
+        chunks_sent_[i] = 0;
     }
 
     if (old != NodeState::Leader) return;
@@ -309,7 +310,7 @@ void Node::become_leader() {
         if (i < 0) continue;
         i = 0;
     }
-    for (size_t& i : chunks_sent) { // is this needed?
+    for (size_t& i : chunks_sent_) { // is this needed?
         if (i < 0) continue;
         i = 0;
     }
@@ -373,11 +374,13 @@ void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLo
     if (next_indexes_.size() <= node_id) {
         next_indexes_.resize(node_id + 1);
         match_indexes_.resize(node_id + 1);
-        chunks_sent.resize(node_id + 1);
+        chunks_sent_.resize(node_id + 1);
+        last_ae_sent_.resize(node_id + 1, std::chrono::steady_clock::time_point::max());
+        last_rv_sent_.resize(node_id + 1, std::chrono::steady_clock::time_point::max());
+        last_is_sent_.resize(node_id + 1, std::chrono::steady_clock::time_point::max());
     }
     next_indexes_[node_id] = 1;
-    match_indexes_[node_id] = 0;
-    chunks_sent[node_id] = 0;
+    // match_indexes_, chunks_sent, last_ae_sent, last_rv_sent_, and last_is_sent_ are default initialized correctly at the corresponding index.
 
     el->outbound_inbox.PushOne(
         std::make_unique<RpcMessage>(
@@ -533,4 +536,66 @@ void Node::write_voted_for() {
     ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
     ::fflush(log_fp_);
     ::fsync(fileno(log_fp_));
+}
+
+VoidExpectedF Node::send_append_entries(uint32_t next_idx, std::unique_ptr<EventLoop>& el, NodeID dest_id) {
+    // Only send entries when the log actually has some at/after
+    // next_idx. log_.size()-1 >= next_idx is restated as
+    // next_idx < log_.size() to avoid uint underflow on size 0.
+    const uint32_t prev_log_idx = next_idx - 1;
+    const size_t prev_log_idx_offset = prev_log_idx - last_applied_idx_;
+    const uint32_t prev_log_term = log_[prev_log_idx_offset].term;
+    const size_t next_idx_offset = next_idx - last_applied_idx_;
+    auto s = next_idx_offset < log_.size()
+    ? std::span<LogEntry>(log_.begin() + next_idx_offset, log_.end())
+    : std::span<LogEntry>{};
+
+    #ifdef DEBUG
+    assert(s.size() <= MAX_ENTRIES);
+    std::cout << "sending " << s.size() << " entries\n";
+    #endif
+
+    auto p = AppendEntriesReqPayload{
+        s.size(),
+        dest_id,
+        current_term_,
+        MY_ID,
+        prev_log_idx,
+        prev_log_term,
+        commit_index_
+    };
+    std::memcpy(p.entries, s.data(), sizeof(LogEntry) * s.size());
+    send(std::move(p), el);
+    last_ae_sent_[dest_id] = std::chrono::steady_clock::now();
+    return {};
+}
+
+VoidExpectedF Node::send_install_snapshot(std::unique_ptr<EventLoop>& el, NodeID dest_id) {
+    auto p = InstallSnapshotReqPayload{
+        .cluster_raw_size = node_ids_.total_size(),
+        .last_included_idx = last_applied_idx_ss_,
+        .last_included_term = last_applied_term_ss_,
+        .offset = chunks_sent_[dest_id] * SNAPSHOT_CHUNK_SIZE,
+        .dest_id = dest_id,
+        .leader_id = MY_ID,
+        .done = (chunks_sent_[dest_id] + 1) * SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE,
+    };
+    // adjust the cluster config for the receiving node
+    node_ids_.set(MY_ID);
+    node_ids_.unset(dest_id);
+    std::memcpy(p.cluster, node_ids_.data(), node_ids_.total_size());
+    node_ids_.unset(MY_ID);
+    node_ids_.set(dest_id);
+
+    // Write the first snapshot chunk to the payload
+    ::fseek(snapshot_fp_, node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);
+    if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
+        return UnexpectedF(std::format(
+            "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset 0",
+            dest_id
+        ));
+    }
+    send(std::move(p), el);
+    last_is_sent_[dest_id] = std::chrono::steady_clock::now();
+    return {};
 }

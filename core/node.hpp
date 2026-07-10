@@ -80,6 +80,8 @@ public:
         );
         el->Wake();
     }
+    VoidExpectedF send_append_entries(uint32_t next_idx, std::unique_ptr<EventLoop>&, NodeID);
+    VoidExpectedF send_install_snapshot(std::unique_ptr<EventLoop>&, NodeID);
     void request_votes();
 
     void demote();
@@ -97,16 +99,18 @@ public:
     NodeInbox& inbox_;
     std::unordered_set<NodeID>                                      voters_;
     std::vector<LogEntry>                                           log_;
-    DynamicBitset                                                   node_ids_                = DynamicBitset(BASE_CLUSTER_SIZE);
-    std::vector<size_t>                                             chunks_sent              = std::vector<size_t>(BASE_CLUSTER_SIZE, 0); // after every IS RPC send, increment by 1
+    std::vector<std::chrono::steady_clock::time_point>              last_ae_sent_            = std::vector<std::chrono::steady_clock::time_point>(BASE_CLUSTER_SIZE, std::chrono::steady_clock::time_point::max());
+    std::vector<std::chrono::steady_clock::time_point>              last_rv_sent_            = std::vector<std::chrono::steady_clock::time_point>(BASE_CLUSTER_SIZE, std::chrono::steady_clock::time_point::max());
+    std::vector<std::chrono::steady_clock::time_point>              last_is_sent_            = std::vector<std::chrono::steady_clock::time_point>(BASE_CLUSTER_SIZE, std::chrono::steady_clock::time_point::max());
+    std::vector<size_t>                                             chunks_sent_             = std::vector<size_t>(BASE_CLUSTER_SIZE, 0); // after every IS RPC send, increment by 1
     std::vector<int32_t>                                            next_indexes_            = std::vector<int32_t>(BASE_CLUSTER_SIZE, 1);         // leader-only, one per peer
     std::vector<int32_t>                                            match_indexes_           = std::vector<int32_t>(BASE_CLUSTER_SIZE, 0);         // leader-only, one per peer
+    DynamicBitset                                                   node_ids_                = DynamicBitset(BASE_CLUSTER_SIZE);
 
     std::unique_ptr<EventLoop>                                      loops_[EVENT_LOOP_THREADS];
     std::thread                                                     threads_[EVENT_LOOP_THREADS];
 
     std::chrono::steady_clock::time_point                           last_leader_contact_;
-    std::chrono::steady_clock::time_point                           last_is_chunk_sent_;
     std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
     FILE*                                                           log_fp_                  = nullptr;
     FILE*                                                           snapshot_fp_             = nullptr;
