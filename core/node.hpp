@@ -95,6 +95,7 @@ public:
 
     void write_current_term();
     void write_voted_for();
+    void flush_files();
 
     NodeInbox& inbox_;
     std::unordered_set<NodeID>                                      voters_;
@@ -111,6 +112,7 @@ public:
     std::thread                                                     threads_[EVENT_LOOP_THREADS];
 
     std::chrono::steady_clock::time_point                           last_leader_contact_;
+    std::chrono::steady_clock::time_point                           last_flush_;
     std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
     FILE*                                                           log_fp_                  = nullptr;
     FILE*                                                           snapshot_fp_             = nullptr;

@@ -56,7 +56,9 @@ static constexpr int MAX_ENTRIES = 12; // maximum number of entries to append wi
 
 static constexpr size_t LOG_COMPACT_THRESHOLD = 1024;
 
-static constexpr std::chrono::milliseconds IS_RPC_TIMEOUT = std::chrono::milliseconds(MAX_ELECTION_TIMEOUT_MS * 2);
+static constexpr std::chrono::milliseconds RPC_TIMEOUT{MAX_ELECTION_TIMEOUT_MS * 3};
+
+static constexpr std::chrono::milliseconds FLUSH_INTERVAL{1500};
 
 static constexpr const char* LOG_FILE_PATH = "/raft/persistence/log";
 static constexpr const char* METADATA_FILE_PATH = "/raft/persistence/metadata";

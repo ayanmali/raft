@@ -247,8 +247,6 @@ void Node::MainLoop() {
 
                                 // copy the log to the file
                                 ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
-                                ::fflush(log_fp_);
-                                ::fsync(fileno(log_fp_));
                             }
                             // otherwise, there is a conflict, so this node's log must be cleared entirely.
                             else {
@@ -257,8 +255,6 @@ void Node::MainLoop() {
                                 ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
                                 ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
                                 ::fseek(log_fp_, sizeof(LogEntry), SEEK_CUR);
-                                ::fflush(log_fp_);
-                                ::fsync(fileno(log_fp_));
                             }
                     }
                     node_ids_.reset(payload.cluster, payload.cluster_raw_size);
@@ -589,6 +585,12 @@ void Node::MainLoop() {
             #endif
         });
 
+        // Periodic flush of log, snapshot, and state machine files
+        auto flush_now = std::chrono::steady_clock::now();
+        if (flush_now - last_flush_ >= FLUSH_INTERVAL) {
+            flush_files();
+        }
+
         if (log_.size() >= LOG_COMPACT_THRESHOLD) {
             // TODO: may need to optimize this if its too slow
             // discard log entries
@@ -598,8 +600,6 @@ void Node::MainLoop() {
             ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
             ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
             ::fseek(log_fp_, sizeof(LogEntry), SEEK_CUR);
-            ::fflush(log_fp_);
-            ::fsync(fileno(log_fp_));
 
             // create the snapshot and write to disk
             if (snapshot_tmp_fp_ == nullptr) {

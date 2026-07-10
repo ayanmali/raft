@@ -101,6 +101,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     }
 
     n->running_ = true;
+    n->last_flush_ = std::chrono::steady_clock::now();
 
     // init_peers is identical on every node in the cluster, so a peer's
     // index in this array IS its globally consistent NodeID. Each node lists
@@ -211,8 +212,6 @@ void Node::append_commands(std::vector<std::byte*>& commands) {
     }
     // store log entries on disk
     ::fwrite(&log_.back() - commands.size(), sizeof(LogEntry), commands.size(), log_fp_);
-    ::fflush(log_fp_);
-    ::fsync(fileno(log_fp_));
 
     #ifdef DEBUG
     std::cout << "New log:\n";
@@ -324,8 +323,6 @@ void Node::become_leader() {
     log_.push_back(LogEntry(current_term_));
     ::fseek(log_fp_, 0, SEEK_END);
     ::fwrite(&*(log_.end() - 2), sizeof(LogEntry), 1, log_fp_);
-    ::fflush(log_fp_);
-    ::fsync(fileno(log_fp_));
 
     #ifdef DEBUG
     std::cout << "Arming peer timers\n";
@@ -527,15 +524,18 @@ VoidExpected Node::recover() {
 void Node::write_current_term() {
     ::rewind(log_fp_);
     ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
-    ::fflush(log_fp_);
-    ::fsync(fileno(log_fp_));
 }
 
 void Node::write_voted_for() {
     ::fseek(log_fp_, sizeof(current_term_), SEEK_SET);
     ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
-    ::fflush(log_fp_);
-    ::fsync(fileno(log_fp_));
+}
+
+void Node::flush_files() {
+    if (log_fp_) { ::fflush(log_fp_); ::fsync(fileno(log_fp_)); }
+    if (snapshot_fp_) { ::fflush(snapshot_fp_); ::fsync(fileno(snapshot_fp_)); }
+    if (sm_fp_) { ::fflush(sm_fp_); ::fsync(fileno(sm_fp_)); }
+    last_flush_ = std::chrono::steady_clock::now();
 }
 
 VoidExpectedF Node::send_append_entries(uint32_t next_idx, std::unique_ptr<EventLoop>& el, NodeID dest_id) {
