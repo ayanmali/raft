@@ -46,13 +46,17 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     std::cout << "election timeout set to " << n->election_timeout_ << "\n";
     #endif
 
-    n->log_fp_ = ::fopen(LOG_FILE_PATH, "a+");
+    n->log_fp_ = ::fopen(LOG_FILE_PATH, "w+");
     if (n->log_fp_ == NULL) {
         return UnexpectedF(std::format(
-            "Error opening log file with path {}\n",
-            LOG_FILE_PATH
+            "Error opening log file with path {}\n{}\n",
+            LOG_FILE_PATH, errno
         ));
     }
+    #ifdef DEBUG
+    int file_size = ::ftell(n->log_fp_);
+    std::cout << "log file size = " << file_size << "\n";
+    #endif
 
     VoidExpected recover_ok = n->recover();
     if (!recover_ok) {
@@ -466,16 +470,13 @@ uint32_t Node::compute_new_commit_idx() {
 // }
 
 VoidExpected Node::recover() {
-    // Read existing snapshot if it exists
+    // Read existing snapshot if it exists and restore the state machine
     FILE* snap_r = ::fopen(SNAPSHOT_FILE_PATH, "r");
-    if (snap_r) {
-        // restore the state machine
-        ::fclose(snap_r);
-        ::fclose(snapshot_fp_);
+    if (snap_r != nullptr) {
+        if (snapshot_fp_ != nullptr) ::fclose(snapshot_fp_);
         snapshot_fp_ = nullptr;
         ::rename(SNAPSHOT_FILE_PATH, STATE_MACHINE_FILE_PATH);
 
-        snap_r = ::fopen(SNAPSHOT_FILE_PATH, "r");
         ::fseek(snap_r, -1 * (sizeof(uint32_t) * 2), SEEK_END);
         ::fread(&last_applied_idx_, sizeof(last_applied_idx_), 1, snap_r);
         ::fread(&last_applied_term_, sizeof(last_applied_term_), 1, snap_r);
@@ -484,7 +485,10 @@ VoidExpected Node::recover() {
 
     ::fseek(log_fp_, 0, SEEK_END);
     long file_size = ::ftell(log_fp_);
-    if (file_size <= 0) return Unexpected("failed to recover; log file size is <= 0");
+    #ifdef DEBUG
+    std::cout << "log file size = " << file_size << "\n";
+    #endif
+    if (file_size <= 0) return {};
     ::rewind(log_fp_);
     ::fread(&current_term_, sizeof(current_term_), 1, log_fp_);
     ::fread(&voted_for_, sizeof(voted_for_), 1, log_fp_);

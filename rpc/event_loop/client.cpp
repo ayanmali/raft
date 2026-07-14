@@ -5,7 +5,7 @@
 #include <netinet/tcp.h>
 
 #ifdef DEBUG
-//#include <iostream>
+#include <iostream>
 #endif
 
 VoidExpected EventLoop::modify_client_interest(ClientConn* c, uint32_t events) {
@@ -40,7 +40,7 @@ VoidExpected EventLoop::Accept() {
         inet_ntop(AF_INET, &peer.sin_addr, c->client_ip_addr, sizeof(c->client_ip_addr));
 
         #ifdef DEBUG
-        //std::cout << "connection accepted from node w/ IP address " << c->client_ip_addr << "\n";
+        std::cout << "connection accepted from node w/ IP address " << c->client_ip_addr << "\n";
         #endif
 
         int yes = 1;
@@ -52,7 +52,7 @@ VoidExpected EventLoop::Accept() {
         VoidExpected client_fd_ok = register_fd(fd, c->epoll_events);
         if (!client_fd_ok) {
             #ifdef DEBUG
-            //std::cout << "error accepting client connection:\n" << client_fd_ok.error() << "\n";
+            std::cout << "error accepting client connection:\n" << client_fd_ok.error() << "\n";
             #endif
             ::close(fd);
             client_slab.Release(c);
@@ -65,11 +65,11 @@ VoidExpected EventLoop::Accept() {
 
 VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
     #ifdef DEBUG
-    //std::cout << "client with ip " << c->client_ip_addr << " writable\n";
+    std::cout << "client with ip " << c->client_ip_addr << " writable\n";
     #endif
     while (c->wbuf_offset < c->wbuf_size) {
         #ifdef DEBUG
-        //std::cout << "sending reply to client with ip " << c->client_ip_addr << "\n";
+        std::cout << "sending reply to client with ip " << c->client_ip_addr << "\n";
         #endif
         ssize_t n = ::send(
             c->fd,
@@ -87,7 +87,7 @@ VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
     VoidExpected modify_ok = modify_client_interest(c, c->epoll_events & ~EPOLLOUT);
     if (!modify_ok) {
         #ifdef DEBUG
-        //std::cout << modify_ok.error() << "\n";
+        std::cout << modify_ok.error() << "\n";
         #endif
     }
     // if (c.closing && c.pending_tasks == 0) ReapClient(c);
@@ -101,7 +101,7 @@ VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
 VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
     // TODO: if latency is too high here, replace c.rbuf w a ring buffer, or use readv
     #ifdef DEBUG
-    //std::cout << "client with ip " << c->client_ip_addr << " readable\n";
+    std::cout << "client with ip " << c->client_ip_addr << " readable\n";
     #endif
     size_t end = c->rbuf_offset;
     for (;;) {
@@ -122,7 +122,7 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
     size_t parsed = 0;
     while (!c->closing && end - parsed >= sizeof(uint32_t)) {
         #ifdef DEBUG
-        //std::cout << "reading request" << "\n";
+        std::cout << "reading request" << "\n";
         #endif
 
         uint32_t net_len;
@@ -136,7 +136,7 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
         parsed += frame_size;
 
         #ifdef DEBUG
-        //std::cout << "posting inbound request from client with client_ip_addr " << c->client_ip_addr << " to node inbox\n";
+        std::cout << "posting inbound request from client with client_ip_addr " << c->client_ip_addr << " to node inbox\n";
         #endif
         post_node_inbox(std::move(*request_raw));
     }
@@ -147,7 +147,7 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
 
 void EventLoop::CloseClient(ClientConn* c) {
     #ifdef DEBUG
-    //std::cout << "closing client with ip " << c->client_ip_addr << "\n";
+    std::cout << "closing client with ip " << c->client_ip_addr << "\n";
     #endif
     if (c->closing) return;
     c->closing = true;
@@ -171,7 +171,7 @@ VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload) {
     } // message gets dropped
     ClientConn* c = it->second;
     #ifdef DEBUG
-    //std::cout << "posting AE reply to outbound queue to node w/ ip " << c->client_ip_addr << "\n";
+    std::cout << "posting AE reply to outbound queue to node w/ ip " << c->client_ip_addr << "\n";
     #endif
     //++c.pending_tasks;
 
@@ -198,7 +198,7 @@ VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload) {
     } // message gets dropped
     ClientConn* c = it->second;
     #ifdef DEBUG
-    //std::cout << "posting RV reply to outbound queue to node w/ ip " << c->client_ip_addr << "\n";
+    std::cout << "posting RV reply to outbound queue to node w/ ip " << c->client_ip_addr << "\n";
     #endif
     //++c.pending_tasks;
 
@@ -207,7 +207,7 @@ VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload) {
     writer.serialize(payload);
 
     #ifdef DEBUG
-    //std::cout << "wbuf offset = " << c->wbuf_offset << ", wbuf size = " << c->wbuf.size() << "\n";
+    std::cout << "wbuf offset = " << c->wbuf_offset << ", wbuf size = " << sizeof(c->wbuf) << "\n";
     #endif
     if (c->wbuf_offset < c->wbuf_size) {
         VoidExpected modify_ok = modify_client_interest(c, c->epoll_events | EPOLLOUT);
@@ -228,7 +228,7 @@ VoidExpectedF EventLoop::post_reply(InstallSnapshotRespPayload& payload) {
     } // message gets dropped
     ClientConn* c = it->second;
     #ifdef DEBUG
-    //std::cout << "posting IS reply to outbound queue to node w/ ip " << c->client_ip_addr << "\n";
+    std::cout << "posting IS reply to outbound queue to node w/ ip " << c->client_ip_addr << "\n";
     #endif
     //++c.pending_tasks;
 

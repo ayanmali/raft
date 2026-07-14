@@ -7,7 +7,7 @@
 #include <sys/timerfd.h>
 #include <format>
 #ifdef DEBUG
-//#include <iostream>
+#include <iostream>
 #endif
 
 EventLoop::EventLoop(size_t inbound_cap, NodeInbox& node_inbox, size_t this_id, long heartbeat_period) :
@@ -65,7 +65,7 @@ void EventLoop::Stop() {
 
 void EventLoop::Wake() {
     #ifdef DEBUG
-    //std::cout << "waking event loop " << this_id << "\n";
+    std::cout << "waking event loop " << this_id << "\n";
     #endif
     if (!wake_armed.exchange(true, std::memory_order_acq_rel)) {
         wake_eventfd_unconditional();
@@ -75,7 +75,7 @@ void EventLoop::Wake() {
 
 void EventLoop::wake_eventfd_unconditional() {
     #ifdef DEBUG
-    //std::cout << "waking event loop " << this_id << "\n";
+    std::cout << "waking event loop " << this_id << "\n";
     #endif
     uint64_t one = 1;
     ssize_t  n   = ::write(event_fd, &one, sizeof(one));
@@ -140,12 +140,12 @@ VoidExpected EventLoop::setup_listen_socket() {
 
 VoidExpectedF EventLoop::Run() {
     #ifdef DEBUG
-    //std::cout << "starting event loop with id " << this_id << "\n";
+    std::cout << "starting event loop with id " << this_id << "\n";
     #endif
     epoll_event evs[EPOLL_BATCH];
     while (!stopped.load(std::memory_order_acquire)) {
         #ifdef DEBUG
-        //std::cout << "---\nwaiting for events...\n";
+        std::cout << "---\nwaiting for events...\n";
         #endif
         int n = ::epoll_wait(epoll_fd, evs, EPOLL_BATCH, -1);
 
@@ -156,27 +156,27 @@ VoidExpectedF EventLoop::Run() {
 
         // loop over all ready FDs
         #ifdef DEBUG
-        //std::cout << "found " << n << " ready fds\n";
+        std::cout << "found " << n << " ready fds\n";
         #endif
 
         for (int i = 0; i < n; ++i) {
             const FD fd = evs[i].data.fd;
             const uint32_t e = evs[i].events;
             #ifdef DEBUG
-            //std::cout << i << "th fd:\n";
+            std::cout << i << "th fd:\n";
             #endif
 
             if (fd == listen_fd) {
                 #ifdef DEBUG
-                //std::cout << "accepting new client connection\n";
+                std::cout << "accepting new client connection\n";
                 #endif
                 VoidExpected accept_ok = Accept();
-                if (!accept_ok) //std::cout << "failed to accept new client connection; skipping:\n" << accept_ok.error() << "\n";
+                if (!accept_ok) std::cout << "failed to accept new client connection; skipping:\n" << accept_ok.error() << "\n";
                 continue;
             }
             if (fd == event_fd) {
                 #ifdef DEBUG
-                //std::cout << "event fd awakened\n";
+                std::cout << "event fd awakened\n";
                 #endif
                 VoidExpectedF on_event_fd_ok = OnEventFd();
                 if (!on_event_fd_ok) {
@@ -192,15 +192,15 @@ VoidExpectedF EventLoop::Run() {
                 ClientConn* c = it->second;
                 if (e & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                     #ifdef DEBUG
-                    //std::cout << "epoll error found for client " << it->second->client_ip_addr << ":";
+                    std::cout << "epoll error found for client " << it->second->client_ip_addr << ":";
                     if (e & EPOLLERR) {
-                        //std::cout << "EPOLLERR\n";
+                        std::cout << "EPOLLERR\n";
                     }
                     else if (e & EPOLLHUP) {
-                        //std::cout << "EPOLLHUP\n";
+                        std::cout << "EPOLLHUP\n";
                     }
                     else if (e & EPOLLRDHUP) {
-                        //std::cout << "EPOLLRDHUP\n";
+                        std::cout << "EPOLLRDHUP\n";
                     }
                     #endif
                     CloseClient(c);
@@ -208,24 +208,24 @@ VoidExpectedF EventLoop::Run() {
                 }
                 if (e & EPOLLIN) {
                     #ifdef DEBUG
-                    //std::cout << "new client message from client with ip " << c->client_ip_addr << "\n";
+                    std::cout << "new client message from client with ip " << c->client_ip_addr << "\n";
                     #endif
                     VoidExpected readable_ok = OnClientReadable(c);
                     if (!readable_ok) {
                         #ifdef DEBUG
-                        //std::cout << "failed to read incoming client message from client with ip " << c->client_ip_addr << ":\n" << readable_ok.error() << "\n";
+                        std::cout << "failed to read incoming client message from client with ip " << c->client_ip_addr << ":\n" << readable_ok.error() << "\n";
                         #endif
                         continue;
                     }
                 }
                 if (e & EPOLLOUT) {
                     #ifdef DEBUG
-                    //std::cout << "ready to send reply to client with ip " << c->client_ip_addr << "\n";
+                    std::cout << "ready to send reply to client with ip " << c->client_ip_addr << "\n";
                     #endif
                     VoidExpected writable_ok = OnClientWritable(c);
                     if (!writable_ok) {
                         #ifdef DEBUG
-                        //std::cout << "failed to write to client socket:\n" << writable_ok.error() << "\n";
+                        std::cout << "failed to write to client socket:\n" << writable_ok.error() << "\n";
                         #endif
                         continue;
                     }
@@ -237,41 +237,41 @@ VoidExpectedF EventLoop::Run() {
                 PeerConn& p = peer_conns.at(it->second);
                 if (e & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                     #ifdef DEBUG
-                    //std::cout << "event loop received epoll error ";
+                    std::cout << "event loop received epoll error ";
                     if (e & EPOLLERR) {
-                        //std::cout << "EPOLLERR";
+                        std::cout << "EPOLLERR";
                     }
                     else if (e & EPOLLHUP) {
-                        //std::cout << "EPOLLHUP";
+                        std::cout << "EPOLLHUP";
                     }
                     else if (e & EPOLLRDHUP) {
-                        //std::cout << "EPOLLRDHUP";
+                        std::cout << "EPOLLRDHUP";
                     }
-                    //std::cout << " for peer " << p.peer_id << "; disconnecting peer\n";
+                    std::cout << " for peer " << p.peer_id << "; disconnecting peer\n";
                     #endif
                     DropPeer(p);
                     continue;
                 }
                 if (e & EPOLLIN) {
                     #ifdef DEBUG
-                    //std::cout << "obtained reply from peer " << p.peer_id << "\n";
+                    std::cout << "obtained reply from peer " << p.peer_id << "\n";
                     #endif
                     VoidExpected readable_ok = OnPeerReadable(p);
                     if (!readable_ok) {
                         #ifdef DEBUG
-                        //std::cout << "failed to read incoming peer reply:\n" << readable_ok.error() << "\n";
+                        std::cout << "failed to read incoming peer reply:\n" << readable_ok.error() << "\n";
                         #endif
                         continue;
                     }
                 }
                 if (e & EPOLLOUT) {
                     #ifdef DEBUG
-                    //std::cout << "ready to send RPC to peer " << p.peer_id << "\n";
+                    std::cout << "ready to send RPC to peer " << p.peer_id << "\n";
                     #endif
                     VoidExpected writable_ok = OnPeerWritable(p);
                     if (!writable_ok) {
                         #ifdef DEBUG
-                        //std::cout << "failed to write RPC to peer socket:\n" << writable_ok.error() << "\n";
+                        std::cout << "failed to write RPC to peer socket:\n" << writable_ok.error() << "\n";
                         #endif
                         continue;
                     }
@@ -283,12 +283,12 @@ VoidExpectedF EventLoop::Run() {
                 PeerConn& p = peer_conns.at(it->second);
                 if (e & EPOLLIN) {
                     #ifdef DEBUG
-                    //std::cout << "timer fd fired for peer " << p.peer_id << "\n";
+                    std::cout << "timer fd fired for peer " << p.peer_id << "\n";
                     #endif
                     VoidExpected peer_timer_ok = OnPeerTimer(p);
                     if (!peer_timer_ok) {
                         #ifdef DEBUG
-                        //std::cout << "failed to post heartbeat payload to node inbox:\n" << peer_timer_ok.error() << "\n";
+                        std::cout << "failed to post heartbeat payload to node inbox:\n" << peer_timer_ok.error() << "\n";
                         #endif
                         continue;
                     }
@@ -307,7 +307,7 @@ VoidExpectedF EventLoop::DrainInbox() {
     // re-wake -- so the next epoll_wait will see the eventfd already
     // counted up and we'll come right back. No lost items.
     #ifdef DEBUG
-    //std::cout << "draining inbox...\n";
+    std::cout << "draining inbox...\n";
     #endif
     wake_armed.store(false, std::memory_order_release);
 
@@ -318,7 +318,7 @@ VoidExpectedF EventLoop::DrainInbox() {
 
             if constexpr (std::is_same_v<T, AppendEntriesReqPayload> || std::is_same_v<T, RequestVoteReqPayload> || std::is_same_v<T, InstallSnapshotReqPayload>) {
                 #ifdef DEBUG
-                //std::cout << "found request in event loop outbound inbox\n";
+                std::cout << "found request in event loop outbound inbox\n";
                 #endif
                 VoidExpectedF post_ok = post_inflight(payload);
                 if (!post_ok) {
@@ -331,7 +331,7 @@ VoidExpectedF EventLoop::DrainInbox() {
 
             else if constexpr (std::is_same_v<T, AppendEntriesRespPayload> || std::is_same_v<T, RequestVoteRespPayload> || std::is_same_v<T, InstallSnapshotRespPayload>) {
                 #ifdef DEBUG
-                //std::cout << "found reply in event loop outbound inbox\n";
+                std::cout << "found reply in event loop outbound inbox\n";
                 #endif
                 VoidExpectedF post_ok = post_reply(payload);
                 if (!post_ok) {
@@ -344,7 +344,7 @@ VoidExpectedF EventLoop::DrainInbox() {
 
             else if constexpr (std::is_same_v<T, ArmTimer>) {
                 #ifdef DEBUG
-                //std::cout << "found arm timer req\n";
+                std::cout << "found arm timer req\n";
                 #endif
                 VoidExpectedF arm_ok = arm_heartbeat_timer(payload.dest_id);
                 if (!arm_ok) {
@@ -357,7 +357,7 @@ VoidExpectedF EventLoop::DrainInbox() {
 
             else if constexpr (std::is_same_v<T, DisarmTimer>) {
                 #ifdef DEBUG
-                //std::cout << "found disarm timer req\n";
+                std::cout << "found disarm timer req\n";
                 #endif
                 VoidExpectedF disarm_ok = disarm_heartbeat_timer(payload.dest_id);
                 if (!disarm_ok) {
@@ -370,7 +370,7 @@ VoidExpectedF EventLoop::DrainInbox() {
 
             else if constexpr (std::is_same_v<T, AddPeerMsg>) {
                 #ifdef DEBUG
-                //std::cout << "found add peer msg\n";
+                std::cout << "found add peer msg\n";
                 #endif
 
                 if (auto it = client_conns.find(payload.fd); it != client_conns.end()) {
