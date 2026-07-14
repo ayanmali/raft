@@ -139,7 +139,6 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         n->node_ids_.set(i);
     }
 
-    n->log_.push_back(LogEntry{});
     n->next_indexes_[MY_ID] = -1;
     n->match_indexes_[MY_ID] = -1;
     n->chunks_sent_[MY_ID] = -1;
@@ -181,7 +180,7 @@ void Node::request_votes() {
                 .dest_id = id,
                 .term = current_term_,
                 .candidate_id = MY_ID,
-                .last_log_idx = static_cast<uint32_t>(log_.size() - 1) + last_applied_idx_,
+                .last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_,
                 .last_log_term = log_.back().term
             })
         );
@@ -304,7 +303,7 @@ void Node::become_leader() {
     #ifdef DEBUG
     std::cout << "This node (id = " << MY_ID << ") won the election\n";
     #endif
-    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size() - 1) + last_applied_idx_; // logical index
+    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_; // logical index
     for (int32_t& i : next_indexes_) {
         if (i < 0) continue;
         i = last_log_idx + 1;
@@ -325,6 +324,9 @@ void Node::become_leader() {
 
     // placeholder entry allows this node to assert its leadership to other nodes on the next heartbeat
     log_.push_back(LogEntry(current_term_));
+    #ifdef DEBUG
+    std::cout << "writing placeholder log entry to file...\n";
+    #endif
     ::fseek(log_fp_, 0, SEEK_END);
     ::fwrite(&*(log_.end() - 2), sizeof(LogEntry), 1, log_fp_);
 
@@ -397,14 +399,14 @@ uint32_t Node::compute_new_commit_idx() {
     // No peers => no quorum to compute. Guards std::max_element below from
     // dereferencing end() on an empty map.
     // if (node_ids_.empty()) return commit_index_;
-    if (node_ids_.empty()) return log_.size() - 1 + last_applied_idx_;
+    if (node_ids_.empty()) return log_.size() + last_applied_idx_;
 
     auto freqs = std::unordered_map<int32_t, uint32_t>(match_indexes_.size());
     for (auto match_idx : match_indexes_) {
         if (match_idx < 0) continue;
         ++freqs[match_idx];
     }
-    ++freqs[log_.size() - 1 + last_applied_idx_];
+    ++freqs[log_.size() + last_applied_idx_];
 
     // fast path
     auto kv_max_freq = std::max_element(freqs.begin(), freqs.end(), [](const std::pair<uint32_t, uint32_t>& a, const std::pair<uint32_t, uint32_t>& b){
@@ -492,13 +494,12 @@ VoidExpected Node::recover() {
     ::rewind(log_fp_);
     ::fread(&current_term_, sizeof(current_term_), 1, log_fp_);
     ::fread(&voted_for_, sizeof(voted_for_), 1, log_fp_);
-    ::fseek(log_fp_, sizeof(LogEntry), SEEK_CUR); // 1 entry past the first entry
 
-    size_t num_entries = (static_cast<size_t>(file_size) - sizeof(current_term_) - sizeof(voted_for_) - sizeof(LogEntry)) / sizeof(LogEntry);
+    size_t num_entries = (static_cast<size_t>(file_size) - sizeof(current_term_) - sizeof(voted_for_)) / sizeof(LogEntry);
     if (num_entries == 0) return {};
 
     log_.resize(log_.size() + num_entries);
-    ::fread(&*(log_.begin() + 1), sizeof(LogEntry), num_entries, log_fp_);
+    ::fread(&log_.front(), sizeof(LogEntry), num_entries, log_fp_);
 
     // size_t start = 0;
     // if (snapshot.last_included_idx > 0 && snapshot.last_included_idx < log_.size()) {
@@ -526,16 +527,25 @@ VoidExpected Node::recover() {
 }
 
 void Node::write_current_term() {
+    #ifdef DEBUG
+    std::cout << "writing current term = " << current_term_ << " to log file\n";
+    #endif
     ::rewind(log_fp_);
     ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
 }
 
 void Node::write_voted_for() {
+    #ifdef DEBUG
+    std::cout << "writing voted for id = " << voted_for_ << " to log file\n";
+    #endif
     ::fseek(log_fp_, sizeof(current_term_), SEEK_SET);
     ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
 }
 
 void Node::flush_files() {
+    #ifdef DEBUG
+    std::cout << "flushing files...\n";
+    #endif
     if (log_fp_) { ::fflush(log_fp_); ::fsync(fileno(log_fp_)); }
     if (snapshot_fp_) { ::fflush(snapshot_fp_); ::fsync(fileno(snapshot_fp_)); }
     if (sm_fp_) { ::fflush(sm_fp_); ::fsync(fileno(sm_fp_)); }

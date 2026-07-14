@@ -72,7 +72,7 @@ void Node::MainLoop() {
                     // entries, so neither log_ nor payload.entries is indexed OOB.
                     const size_t existing_after_prev = log_.size() - log_offset - 1;
                     const size_t scan_limit = std::min(existing_after_prev, payload.entries_len);
-                    size_t i = 1;
+                    size_t i = 0;
                     for (; i < scan_limit; ++i) {
                         const size_t log_idx = log_offset + i + 1;
                         if (log_[log_idx].term != payload.entries[i].term) {
@@ -91,7 +91,7 @@ void Node::MainLoop() {
                         commit_index_ = std::min(payload.leader_commit, static_cast<uint32_t>(payload.prev_log_idx + payload.entries_len));
                     }
 
-                    for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
+                    for (size_t i = last_applied_idx_; i <= commit_index_; ++i) {
                         apply_entry(log_[i - last_applied_idx_]);
                     }
                     last_applied_idx_ = commit_index_;
@@ -155,8 +155,8 @@ void Node::MainLoop() {
 
                     leader_id = payload.candidate_id;
                     leader_contact = true;
-                    const uint32_t last_log_term = log_.back().term;
-                    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size() - 1) + last_applied_idx_; // logical index
+                    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_; // logical index
+                    const uint32_t last_log_term = log_[log_.size() + last_applied_idx_].term;
                     if (payload.last_log_term > last_log_term
                     || (payload.last_log_term == last_log_term
                         && payload.last_log_idx >= last_log_idx))
@@ -237,24 +237,18 @@ void Node::MainLoop() {
 
                     if (payload.last_included_idx - last_applied_idx_ > 0
                         && payload.last_included_idx - last_applied_idx_ < log_.size()) {
+                            log_.erase(log_.begin(), log_.begin() + (payload.last_included_idx - last_applied_idx_) + 1);
+                            ::freopen(LOG_FILE_PATH, "w+", log_fp_);
+                            ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
+                            ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
                             // if the last included entry of the snapshot matches with that of this node's log, discard all entries up to last_included_idx
                             if (log_[payload.last_included_idx - last_applied_idx_].term == payload.last_included_term) {
-                                log_.erase(log_.begin() + 1, log_.begin() + (payload.last_included_idx - last_applied_idx_) + 1);
-                                ::freopen(LOG_FILE_PATH, "w+", log_fp_);
-                                ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
-                                ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
-                                ::fseek(log_fp_, sizeof(LogEntry), SEEK_CUR);
+                                #ifdef DEBUG
+                                std::cout << "overwriting log file w/ current term, voted for, and log entries\n";
+                                #endif
 
                                 // copy the log to the file
                                 ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
-                            }
-                            // otherwise, there is a conflict, so this node's log must be cleared entirely.
-                            else {
-                                log_.clear();
-                                ::freopen(LOG_FILE_PATH, "w+", log_fp_);
-                                ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
-                                ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
-                                ::fseek(log_fp_, sizeof(LogEntry), SEEK_CUR);
                             }
                     }
                     node_ids_.reset(payload.cluster, payload.cluster_raw_size);
@@ -365,7 +359,7 @@ void Node::MainLoop() {
                     if (old_commit_idx == new_commit_idx) return {};
                     commit_index_ = new_commit_idx;
 
-                    for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
+                    for (size_t i = last_applied_idx_; i <= commit_index_; ++i) {
                         apply_entry(log_[i - last_applied_idx_]);
                     }
                     last_applied_idx_ = commit_index_;
@@ -503,7 +497,7 @@ void Node::MainLoop() {
                             .dest_id = payload.source_id,
                             .term = current_term_,
                             .candidate_id = MY_ID,
-                            .last_log_idx = static_cast<uint32_t>(log_.size() - 1 + last_applied_idx_),
+                            .last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_,
                             .last_log_term = log_.back().term,
                         };
                         send(std::move(p), el);
@@ -594,20 +588,14 @@ void Node::MainLoop() {
         if (log_.size() >= LOG_COMPACT_THRESHOLD) {
             // TODO: may need to optimize this if its too slow
             // discard log entries
-            log_.erase(log_.begin() + 1, log_.end());
+            log_.erase(log_.begin(), log_.end());
 
             ::freopen(LOG_FILE_PATH, "w+", log_fp_); // clears the file and sets the file position to the beginning
             ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
             ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
-            ::fseek(log_fp_, sizeof(LogEntry), SEEK_CUR);
 
             // create the snapshot and write to disk
-            if (snapshot_tmp_fp_ == nullptr) {
-                snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
-            }
-            else {
-                ::freopen(SNAPSHOT_TMP_FILE_PATH, "w+", snapshot_tmp_fp_);
-            }
+            ::freopen(SNAPSHOT_TMP_FILE_PATH, "w+", snapshot_tmp_fp_);
             ::fwrite(node_ids_.data(), node_ids_.total_size(), 1, snapshot_tmp_fp_);
             ::fwrite(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_tmp_fp_);
             ::fwrite(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_tmp_fp_);
@@ -643,6 +631,7 @@ void Node::MainLoop() {
         state_ = NodeState::Candidate;
         ++current_term_;
         voted_for_ = MY_ID;
+        write_current_term();
         write_voted_for();
         voters_.insert(MY_ID);
         last_leader_contact_ = std::chrono::steady_clock::now();

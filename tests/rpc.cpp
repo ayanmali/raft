@@ -37,7 +37,7 @@ int main() {
             two,
             three
         };
-        std::this_thread::sleep_for(std::chrono::seconds(15));
+        std::this_thread::sleep_for(std::chrono::seconds(8));
         node->append_commands(data);
     });
     node->MainLoop();

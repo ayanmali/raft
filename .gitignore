@@ -13,3 +13,4 @@ debug.log
 persistence/log
 persistence/metadata
 persistence/snapshot
+persistence/state
