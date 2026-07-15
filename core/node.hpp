@@ -118,7 +118,7 @@ public:
     FILE*                                                           snapshot_fp_             = nullptr;
     FILE*                                                           snapshot_tmp_fp_         = nullptr;
     FILE*                                                           sm_fp_                   = nullptr;
-    void(*apply_entry)(const LogEntry&);
+    void(*apply_entry)(FILE*, const LogEntry&);
     void(*create_snapshot)(FILE*, FILE*);
     NodeID                                                          leader_id;
     int                                                             installing_snapshot_id_ = -1;

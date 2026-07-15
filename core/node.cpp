@@ -17,7 +17,7 @@ Node::Node(NodeInbox& inbox_) : inbox_(inbox_) {}
 // Factory function
 // Node requires stable addresses (i.e. not movable)
 std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& inbox,
-    void(*apply_entry_to_sm)(const LogEntry&),
+    void(*apply_entry_to_sm)(FILE*, const LogEntry&),
     void(*create_snapshot)(FILE*, FILE*)) {
     static_assert(EVENT_LOOP_THREADS > 0 && (EVENT_LOOP_THREADS & (EVENT_LOOP_THREADS - 1)) == 0,
         "Node: EVENT_LOOP_THREADS must be a power of 2 (MPSC inbox requires it)");

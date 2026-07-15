@@ -5,8 +5,9 @@
 int main() {
     std::cout << "Testing RPC correctness\n";
     NodeInbox ni{};
-    auto apply_func = [](const LogEntry& entry) {
-
+    auto apply_func = [](FILE* state_machine_fp, const LogEntry& entry) {
+        int num{69};
+        ::fwrite(&num, sizeof(num_, 1, state_machine_fp);
     };
     auto create_snapshot = [](FILE* snapshot_fp, FILE* state_machine_fp) {
         constexpr size_t SNAPSHOT_WRITE_BUFFER_SIZE = 1024;

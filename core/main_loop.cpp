@@ -11,6 +11,17 @@ void Node::MainLoop() {
     std::cout << "starting node loop (main thread)\n";
     #endif
     while (true) {
+        #ifdef DEBUG
+        if (last_applied_idx_ != commit_index_) {
+            std::cout << "applying log entries from last applied index = " last_applied_idx_ << " up to and including commit index = " << commit_index_ << "\n";
+        }
+        #endif
+        // TODO: notify client that entries were committed
+        for (size_t i = last_applied_idx_; i <= commit_index_; ++i) {
+            apply_entry(sm_state_fp_, log_[i - last_applied_idx_]);
+        }
+        last_applied_idx_ = commit_index_;
+
         // check the reply inbox for new replies that have arrived
         bool leader_contact{false};
         inbox_.DrainAll([this, &leader_contact](std::unique_ptr<RpcMessage>&& message) {
@@ -90,11 +101,6 @@ void Node::MainLoop() {
                     if (payload.leader_commit > commit_index_) {
                         commit_index_ = std::min(payload.leader_commit, static_cast<uint32_t>(payload.prev_log_idx + payload.entries_len));
                     }
-
-                    for (size_t i = last_applied_idx_; i <= commit_index_; ++i) {
-                        apply_entry(log_[i - last_applied_idx_]);
-                    }
-                    last_applied_idx_ = commit_index_;
 
                     current_term_ = payload.term;
                     write_current_term();
@@ -215,7 +221,7 @@ void Node::MainLoop() {
                         if (snapshot_tmp_fp_ == NULL) return Unexpected(
                             "error in InstallSnapshotRPC handler; failed to open snapshot tmp file\n"
                         );
-                        ::fseek(snapshot_tmp_fp_, payload.cluster_raw_size + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);
+                        //::fseek(snapshot_tmp_fp_, payload.cluster_raw_size + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);
                         ::fwrite(&payload.cluster, payload.cluster_raw_size, 1, snapshot_tmp_fp_);
                         ::fwrite(&payload.last_included_idx, sizeof(uint32_t), 1, snapshot_tmp_fp_);
                         ::fwrite(&payload.last_included_term, sizeof(uint32_t), 1, snapshot_tmp_fp_);
@@ -359,8 +365,12 @@ void Node::MainLoop() {
                     if (old_commit_idx == new_commit_idx) return {};
                     commit_index_ = new_commit_idx;
 
+                    #ifdef DEBUG
+                    std::cout << "applying log entries from idx " << last_applied_idx_ << " up to and including " << commit_index_ << "\n";
+                    #endif
+                    // TODO: notify client entries were committed
                     for (size_t i = last_applied_idx_; i <= commit_index_; ++i) {
-                        apply_entry(log_[i - last_applied_idx_]);
+                        apply_entry(sm_state_fp_, log_[i - last_applied_idx_]);
                     }
                     last_applied_idx_ = commit_index_;
 
@@ -370,7 +380,6 @@ void Node::MainLoop() {
                     // ::fflush(log_fp);
                     // ::fsync(fileno(log_fp));
 
-                    // TODO: notify client that this entry/entries were committed
 
                 }
 
@@ -586,8 +595,11 @@ void Node::MainLoop() {
         }
 
         if (log_.size() >= LOG_COMPACT_THRESHOLD) {
+            #ifdef DEBUG
+            std::cout << "log size reached compact threshold; compacting...\n";
+            #endif
             // TODO: may need to optimize this if its too slow
-            // discard log entries
+            // log entries have been applied to the state machine; they may be discarded
             log_.erase(log_.begin(), log_.end());
 
             ::freopen(LOG_FILE_PATH, "w+", log_fp_); // clears the file and sets the file position to the beginning
@@ -595,7 +607,7 @@ void Node::MainLoop() {
             ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
 
             // create the snapshot and write to disk
-            ::freopen(SNAPSHOT_TMP_FILE_PATH, "w+", snapshot_tmp_fp_);
+            snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
             ::fwrite(node_ids_.data(), node_ids_.total_size(), 1, snapshot_tmp_fp_);
             ::fwrite(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_tmp_fp_);
             ::fwrite(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_tmp_fp_);
