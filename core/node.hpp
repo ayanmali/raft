@@ -91,7 +91,7 @@ public:
     uint32_t compute_new_commit_idx();
 
     /* log compaction/snapshotting/recovery */
-    VoidExpected recover();
+    VoidExpectedF recover();
 
     void write_current_term();
     void write_voted_for();

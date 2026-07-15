@@ -16,7 +16,7 @@ static constexpr uint EVENT_LOOP_THREADS = 1;
 static constexpr int MIN_ELECTION_TIMEOUT_MS = 150;
 static constexpr int MAX_ELECTION_TIMEOUT_MS = 300;
 
-static constexpr int BASE_CLUSTER_SIZE = 4;
+static constexpr int BASE_CLUSTER_SIZE = 3;
 static constexpr size_t MAX_NODES = BASE_CLUSTER_SIZE * 2;
 
 static constexpr int MY_ID = 0;
@@ -54,7 +54,7 @@ static constexpr size_t MAX_SERVER_CONNS = 512;
 
 static constexpr int MAX_ENTRIES = 12; // maximum number of entries to append with any given AE RPC
 
-static constexpr size_t LOG_COMPACT_THRESHOLD = 1024;
+static constexpr size_t LOG_COMPACT_THRESHOLD = 5;
 
 static constexpr std::chrono::milliseconds RPC_TIMEOUT{MAX_ELECTION_TIMEOUT_MS * 3};
 
@@ -74,8 +74,7 @@ static constexpr const char* STATE_MACHINE_FILE_PATH = "/root/raft/persistence/s
 //
 // The node with MY_ID == k must have "" at index k and real IPs elsewhere.
 constexpr void setup_peers(const char** a) {
-    a[0] = "";
-    a[1] = "111.111.111";
-    a[2] = "222.222.222";
-    a[3] = "333.333.333";
+    a[0] = "111.111.111";
+    a[1] = "222.222.222";
+    a[2] = "333.333.333";
 }

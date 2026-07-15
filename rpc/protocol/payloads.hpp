@@ -21,8 +21,8 @@ struct LogEntry {
     std::byte data_[CMD_SIZE];
     uint32_t term;
 
-    LogEntry() {};
-    LogEntry(uint32_t term) : term(term) {};
+    LogEntry() : data_{} {};
+    LogEntry(uint32_t term) : data_{}, term(term) {};
     LogEntry(std::byte* buf, size_t size, uint32_t term) : term(term) {
         assert(size <= CMD_SIZE);
         std::memcpy(data_, buf, size);

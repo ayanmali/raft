@@ -46,19 +46,27 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     std::cout << "election timeout set to " << n->election_timeout_ << "\n";
     #endif
 
-    n->log_fp_ = ::fopen(LOG_FILE_PATH, "w+");
+    const char* mode;
+
+    mode = access(LOG_FILE_PATH, F_OK) == 0
+        ? "r+"
+        : "w+";
+    n->log_fp_ = ::fopen(LOG_FILE_PATH, mode);
     if (n->log_fp_ == NULL) {
         return UnexpectedF(std::format(
             "Error opening log file with path {}\n{}\n",
             LOG_FILE_PATH, errno
         ));
     }
+
     #ifdef DEBUG
+    ::fseek(n->log_fp_, 0, SEEK_END);
     int file_size = ::ftell(n->log_fp_);
+    ::rewind(n->log_fp_);
     std::cout << "log file size = " << file_size << "\n";
     #endif
 
-    VoidExpected recover_ok = n->recover();
+    VoidExpectedF recover_ok = n->recover();
     if (!recover_ok) {
         return UnexpectedF(std::format(
             "Failed to create node: {}\n",
@@ -66,15 +74,10 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         ));
     }
 
-    n->snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "w+");
-    if (n->snapshot_fp_ == NULL) {
-        return UnexpectedF(std::format(
-            "Error opening snapshot file with path {}\n",
-            SNAPSHOT_FILE_PATH
-        ));
-    }
-
-    n->sm_fp_ = ::fopen(STATE_MACHINE_FILE_PATH, "w+");
+    mode = access(STATE_MACHINE_FILE_PATH, F_OK) == 0
+        ? "r+"
+        : "w+";
+    n->sm_fp_ = ::fopen(STATE_MACHINE_FILE_PATH, mode);
     if (n->sm_fp_ == NULL) {
         return UnexpectedF(std::format(
             "Error opening state machine file with path {}\n",
@@ -209,12 +212,12 @@ void Node::append_commands(std::vector<std::byte*>& commands) {
     }
     #endif
 
-    log_.reserve(commands.size());
+    log_.reserve(log_.size() + commands.size());
     for (std::byte* command : commands) {
         log_.emplace_back(command, CMD_SIZE, current_term_);
     }
-    // store log entries on disk
-    ::fwrite(&log_.back() - commands.size(), sizeof(LogEntry), commands.size(), log_fp_);
+    ::fseek(log_fp_, 0, SEEK_END);
+    ::fwrite(log_.data() + log_.size() - commands.size(), sizeof(LogEntry), commands.size(), log_fp_);
 
     #ifdef DEBUG
     std::cout << "New log:\n";
@@ -328,7 +331,7 @@ void Node::become_leader() {
     std::cout << "writing placeholder log entry to file...\n";
     #endif
     ::fseek(log_fp_, 0, SEEK_END);
-    ::fwrite(&*(log_.end() - 2), sizeof(LogEntry), 1, log_fp_);
+    ::fwrite(&log_.back(), sizeof(LogEntry), 1, log_fp_);
 
     #ifdef DEBUG
     std::cout << "Arming peer timers\n";
@@ -471,19 +474,44 @@ uint32_t Node::compute_new_commit_idx() {
 //     *snapshot.state = std::move(tmpa);
 // }
 
-VoidExpected Node::recover() {
+VoidExpectedF Node::recover() {
     // Read existing snapshot if it exists and restore the state machine
-    FILE* snap_r = ::fopen(SNAPSHOT_FILE_PATH, "r");
-    if (snap_r != nullptr) {
-        if (snapshot_fp_ != nullptr) ::fclose(snapshot_fp_);
-        snapshot_fp_ = nullptr;
-        ::rename(SNAPSHOT_FILE_PATH, STATE_MACHINE_FILE_PATH);
+    // if (access(SNAPSHOT_FILE_PATH, F_OK) == 0) {
+    //     if (snapshot_fp_ != nullptr) ::fclose(snapshot_fp_);
+    //     ::rename(SNAPSHOT_FILE_PATH, STATE_MACHINE_FILE_PATH);
 
-        ::fseek(snap_r, -1 * (sizeof(uint32_t) * 2), SEEK_END);
-        ::fread(&last_applied_idx_, sizeof(last_applied_idx_), 1, snap_r);
-        ::fread(&last_applied_term_, sizeof(last_applied_term_), 1, snap_r);
-        ::fclose(snap_r);
+    //     snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "w+");
+    //     if (snapshot_fp_ == NULL) {
+    //         return UnexpectedF(std::format(
+    //             "Error opening snapshot file with path {}\n",
+    //             SNAPSHOT_FILE_PATH
+    //         ));
+    //     }
+
+    //     ::fseek(snapshot_fp_, -1 * (sizeof(uint32_t) * 2), SEEK_END);
+    //     ::fread(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_fp_);
+    //     ::fread(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_fp_);
+    // }
+    // else {
+    //     snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "w+");
+    // }
+
+    if (access(SNAPSHOT_FILE_PATH, F_OK) == 0) {
+        snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "r+");
+        if (snapshot_fp_ == NULL) {
+            return UnexpectedF(std::format(
+                "Error opening snapshot file with path {}\n",
+                SNAPSHOT_FILE_PATH
+            ));
+        }
+        ::fseek(snapshot_fp_, -1 * (sizeof(uint32_t) * 2), SEEK_END);
+        ::fread(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_fp_);
+        ::fread(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_fp_);
+
+        ::fclose(snapshot_fp_);
+        ::rename(SNAPSHOT_FILE_PATH, STATE_MACHINE_FILE_PATH);
     }
+    snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "w+");
 
     ::fseek(log_fp_, 0, SEEK_END);
     long file_size = ::ftell(log_fp_);

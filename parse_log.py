@@ -25,7 +25,7 @@ def main():
     print()
 
     # Skip the placeholder LogEntry (offset 8)
-    entries_offset = 8 + LOG_ENTRY_SIZE
+    entries_offset = 8
     num_entries = (len(raw) - entries_offset) // LOG_ENTRY_SIZE
 
     print(f"log entries ({num_entries}):")
