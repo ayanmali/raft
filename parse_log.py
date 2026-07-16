@@ -14,6 +14,9 @@ def main():
     with open(LOG_FILE, "rb") as f:
         raw = f.read()
 
+    size_bytes = os.path.getsize(LOG_FILE)
+    print(f"Log file size: {size_bytes} bytes")
+
     # current_term_: uint32_t
     current_term = struct.unpack_from("<I", raw, 0)[0]
 

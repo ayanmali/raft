@@ -92,12 +92,20 @@ struct DynamicBitset {
         if (!prev) ++num_set;
     }
 
+    void resize_bytes(size_t bytes) {
+        v.resize(bytes);
+    }
+
     size_t size() {
         return num_set;
     }
 
     size_t total_size() {
-        return v.size() * 8;
+        return v.size();
+    }
+
+    size_t total_bits() {
+        return v.size() * BITS_PER_BYTE;
     }
 
     bool empty() {

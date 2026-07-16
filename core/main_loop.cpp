@@ -13,12 +13,14 @@ void Node::MainLoop() {
     while (true) {
         #ifdef DEBUG
         if (last_applied_idx_ != commit_index_) {
-            std::cout << "applying log entries from last applied index = " last_applied_idx_ << " up to and including commit index = " << commit_index_ << "\n";
+            std::cout << "applying log entries from last applied index = " << last_applied_idx_ << " up to and including commit index = " << commit_index_ << "\n";
         }
         #endif
         // TODO: notify client that entries were committed
-        for (size_t i = last_applied_idx_; i <= commit_index_; ++i) {
-            apply_entry(sm_state_fp_, log_[i - last_applied_idx_]);
+        if (last_applied_idx_ != commit_index_) {
+            for (size_t i = last_applied_idx_; i <= commit_index_; ++i) {
+                apply_entry(sm_fp_, log_[i - (last_applied_idx_)]);
+            }
         }
         last_applied_idx_ = commit_index_;
 
@@ -125,7 +127,7 @@ void Node::MainLoop() {
 
                     #ifdef DEBUG
                     std:: cout << "current cluster: " << MY_ID << ", ";
-                    for (NodeID id = 0; id < node_ids_.total_size(); ++id) {
+                    for (NodeID id = 0; id < node_ids_.total_bits(); ++id) {
                         if (!node_ids_[id]) continue;
                         std::cout << id << ", ";
                     }
@@ -360,19 +362,7 @@ void Node::MainLoop() {
                      then set commitIndex to N
                      --> entries <= commitIndex become committed.
                      */
-                    uint32_t old_commit_idx = commit_index_;
-                    uint32_t new_commit_idx = compute_new_commit_idx();
-                    if (old_commit_idx == new_commit_idx) return {};
-                    commit_index_ = new_commit_idx;
-
-                    #ifdef DEBUG
-                    std::cout << "applying log entries from idx " << last_applied_idx_ << " up to and including " << commit_index_ << "\n";
-                    #endif
-                    // TODO: notify client entries were committed
-                    for (size_t i = last_applied_idx_; i <= commit_index_; ++i) {
-                        apply_entry(sm_state_fp_, log_[i - last_applied_idx_]);
-                    }
-                    last_applied_idx_ = commit_index_;
+                    commit_entries_if_available();
 
                     // auto it = log_.begin() + (old_commit_idx - (snapshot.last_applied_idx + 1));
                     // ::fwrite(&*it, sizeof(LogEntry), new_commit_idx - old_commit_idx, log_fp);
@@ -380,14 +370,13 @@ void Node::MainLoop() {
                     // ::fflush(log_fp);
                     // ::fsync(fileno(log_fp));
 
-
                 }
 
                 else if constexpr (std::is_same_v<T, RequestVoteRespPayload>) {
                     #ifdef DEBUG
                     std::cout << "found RV reply from node " << payload.server_id << "\n";
                     std:: cout << "current cluster: " << MY_ID << ", ";
-                    for (NodeID id = 0; id < node_ids_.total_size(); ++id) {
+                    for (NodeID id = 0; id < node_ids_.total_bits(); ++id) {
                         if (!node_ids_[id]) continue;
                         std::cout << id << ", ";
                     }
@@ -554,7 +543,7 @@ void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "Received drop peer message - dropping peer " << payload.source_id << "\n";
                     #endif
-                    if (payload.source_id < node_ids_.total_size()) {
+                    if (payload.source_id < node_ids_.total_bits()) {
                         node_ids_.unset(payload.source_id);
                     }
                     next_indexes_[payload.source_id] = -1;
@@ -608,10 +597,16 @@ void Node::MainLoop() {
 
             // create the snapshot and write to disk
             snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
-            ::fwrite(node_ids_.data(), node_ids_.total_size(), 1, snapshot_tmp_fp_);
+            size_t cluster_size_bytes = node_ids_.total_size();
+            ::fwrite(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, snapshot_tmp_fp_);
+            ::fwrite(node_ids_.data(), cluster_size_bytes, 1, snapshot_tmp_fp_);
             ::fwrite(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_tmp_fp_);
             ::fwrite(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_tmp_fp_);
             create_snapshot(snapshot_tmp_fp_, sm_fp_); // caller-defined
+
+            // commit the temp file to disk
+            ::fflush(snapshot_tmp_fp_);
+            ::fsync(fileno(snapshot_tmp_fp_));
 
             ::fclose(snapshot_tmp_fp_);
             snapshot_tmp_fp_ = nullptr;

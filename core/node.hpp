@@ -51,7 +51,7 @@ Persistence:
 
 struct Node {
 public:
-    static std::expected<std::unique_ptr<Node>, std::string> CreateNode(NodeInbox&, void(*)(const LogEntry&), void(*)(FILE*, FILE*));
+    static std::expected<std::unique_ptr<Node>, std::string> CreateNode(NodeInbox&, void(*)(FILE*, const LogEntry&), void(*)(FILE*, FILE*));
     ~Node();
 
     Node(const Node&)            = delete;
@@ -89,6 +89,7 @@ public:
 
     void add_peer_if_not_exists(NodeID, FD, std::unique_ptr<EventLoop>&);
     uint32_t compute_new_commit_idx();
+    void commit_entries_if_available();
 
     /* log compaction/snapshotting/recovery */
     VoidExpectedF recover();
