@@ -11,15 +11,13 @@ void Node::MainLoop() {
     std::cout << "starting node loop (main thread)\n";
     #endif
     while (true) {
-        #ifdef DEBUG
-        if (last_applied_idx_ != commit_index_) {
-            std::cout << "applying log entries from last applied index = " << last_applied_idx_ << " up to and including commit index = " << commit_index_ << "\n";
-        }
-        #endif
         // TODO: notify client that entries were committed
         if (last_applied_idx_ != commit_index_) {
-            for (size_t i = last_applied_idx_; i <= commit_index_; ++i) {
-                apply_entry(sm_fp_, log_[i - (last_applied_idx_)]);
+            #ifdef DEBUG
+            std::cout << "applying log entries from last applied index = " << last_applied_idx_ << " up to and including commit index = " << commit_index_ << "\n";
+            #endif
+            for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
+                apply_entry(sm_fp_, log_[i - (last_applied_idx_ + 1)]);
             }
         }
         last_applied_idx_ = commit_index_;
@@ -63,7 +61,7 @@ void Node::MainLoop() {
                     // reply false if:
                     // term < current_term
                     // log doesn't contain an entry at prev_log_index whose term matches prev_log_term
-                    const size_t log_offset = payload.prev_log_idx - last_applied_idx_;
+                    const size_t log_offset = payload.prev_log_idx - (last_applied_idx_ + 1);
 
                     if (current_term_ > payload.term
                     || log_offset >= log_.size()
@@ -164,7 +162,7 @@ void Node::MainLoop() {
                     leader_id = payload.candidate_id;
                     leader_contact = true;
                     const uint32_t last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_; // logical index
-                    const uint32_t last_log_term = log_[log_.size() + last_applied_idx_].term;
+                    const uint32_t last_log_term = log_.empty() ? 0 : log_.back().term;
                     if (payload.last_log_term > last_log_term
                     || (payload.last_log_term == last_log_term
                         && payload.last_log_idx >= last_log_idx))
@@ -243,21 +241,22 @@ void Node::MainLoop() {
                     ::fclose(snapshot_tmp_fp_);
                     ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
 
-                    if (payload.last_included_idx - last_applied_idx_ > 0
-                        && payload.last_included_idx - last_applied_idx_ < log_.size()) {
-                            log_.erase(log_.begin(), log_.begin() + (payload.last_included_idx - last_applied_idx_) + 1);
-                            ::freopen(LOG_FILE_PATH, "w+", log_fp_);
-                            ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
-                            ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
-                            // if the last included entry of the snapshot matches with that of this node's log, discard all entries up to last_included_idx
-                            if (log_[payload.last_included_idx - last_applied_idx_].term == payload.last_included_term) {
-                                #ifdef DEBUG
-                                std::cout << "overwriting log file w/ current term, voted for, and log entries\n";
-                                #endif
-
-                                // copy the log to the file
-                                ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
-                            }
+                    if (payload.last_included_idx > last_applied_idx_) {
+                        const size_t offset = payload.last_included_idx - (last_applied_idx_ + 1);
+                        if (offset < log_.size() && log_[offset].term == payload.last_included_term) {
+                            // Matching entry found; discard entries up to and including last_included_idx
+                            log_.erase(log_.begin(), log_.begin() + offset + 1);
+                        } else {
+                            // Conflict or snapshot extends beyond log; discard all entries
+                            log_.clear();
+                        }
+                        ::freopen(LOG_FILE_PATH, "w+", log_fp_);
+                        ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
+                        ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
+                        #ifdef DEBUG
+                        std::cout << "overwriting log file w/ current term, voted for, and log entries\n";
+                        #endif
+                        ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
                     }
                     node_ids_.reset(payload.cluster, payload.cluster_raw_size);
                     last_applied_idx_ = payload.last_included_idx;
@@ -301,7 +300,7 @@ void Node::MainLoop() {
                         ));
                     }
                     const uint32_t prev_log_idx = stored_next - 1;
-                    const size_t prev_log_idx_offset = prev_log_idx - last_applied_idx_;
+                    const size_t prev_log_idx_offset = prev_log_idx - (last_applied_idx_ + 1);
                     if (prev_log_idx_offset >= log_.size()) {
                         return UnexpectedF(std::format(
                             "Failed to process AE reply: prev_log_idx offset {} out of bounds (log size = {})",

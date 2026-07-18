@@ -8,6 +8,8 @@
 #include <random>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #ifdef DEBUG
 #include <iostream>
 #endif
@@ -60,10 +62,10 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     }
 
     #ifdef DEBUG
-    ::fseek(n->log_fp_, 0, SEEK_END);
-    int file_size = ::ftell(n->log_fp_);
-    ::rewind(n->log_fp_);
-    std::cout << "log file size = " << file_size << "\n";
+    struct stat st;
+    if (stat(LOG_FILE_PATH, &st) == 0) {
+        std::cout << "log file size = " << st.st_size << "\n";
+    }
     #endif
 
     VoidExpectedF recover_ok = n->recover();
@@ -71,17 +73,6 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
         return UnexpectedF(std::format(
             "Failed to create node: {}\n",
             recover_ok.error()
-        ));
-    }
-
-    mode = access(STATE_MACHINE_FILE_PATH, F_OK) == 0
-        ? "r+"
-        : "w+";
-    n->sm_fp_ = ::fopen(STATE_MACHINE_FILE_PATH, mode);
-    if (n->sm_fp_ == NULL) {
-        return UnexpectedF(std::format(
-            "Error opening state machine file with path {}\n",
-            STATE_MACHINE_FILE_PATH
         ));
     }
 
@@ -162,8 +153,9 @@ void Node::Stop() {
         loops_[i].reset();
         if (threads_[i].joinable()) threads_[i].join();
     }
+
     ::fclose(log_fp_);
-    ::fclose(snapshot_fp_);
+    if (snapshot_fp_ != nullptr) ::fclose(snapshot_fp_);
     ::fclose(sm_fp_);
     if (snapshot_tmp_fp_ != nullptr) ::fclose(snapshot_tmp_fp_);
 }
@@ -171,7 +163,7 @@ void Node::Stop() {
 // ---- outbound --------------------------------------------------------
 
 void Node::request_votes() {
-    for (NodeID id = 0; id < node_ids_.total_size(); ++id) {
+    for (NodeID id = 0; id < node_ids_.total_bits(); ++id) {
         if (!node_ids_[id]) continue;
         #ifdef DEBUG
         std::cout << "sending RV to peer " << id << " on event loop " << static_cast<int>(id & (EVENT_LOOP_THREADS - 1)) << "\n";
@@ -218,6 +210,8 @@ void Node::append_commands(std::vector<std::byte*>& commands) {
     }
     ::fseek(log_fp_, 0, SEEK_END);
     ::fwrite(log_.data() + log_.size() - commands.size(), sizeof(LogEntry), commands.size(), log_fp_);
+
+    commit_entries_if_available();
 
     #ifdef DEBUG
     std::cout << "New log:\n";
@@ -289,7 +283,7 @@ void Node::demote() {
     #ifdef DEBUG
     std::cout << "disarming peer timers\n";
     #endif
-    for (NodeID id = 0; id < node_ids_.total_size(); ++id) {
+    for (NodeID id = 0; id < node_ids_.total_bits(); ++id) {
         if (!node_ids_[id]) continue;
 
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
@@ -333,10 +327,13 @@ void Node::become_leader() {
     ::fseek(log_fp_, 0, SEEK_END);
     ::fwrite(&log_.back(), sizeof(LogEntry), 1, log_fp_);
 
+    // ++last_applied_idx_;
+    // last_applied_term_ = current_term_;
+
     #ifdef DEBUG
     std::cout << "Arming peer timers\n";
     #endif
-    for (NodeID id = 0; id < node_ids_.total_size(); ++id) {
+    for (NodeID id = 0; id < node_ids_.total_bits(); ++id) {
         if (!node_ids_[id]) continue;
 
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
@@ -374,7 +371,7 @@ void Node::become_leader() {
 }
 
 void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLoop>& el) {
-    if (node_id < 0 || (node_id < node_ids_.total_size() && node_ids_[node_id]) || installing_snapshot_id_ >= 0) return;
+    if ((node_id < node_ids_.total_bits() && node_ids_[node_id]) || installing_snapshot_id_ >= 0) return;
     node_ids_.add(node_id);
 
     if (next_indexes_.size() <= node_id) {
@@ -418,8 +415,8 @@ uint32_t Node::compute_new_commit_idx() {
     if (kv_max_freq == freqs.end()) return commit_index_;
     if (kv_max_freq->second <= node_ids_.size() / 2) return commit_index_;
     if (kv_max_freq->first > commit_index_
-        && kv_max_freq->first - last_applied_idx_ < log_.size()
-        && log_[kv_max_freq->first - last_applied_idx_].term == current_term_) {
+        && kv_max_freq->first - (last_applied_idx_ + 1) < log_.size()
+        && log_[kv_max_freq->first - (last_applied_idx_ + 1)].term == current_term_) {
         return kv_max_freq->first;
     }
 
@@ -435,122 +432,182 @@ uint32_t Node::compute_new_commit_idx() {
     for (auto& [match_idx, count] : freqs_vec) {
         if (count <= node_ids_.size() / 2) break;
         if (match_idx > commit_index_
-            && match_idx - last_applied_idx_ < log_.size()
-            && log_[match_idx - last_applied_idx_].term == current_term_) {
+            && match_idx - (last_applied_idx_ + 1) < log_.size()
+            && log_[match_idx - (last_applied_idx_ + 1)].term == current_term_) {
             return match_idx;
         }
     }
     return commit_index_;
 }
 
-// Nodes periodically write a snapshot consisting of:
-// - last included index
-// - last included term
-// - state machine state
+void Node::commit_entries_if_available() {
+    // commit newly appended entries if possible
+    // TODO: notify client that entries were committed
+    uint32_t new_commit_idx = compute_new_commit_idx();
+    if (new_commit_idx == commit_index_) return;
+    commit_index_ = new_commit_idx;
 
-// update the live state machine
-// void Node::apply_entry_to_sm(const LogEntry& entry) {
-//     // get the operation (add, sub, mul, div)
-//     int8_t op = bytes_to_int8(entry.data_);
-//     int8_t amt1 = bytes_to_int8(entry.data_ + 1);
-//     int16_t amt2 = bytes_to_int16(entry.data_ + 2);
-//     int32_t amt = static_cast<uint32_t>(amt1) << 16 | static_cast<uint32_t>(amt2);
-//     int64_t tmp_state = bytes_to_int64(snapshot.state->data());
-//     switch (op) {
-//         case 0:
-//             tmp_state += amt;
-//             break;
-//         case 1:
-//             tmp_state -= amt;
-//             break;
-//         case 2:
-//             tmp_state *= amt;
-//             break;
-//         case 3:
-//             tmp_state /= amt;
-//             break;
-//     }
-//     SMStateBytes tmpa = std::bit_cast<SMStateBytes>(tmp_state);
-//     *snapshot.state = std::move(tmpa);
-// }
+    #ifdef DEBUG
+    std::cout << "applying entries from last applied index = " << last_applied_idx_ << " to commit index = " << commit_index_ << "\n";
+    #endif
+    if (last_applied_idx_ != commit_index_) {
+        for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
+            apply_entry(sm_fp_, log_[i - (last_applied_idx_ + 1)]);
+        }
+    }
+    last_applied_term_ = log_[commit_index_ - (last_applied_idx_ + 1)].term;
+    last_applied_idx_ = commit_index_;
+}
 
+/*
+    If the snapshot file exists and contains data, open it
+    and copy its state data to a separate temp file
+    Atomically rename the temp file to become the new state file
+    If the log file exists and has data,
+    iterate through each entry and apply each one to the state machine
+    Create a new snapshot and store it on disk
+    Clear the log
+
+ */
 VoidExpectedF Node::recover() {
     // Read existing snapshot if it exists and restore the state machine
-    // if (access(SNAPSHOT_FILE_PATH, F_OK) == 0) {
-    //     if (snapshot_fp_ != nullptr) ::fclose(snapshot_fp_);
-    //     ::rename(SNAPSHOT_FILE_PATH, STATE_MACHINE_FILE_PATH);
+    struct stat st;
+    bool snapshot_restored = false;
 
-    //     snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "w+");
-    //     if (snapshot_fp_ == NULL) {
-    //         return UnexpectedF(std::format(
-    //             "Error opening snapshot file with path {}\n",
-    //             SNAPSHOT_FILE_PATH
-    //         ));
-    //     }
-
-    //     ::fseek(snapshot_fp_, -1 * (sizeof(uint32_t) * 2), SEEK_END);
-    //     ::fread(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_fp_);
-    //     ::fread(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_fp_);
-    // }
-    // else {
-    //     snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "w+");
-    // }
-
-    if (access(SNAPSHOT_FILE_PATH, F_OK) == 0) {
+    if (stat(SNAPSHOT_FILE_PATH, &st) == 0
+        && st.st_size >= static_cast<off_t>(
+            sizeof(size_t) + node_ids_.total_size()
+            + sizeof(last_applied_idx_) + sizeof(last_applied_term_))) {
         snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "r+");
-        if (snapshot_fp_ == NULL) {
+        if (snapshot_fp_ == nullptr) {
             return UnexpectedF(std::format(
                 "Error opening snapshot file with path {}\n",
                 SNAPSHOT_FILE_PATH
             ));
         }
-        ::fseek(snapshot_fp_, -1 * (sizeof(uint32_t) * 2), SEEK_END);
+
+        size_t cluster_size_bytes;
+
+        ::fread(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, snapshot_fp_);
+        node_ids_.resize_bytes(cluster_size_bytes);
+        ::fread(node_ids_.data(), cluster_size_bytes, 1, snapshot_fp_);
         ::fread(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_fp_);
         ::fread(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_fp_);
 
+        // Recompute num_set from the restored bitmap
+        node_ids_.num_set = 0;
+        for (size_t i = 0; i < node_ids_.total_size(); ++i) {
+            node_ids_.num_set += std::popcount(node_ids_.v[i]);
+        }
+
+        FILE* sm_tmp_fp = ::fopen(STATE_MACHINE_TMP_FILE_PATH, "w+");
+        if (sm_tmp_fp == nullptr) {
+            return UnexpectedF(std::format(
+                "Error opening state machine file with path {}\n",
+                STATE_MACHINE_FILE_PATH
+            ));
+        }
+        __off64_t offset = static_cast<__off64_t>(
+            sizeof(size_t) // cluster size prefix
+            + cluster_size_bytes
+            + sizeof(last_applied_idx_)
+            + sizeof(last_applied_term_));
+        ssize_t n = copy_file_range(fileno(snapshot_fp_), &offset,
+                                    fileno(sm_tmp_fp), nullptr,
+                                    st.st_size - offset, 0);
+
+        ::fclose(sm_tmp_fp);
+        ::fflush(sm_tmp_fp);
+        ::fsync(fileno(sm_tmp_fp));
+        ::rename(STATE_MACHINE_TMP_FILE_PATH, STATE_MACHINE_FILE_PATH);
+
         ::fclose(snapshot_fp_);
-        ::rename(SNAPSHOT_FILE_PATH, STATE_MACHINE_FILE_PATH);
+        snapshot_fp_ = nullptr;
+        snapshot_restored = true;
     }
-    snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "w+");
 
-    ::fseek(log_fp_, 0, SEEK_END);
-    long file_size = ::ftell(log_fp_);
-    #ifdef DEBUG
-    std::cout << "log file size = " << file_size << "\n";
-    #endif
-    if (file_size <= 0) return {};
-    ::rewind(log_fp_);
-    ::fread(&current_term_, sizeof(current_term_), 1, log_fp_);
-    ::fread(&voted_for_, sizeof(voted_for_), 1, log_fp_);
+    // Open the state machine file
+    const char* sm_mode = access(STATE_MACHINE_FILE_PATH, F_OK) == 0
+        ? "r+"
+        : "w+";
+    sm_fp_ = ::fopen(STATE_MACHINE_FILE_PATH, sm_mode);
+    if (sm_fp_ == nullptr) {
+        return UnexpectedF(std::format(
+            "Error opening state machine file with path {}\n",
+            STATE_MACHINE_FILE_PATH
+        ));
+    }
 
-    size_t num_entries = (static_cast<size_t>(file_size) - sizeof(current_term_) - sizeof(voted_for_)) / sizeof(LogEntry);
-    if (num_entries == 0) return {};
+    // Read the log file header and entries
+    bool read_log_entries = stat(LOG_FILE_PATH, &st) == 0 && st.st_size != 0;
 
-    log_.resize(log_.size() + num_entries);
-    ::fread(&log_.front(), sizeof(LogEntry), num_entries, log_fp_);
+    if (read_log_entries) {
+        ::fread(&current_term_, sizeof(current_term_), 1, log_fp_);
+        ::fread(&voted_for_, sizeof(voted_for_), 1, log_fp_);
 
-    // size_t start = 0;
-    // if (snapshot.last_included_idx > 0 && snapshot.last_included_idx < log_.size()) {
-    //     start = snapshot.last_included_idx;
+        size_t num_entries = (static_cast<size_t>(st.st_size) - sizeof(current_term_) - sizeof(voted_for_)) / sizeof(LogEntry);
+        if (num_entries > 0) {
+            log_.resize(log_.size() + num_entries);
+            ::fread(&log_.front(), sizeof(LogEntry), num_entries, log_fp_);
+        }
+    }
+
+    // Apply all log entries to the state machine. After a previous log
+    // compaction the log file starts at logical index last_applied_idx_ + 1,
+    // so vector index 0 corresponds to logical index last_applied_idx_ + 1
+    // (when a snapshot was restored), or to 0 (when no snapshot exists).
+    for (size_t v = 0; v < log_.size(); ++v) {
+        apply_entry(sm_fp_, log_[v]);
+        last_applied_idx_ = last_applied_idx_ + 1;
+        last_applied_term_ = log_[v].term;
+    }
+
+    // Clear the log file, keeping only term and voted_for
+    ::freopen(LOG_FILE_PATH, "w+", log_fp_);
+    ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
+    ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
+    log_.clear();
+
+    // Create a new snapshot reflecting the fully replayed state
+    FILE* tmp_snap = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
+    size_t cluster_size = node_ids_.total_size();
+    ::fwrite(&cluster_size, sizeof(cluster_size), 1, tmp_snap);
+    ::fwrite(node_ids_.data(), cluster_size, 1, tmp_snap);
+    ::fwrite(&last_applied_idx_, sizeof(last_applied_idx_), 1, tmp_snap);
+    ::fwrite(&last_applied_term_, sizeof(last_applied_term_), 1, tmp_snap);
+    create_snapshot(tmp_snap, sm_fp_);
+    ::fflush(tmp_snap);
+    ::fsync(fileno(tmp_snap));
+    ::fclose(tmp_snap);
+    ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
+
+    // if (!snapshot_restored && !read_log_entries) {
+    //     // Nothing to compact; open snapshot file for runtime and return
+    //     snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "w+");
+    //     if (snapshot_fp_ == nullptr) {
+    //         return UnexpectedF(std::format(
+    //             "Error opening snapshot file with path {}\n",
+    //             SNAPSHOT_FILE_PATH
+    //         ));
+    //     }
+    //     return {};
     // }
 
-    // for (size_t i = start; i < log_.size(); ++i) {
-    //     apply_entry_to_sm(log_[i]);
-    // }
+    // Open snapshot file for runtime use
+    // if (snapshot_fp_ != nullptr) ::fclose(snapshot_fp_);
+    snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "r+");
+    if (snapshot_fp_ == nullptr) {
+        return UnexpectedF(std::format(
+            "Error opening snapshot file with path {}\n",
+            SNAPSHOT_FILE_PATH
+        ));
+    }
 
-    // snapshot.last_included_idx += static_cast<uint32_t>(log_.size() - start);
-    // snapshot.last_included_term = log_.back().term;
+    // Advance commit_index to reflect the fully compacted state
+    commit_index_ = last_applied_idx_;
 
-    //::rewind(snapshot_fp); // not needed if this function only runs in the factory function
-    // ::fwrite(&snapshot, sizeof(Snapshot), 1, snapshot_fp);
-    // ::fflush(snapshot_fp);
-    // ::fsync(fileno(snapshot_fp));
-
-    // only needed if this function is called outside the CreateNode factory function
-    // commit_index_ = snapshot.last_included_idx;
-    // state_ = NodeState::Follower;
-    // voters_.clear();
-    // voted_for_ = -1;
+    // Seek state machine file to end for future appends
+    ::rewind(sm_fp_);
     return {};
 }
 
@@ -585,9 +642,9 @@ VoidExpectedF Node::send_append_entries(uint32_t next_idx, std::unique_ptr<Event
     // next_idx. log_.size()-1 >= next_idx is restated as
     // next_idx < log_.size() to avoid uint underflow on size 0.
     const uint32_t prev_log_idx = next_idx - 1;
-    const size_t prev_log_idx_offset = prev_log_idx - last_applied_idx_;
+    const size_t prev_log_idx_offset = prev_log_idx - (last_applied_idx_ + 1);
     const uint32_t prev_log_term = log_[prev_log_idx_offset].term;
-    const size_t next_idx_offset = next_idx - last_applied_idx_;
+    const size_t next_idx_offset = next_idx - (last_applied_idx_ + 1);
     auto s = next_idx_offset < log_.size()
     ? std::span<LogEntry>(log_.begin() + next_idx_offset, log_.end())
     : std::span<LogEntry>{};
