@@ -607,7 +607,7 @@ VoidExpectedF Node::recover() {
     commit_index_ = last_applied_idx_;
 
     // Seek state machine file to end for future appends
-    ::rewind(sm_fp_);
+    //::fseek(sm_fp_, 0, SEEK_END);
     return {};
 }
 
