@@ -105,7 +105,7 @@ void Node::MainLoop() {
                     current_term_ = payload.term;
                     write_current_term();
                     if (state_ != NodeState::Follower) demote();
-                    leader_id = payload.leader_id;
+                    leader_id_ = payload.leader_id;
                     leader_contact = true;
 
                     send(AppendEntriesRespPayload{
@@ -159,7 +159,7 @@ void Node::MainLoop() {
                         return {};
                     }
 
-                    leader_id = payload.candidate_id;
+                    leader_id_ = payload.candidate_id;
                     leader_contact = true;
                     const uint32_t last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_; // logical index
                     const uint32_t last_log_term = log_.empty() ? 0 : log_.back().term;
@@ -212,7 +212,7 @@ void Node::MainLoop() {
                         .server_id = MY_ID,
                         .term = current_term_}, el);
 
-                    leader_id = payload.leader_id;
+                    leader_id_ = payload.leader_id;
                     leader_contact = true;
 
                     // write data into snapshot file at given offset

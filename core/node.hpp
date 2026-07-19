@@ -121,7 +121,7 @@ public:
     FILE*                                                           sm_fp_                   = nullptr;
     void(*apply_entry)(FILE*, const LogEntry&);
     void(*create_snapshot)(FILE*, FILE*);
-    NodeID                                                          leader_id;
+    NodeID                                                          leader_id_;
     int                                                             installing_snapshot_id_ = -1;
     int                                                             voted_for_              = -1;
     uint32_t                                                        last_applied_idx_       = 0;

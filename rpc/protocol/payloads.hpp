@@ -168,6 +168,7 @@ struct HeartbeatTimeout { NodeID source_id; };
 /* For supporting dynamic cluster configurations */
 struct DropPeerMsg { NodeID source_id; };
 struct AddPeerMsg { FD fd; const char* port; NodeID dest_id; };
+struct ForwardLeaderMsg { NodeID dest_id; };
 
 // using RpcRequest = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisArmTimer>;
 // using RpcReply = std::variant<AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload>;

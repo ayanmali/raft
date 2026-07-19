@@ -4,6 +4,7 @@
 
 #include "./node.hpp"
 #include "./helpers.hpp"
+#include <algorithm>
 #include <csignal>
 #include <random>
 #include <netinet/in.h>
@@ -184,6 +185,7 @@ void Node::append_commands(std::vector<std::byte*>& commands) {
     if (state_ != NodeState::Leader) {
         #ifdef DEBUG
         std::cout << "Found append request in non-leader state - skipping\n";
+        std::cout << "current leader = " << leader_id_ << "\n";
         #endif
         return;
     }
@@ -248,7 +250,7 @@ void Node::append_commands(std::vector<std::byte*>& commands) {
 }
 
 NodeID Node::get_leader() {
-    return leader_id;
+    return leader_id_;
 }
 
 void Node::demote() {
@@ -641,11 +643,14 @@ VoidExpectedF Node::send_append_entries(uint32_t next_idx, EventLoop& el, NodeID
     const uint32_t prev_log_term = log_[prev_log_idx_offset].term;
     const size_t next_idx_offset = next_idx - (last_applied_idx_ + 1);
     auto s = next_idx_offset < log_.size()
-    ? std::span<LogEntry>(log_.begin() + next_idx_offset, log_.end())
+    ? std::span<LogEntry>(
+        log_.begin() + next_idx_offset, log_.end())
+        .first(
+            std::min(MAX_ENTRIES, log_.size() - next_idx_offset)
+        )
     : std::span<LogEntry>{};
 
     #ifdef DEBUG
-    assert(s.size() <= MAX_ENTRIES);
     std::cout << "sending " << s.size() << " entries\n";
     #endif
 
