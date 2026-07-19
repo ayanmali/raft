@@ -46,14 +46,15 @@ Persistence:
 #include <sys/types.h>
 #include <thread>
 #include <unistd.h>
+#include <array>
 #include <unordered_set>
 #include <vector>
 
 struct Node {
 public:
-    static std::expected<std::unique_ptr<Node>, std::string> CreateNode(NodeInbox&, void(*)(FILE*, const LogEntry&), void(*)(FILE*, FILE*));
+    static VoidExpectedF CreateNode(Node*, NodeInbox*, void(*)(FILE*, const LogEntry&), void(*)(FILE*, FILE*));
     ~Node();
-
+    Node()                       = default;
     Node(const Node&)            = delete;
     Node& operator=(const Node&) = delete;
     Node(Node&&)                 = delete;
@@ -72,22 +73,21 @@ public:
     NodeID get_leader();
     // TODO: replace AoS EventLoop w/ SoA pattern
     private:
-    Node(NodeInbox&);
     template <typename T>
-    void send(T&& payload, std::unique_ptr<EventLoop>& el) {
-        el->outbound_inbox.PushOne(
-            std::make_unique<RpcMessage>(std::forward<T>(payload))
+    void send(T&& payload, EventLoop& el) {
+        el.outbound_inbox.PushOne(
+            RpcMessage(std::forward<T>(payload))
         );
-        el->Wake();
+        el.Wake();
     }
-    VoidExpectedF send_append_entries(uint32_t next_idx, std::unique_ptr<EventLoop>&, NodeID);
-    VoidExpectedF send_install_snapshot(std::unique_ptr<EventLoop>&, NodeID);
+    VoidExpectedF send_append_entries(uint32_t next_idx, EventLoop&, NodeID);
+    VoidExpectedF send_install_snapshot(EventLoop&, NodeID);
     void request_votes();
 
     void demote();
     void become_leader();
 
-    void add_peer_if_not_exists(NodeID, FD, std::unique_ptr<EventLoop>&);
+    void add_peer_if_not_exists(NodeID, FD, EventLoop&);
     uint32_t compute_new_commit_idx();
     void commit_entries_if_available();
 
@@ -98,7 +98,6 @@ public:
     void write_voted_for();
     void flush_files();
 
-    NodeInbox& inbox_;
     std::unordered_set<NodeID>                                      voters_;
     std::vector<LogEntry>                                           log_;
     std::vector<std::chrono::steady_clock::time_point>              last_ae_sent_            = std::vector<std::chrono::steady_clock::time_point>(BASE_CLUSTER_SIZE, std::chrono::steady_clock::time_point::max());
@@ -109,12 +108,13 @@ public:
     std::vector<int32_t>                                            match_indexes_           = std::vector<int32_t>(BASE_CLUSTER_SIZE, 0);         // leader-only, one per peer
     DynamicBitset                                                   node_ids_                = DynamicBitset(BASE_CLUSTER_SIZE);
 
-    std::unique_ptr<EventLoop>                                      loops_[EVENT_LOOP_THREADS];
-    std::thread                                                     threads_[EVENT_LOOP_THREADS];
+    std::array<EventLoop, EVENT_LOOP_THREADS>                       loops_{};
+    std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
 
     std::chrono::steady_clock::time_point                           last_leader_contact_;
     std::chrono::steady_clock::time_point                           last_flush_;
     std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
+    NodeInbox*                                                      inbox_;
     FILE*                                                           log_fp_                  = nullptr;
     FILE*                                                           snapshot_fp_             = nullptr;
     FILE*                                                           snapshot_tmp_fp_         = nullptr;

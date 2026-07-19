@@ -10,15 +10,10 @@
 #include <iostream>
 #endif
 
-EventLoop::EventLoop(size_t inbound_cap, NodeInbox& node_inbox, size_t this_id, long heartbeat_period) :
-client_slab{inbound_cap},
-node_inbox{node_inbox},
-this_id{this_id},
-heartbeat_period{heartbeat_period}
-{}
-
-std::expected<std::unique_ptr<EventLoop>, std::string> EventLoop::CreateEventLoop(size_t inbound_cap, NodeInbox& node_inbox, size_t this_id, long heartbeat_period) {
-    auto loop = std::unique_ptr<EventLoop>(new EventLoop(inbound_cap, node_inbox, this_id, heartbeat_period));
+VoidExpectedF EventLoop::CreateEventLoop(EventLoop* loop, NodeInbox* node_inbox, size_t this_id, long heartbeat_period) {
+    loop->node_inbox = node_inbox;
+    loop->this_id = this_id;
+    loop->heartbeat_period = heartbeat_period;
 
     // Epoll fd
     loop->epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
@@ -44,7 +39,7 @@ std::expected<std::unique_ptr<EventLoop>, std::string> EventLoop::CreateEventLoo
         std::format("error initializing event loop; event fd registration failed:\n{}\n", register_ok.error())
     );
 
-    return loop;
+    return {};
 }
 
 EventLoop::~EventLoop() {
@@ -112,7 +107,6 @@ VoidExpected EventLoop::setup_listen_socket() {
     if (::getaddrinfo(nullptr, SERVER_PORT, &hints, &res) != 0 || res == nullptr) {
         return Unexpected("getaddrinfo failed");
     }
-    std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> res_guard(res, &::freeaddrinfo);
 
     listen_fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (listen_fd < 0) return Unexpected("socket failed");
@@ -135,6 +129,7 @@ VoidExpected EventLoop::setup_listen_socket() {
         ::close(listen_fd);
         return Unexpected("listen failed");
     }
+    ::freeaddrinfo(res);
     return {};
 }
 
@@ -311,7 +306,7 @@ VoidExpectedF EventLoop::DrainInbox() {
     #endif
     wake_armed.store(false, std::memory_order_release);
 
-    std::unique_ptr<RpcMessage> out;
+    RpcMessage out;
     while (outbound_inbox.PopOne(&out)) {
         VoidExpectedF ok = std::visit([&out, this](auto&& payload) -> VoidExpectedF {
             using T = std::decay_t<decltype(payload)>;
@@ -395,7 +390,7 @@ VoidExpectedF EventLoop::DrainInbox() {
 
             else static_assert(false, "non-exhaustive visitor!");
             return {};
-        }, *out.get());
+        }, out);
     }
     return {};
 }

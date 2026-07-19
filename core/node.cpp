@@ -14,16 +14,15 @@
 #include <iostream>
 #endif
 
-Node::Node(NodeInbox& inbox_) : inbox_(inbox_) {}
-
 // Factory function
 // Node requires stable addresses (i.e. not movable)
-std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& inbox,
+VoidExpectedF Node::CreateNode(Node* n, NodeInbox* inbox,
     void(*apply_entry_to_sm)(FILE*, const LogEntry&),
     void(*create_snapshot)(FILE*, FILE*)) {
     static_assert(EVENT_LOOP_THREADS > 0 && (EVENT_LOOP_THREADS & (EVENT_LOOP_THREADS - 1)) == 0,
         "Node: EVENT_LOOP_THREADS must be a power of 2 (MPSC inbox requires it)");
-    auto n = std::unique_ptr<Node>(new Node(inbox));
+
+    n->inbox_ = inbox;
     n->apply_entry = apply_entry_to_sm;
     n->create_snapshot = create_snapshot;
 
@@ -77,21 +76,18 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     }
 
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
-        std::expected<std::unique_ptr<EventLoop>, std::string> loop_raw = EventLoop::CreateEventLoop(
-            MAX_SERVER_CONNS,
-            inbox,
-            i,
-            HEARTBEAT_INTERVAL
+        //n.loops_[i] = std::move(*loop_raw);
+        VoidExpectedF create_el_ok = EventLoop::CreateEventLoop(
+            &n->loops_[i], inbox, i, HEARTBEAT_INTERVAL
         );
-        if (!loop_raw){
+        if (!create_el_ok){
             return UnexpectedF(
-                std::format("error creating event loop {}:\n{}\n", i, loop_raw.error())
+                std::format("error creating event loop {}:\n{}\n", i, create_el_ok.error())
             );
         }
-        n->loops_[i] = std::move(*loop_raw);
 
-        n->threads_[i] = std::thread([ptr = n.get(), i] {
-            VoidExpectedF loop_ok = ptr->loops_[i]->Run();
+        n->threads_[i] = std::thread([&n, i] {
+            VoidExpectedF loop_ok = n->loops_[i].Run();
             #ifdef DEBUG
             std::cout << "event loop " << i << " crashed:\n" << loop_ok.error() << "\n";
             #endif
@@ -113,7 +109,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     int i = 0;
     for (; i < MY_ID; ++i) {
         VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
-            ->AddPeer(i, init_cluster[i], SERVER_PORT);
+            .AddPeer(i, init_cluster[i], SERVER_PORT);
         if (!add_peer_ok) {
             return UnexpectedF(
                 std::format("error creating node:\n{}\n", add_peer_ok.error())
@@ -124,7 +120,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     ++i;
     for (; i < BASE_CLUSTER_SIZE; ++i) {
         VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
-            ->AddPeer(i, init_cluster[i], SERVER_PORT);
+            .AddPeer(i, init_cluster[i], SERVER_PORT);
         if (!add_peer_ok) {
             return UnexpectedF(
                 std::format("error creating node:\n{}\n", add_peer_ok.error())
@@ -138,7 +134,7 @@ std::expected<std::unique_ptr<Node>, std::string> Node::CreateNode(NodeInbox& in
     n->chunks_sent_[MY_ID] = -1;
     n->voters_.reserve(BASE_CLUSTER_SIZE);
     n->last_leader_contact_ = std::chrono::steady_clock::now();
-    return n;
+    return {};
 }
 
 Node::~Node() {
@@ -149,8 +145,7 @@ void Node::Stop() {
     if (!running_) return;
     running_ = false;
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
-        if (!loops_[i]->stopped.load(std::memory_order_acquire)) loops_[i]->Stop();
-        loops_[i].reset();
+        if (!loops_[i].stopped.load(std::memory_order_acquire)) loops_[i].Stop();
         if (threads_[i].joinable()) threads_[i].join();
     }
 
@@ -170,8 +165,8 @@ void Node::request_votes() {
         #endif
 
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
-        el->outbound_inbox.PushOne(
-            std::make_unique<RpcMessage>(RequestVoteReqPayload{
+        el.outbound_inbox.PushOne(
+            RpcMessage(RequestVoteReqPayload{
                 .dest_id = id,
                 .term = current_term_,
                 .candidate_id = MY_ID,
@@ -181,7 +176,7 @@ void Node::request_votes() {
         );
         last_rv_sent_[id] = std::chrono::steady_clock::now();
     }
-    for (auto& loop : loops_) { loop->Wake(); }
+    for (auto& loop : loops_) { loop.Wake(); }
 }
 
 void Node::append_commands(std::vector<std::byte*>& commands) {
@@ -287,13 +282,13 @@ void Node::demote() {
         if (!node_ids_[id]) continue;
 
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
-        el->outbound_inbox.PushOne(
-            std::make_unique<RpcMessage>(
+        el.outbound_inbox.PushOne(
+            RpcMessage(
                 DisarmTimer{ .dest_id = id }
             )
         );
     }
-    for (auto& loop : loops_) { loop->Wake(); }
+    for (auto& loop : loops_) { loop.Wake(); }
 }
 
 void Node::become_leader() {
@@ -356,9 +351,9 @@ void Node::become_leader() {
         // std::cout << "posted heartbeat message to peer " << id << "\n";
         // #endif
         // arm this peer's heartbeat timer so we know when to send the next heartbeat.
-        el->outbound_inbox.PushOne(
+        el.outbound_inbox.PushOne(
             // send heartbeat rpc
-            std::make_unique<RpcMessage>(
+            RpcMessage(
                 ArmTimer{ .dest_id = id }
             )
         );
@@ -367,10 +362,10 @@ void Node::become_leader() {
         #endif
     }
 
-    for (auto& loop : loops_) { loop->Wake(); }
+    for (auto& loop : loops_) { loop.Wake(); }
 }
 
-void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLoop>& el) {
+void Node::add_peer_if_not_exists(NodeID node_id, FD fd, EventLoop& el) {
     if ((node_id < node_ids_.total_bits() && node_ids_[node_id]) || installing_snapshot_id_ >= 0) return;
     node_ids_.add(node_id);
 
@@ -385,8 +380,8 @@ void Node::add_peer_if_not_exists(NodeID node_id, FD fd, std::unique_ptr<EventLo
     next_indexes_[node_id] = 1;
     // match_indexes_, chunks_sent, last_ae_sent, last_rv_sent_, and last_is_sent_ are default initialized correctly at the corresponding index.
 
-    el->outbound_inbox.PushOne(
-        std::make_unique<RpcMessage>(
+    el.outbound_inbox.PushOne(
+        RpcMessage(
             AddPeerMsg{ .fd = fd, .port = SERVER_PORT, .dest_id = node_id }
         )
     );
@@ -637,7 +632,7 @@ void Node::flush_files() {
     last_flush_ = std::chrono::steady_clock::now();
 }
 
-VoidExpectedF Node::send_append_entries(uint32_t next_idx, std::unique_ptr<EventLoop>& el, NodeID dest_id) {
+VoidExpectedF Node::send_append_entries(uint32_t next_idx, EventLoop& el, NodeID dest_id) {
     // Only send entries when the log actually has some at/after
     // next_idx. log_.size()-1 >= next_idx is restated as
     // next_idx < log_.size() to avoid uint underflow on size 0.
@@ -669,7 +664,7 @@ VoidExpectedF Node::send_append_entries(uint32_t next_idx, std::unique_ptr<Event
     return {};
 }
 
-VoidExpectedF Node::send_install_snapshot(std::unique_ptr<EventLoop>& el, NodeID dest_id) {
+VoidExpectedF Node::send_install_snapshot(EventLoop& el, NodeID dest_id) {
     auto p = InstallSnapshotReqPayload{
         .cluster_raw_size = node_ids_.total_size(),
         .last_included_idx = last_applied_idx_ss_,

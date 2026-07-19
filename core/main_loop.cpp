@@ -24,7 +24,7 @@ void Node::MainLoop() {
 
         // check the reply inbox for new replies that have arrived
         bool leader_contact{false};
-        inbox_.DrainAll([this, &leader_contact](std::unique_ptr<RpcMessage>&& message) {
+        inbox_->DrainAll([this, &leader_contact](RpcMessage&& message) {
             #ifdef DEBUG
             std::cout << "draining node inbox...\n";
             #endif
@@ -568,7 +568,7 @@ void Node::MainLoop() {
                     static_assert(false, "non-exhaustive visitor");
                 }
                 return {};
-            }, *message.get());
+            }, message);
             #ifdef DEBUG
             if (!ok) std::cout << "inbox handler error: " << ok.error() << "\n";
             #else

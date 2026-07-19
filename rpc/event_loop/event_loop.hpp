@@ -9,7 +9,6 @@
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
-#include <memory>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <sys/epoll.h>
@@ -18,10 +17,10 @@
 constexpr int EPOLL_BATCH = 64; // max # of fds processed per loop iteration
 constexpr int MAX_ATTEMPTS = 10;
 
-constexpr size_t INBOX_RING_CAP = 64; // per producer; must be power of 2
+constexpr size_t INBOX_RING_CAP = 1024; // per producer; must be power of 2
 
 // for processing incoming requests/replies
-using NodeInbox = MPSC<std::unique_ptr<RpcMessage>, INBOX_RING_CAP, EVENT_LOOP_THREADS>;
+using NodeInbox = MPSC<RpcMessage, INBOX_RING_CAP, EVENT_LOOP_THREADS>;
 
 struct ReplyHandlerVisitor;
 struct RequestHandlerVisitor;
@@ -31,8 +30,12 @@ One event loop runs on one thread.
 */
 struct EventLoop {
     public:
-    static std::expected<std::unique_ptr<EventLoop>, std::string> CreateEventLoop(size_t inbound_cap, NodeInbox& node_inbox, size_t this_id_, long heartbeat_period_);
+    static VoidExpectedF CreateEventLoop(EventLoop*, NodeInbox*, size_t this_id, long heartbeat_period);
+    EventLoop(size_t inbound_cap, NodeInbox*, size_t this_id, long period);
+    EventLoop() = default;
     ~EventLoop();
+    EventLoop(EventLoop&&) = delete;
+    EventLoop& operator=(EventLoop&&) = delete;
     EventLoop(const EventLoop&) = delete;
     EventLoop& operator=(const EventLoop&) = delete;
 
@@ -41,7 +44,7 @@ struct EventLoop {
     void Wake();
     VoidExpectedF AddPeer(NodeID id, const char* ip_addr, const char* port);
 
-    SPSCQueue<std::unique_ptr<RpcMessage>, INBOX_RING_CAP> outbound_inbox{};
+    SPSCQueue<RpcMessage, INBOX_RING_CAP> outbound_inbox{};
 
     std::atomic<bool> stopped{false};
 
@@ -56,20 +59,18 @@ struct EventLoop {
     FD event_fd = -1;
 
     // Inbound
-    NodeInbox& node_inbox; // incoming messages; multi-producer (each event loop is a producer)
+    NodeInbox* node_inbox; // incoming messages; multi-producer (each event loop is a producer)
 
     // ClientID next_conn_id = 0;
 
-    const size_t this_id;
+    size_t this_id;
 
     // Outbound
 
     std::unordered_map<FD, NodeID> peer_fd_to_id;
     std::unordered_map<FD, NodeID> peer_timer_fd_to_id; // for heartbeats
 
-    const long heartbeat_period;
-
-    EventLoop(size_t inbound_cap, NodeInbox&, size_t this_id, long period);
+    long heartbeat_period;
 
     // ---- helpers ----
     static VoidExpected set_nonblocking(FD fd);
@@ -110,8 +111,8 @@ struct EventLoop {
     // DropPeerMsg), and widens it into the RpcMessage variant before pushing.
     bool post_node_inbox(RpcMessage&& msg) {
         for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt) {
-            if (node_inbox.Push(this_id,
-                std::make_unique<RpcMessage>(std::forward<RpcMessage>(msg)))) {
+            if (node_inbox->Push(this_id,
+                RpcMessage(std::forward<RpcMessage>(msg)))) {
                 return true;
             }
         }

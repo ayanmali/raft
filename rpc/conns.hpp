@@ -16,6 +16,7 @@ Buffering convention (used by both flavors):
             send. Once wbuf_offset == wbuf.size(), the buffer is reset and
             EPOLLOUT is disarmed.
 */
+#include "../config.hpp"
 #include "./protocol/payloads.hpp"
 #include <cstddef>
 #include <cstdint>
@@ -120,7 +121,9 @@ struct Slab {
     }
 
     Slab(const Slab&)            = delete;
+    Slab(Slab&&)                 = delete;
     Slab& operator=(const Slab&) = delete;
+    Slab& operator=(Slab&&)      = delete;
 
     T* Acquire() {
         if (!free_head_) return nullptr;
@@ -161,8 +164,9 @@ private:
 struct ClientConnSlab {
     Slab<ClientConn> slab;
 
-    explicit ClientConnSlab(size_t max_server_conns) : slab(max_server_conns) {}
-
+    ClientConnSlab() : slab(MAX_SERVER_CONNS) {}
+    ClientConnSlab(ClientConnSlab&&)                 = delete;
+    ClientConnSlab& operator=(ClientConnSlab&&)      = delete;
     ClientConnSlab(const ClientConnSlab&)            = delete;
     ClientConnSlab& operator=(const ClientConnSlab&) = delete;
 

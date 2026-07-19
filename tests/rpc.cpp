@@ -21,14 +21,14 @@ int main() {
         }
     };
 
-    std::expected<std::unique_ptr<Node>, std::string> n = Node::CreateNode(ni, apply_func, create_snapshot);
-    if (!n) {
+    Node node{};
+    VoidExpectedF node_ok = Node::CreateNode(&node, &ni, apply_func, create_snapshot);
+    if (!node_ok) {
         #ifdef DEBUG
-        std::cout << n.error() << "\n";
+        std::cout << node_ok.error() << "\n";
         #endif
         return 1;
     }
-    std::unique_ptr<Node> node = std::move(*n);
     std::jthread t([&node](){
         std::byte one[CMD_SIZE] = {std::byte{0x00}, std::byte{0x12}, std::byte{0x34}, std::byte{0x56}};
         std::byte two[CMD_SIZE] = {std::byte{0x01}, std::byte{0x69}, std::byte{0x67}, std::byte{0x91}};
@@ -40,9 +40,9 @@ int main() {
             three
         };
         std::this_thread::sleep_for(std::chrono::seconds(4));
-        node->append_commands(data);
+        node.append_commands(data);
     });
-    node->MainLoop();
+    node.MainLoop();
 
     std::cout << "Test Passed\n";
 }

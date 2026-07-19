@@ -49,7 +49,6 @@ VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
     if (::getaddrinfo(p.ip, p.port, &hints, &res) != 0 || res == nullptr) {
         return Unexpected("Error getting address info for peer");
     }
-    std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> guard(res, &::freeaddrinfo);
 
     p.fd = ::socket(res->ai_family,
                      res->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC,
@@ -106,6 +105,8 @@ VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
     #ifdef DEBUG
     std::cout << "finished connecting: peer " << p.peer_id << " socket state = " << static_cast<int>(p.state) << "\n";
     #endif
+
+    ::freeaddrinfo(res);
     return {};
 }
 
