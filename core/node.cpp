@@ -182,12 +182,12 @@ void Node::request_votes() {
 
 void Node::append_commands(std::vector<std::byte*>& commands) {
     //const uint32_t last_log_idx = log_.size() - 1;
-    if (state_ != NodeState::Leader) {
+    if (state_ != NodeState::Leader && leader_id_ >= 0) {
         #ifdef DEBUG
-        std::cout << "Found append request in non-leader state - skipping\n";
+        std::cout << "Found append request in non-leader state - forwarding...\n";
         std::cout << "current leader = " << leader_id_ << "\n";
         #endif
-        return;
+        forward_request(commands);
     }
     #ifdef DEBUG
     std::cout << "appending commands...\n";
@@ -247,6 +247,78 @@ void Node::append_commands(std::vector<std::byte*>& commands) {
         //     }, node_ids_[i])
         // );
         //}
+}
+
+void Node::append_commands(std::byte (&commands)[CMD_SIZE][MAX_ENTRIES], size_t num_entries) {
+    //const uint32_t last_log_idx = log_.size() - 1;
+    if (state_ != NodeState::Leader && leader_id_ >= 0) {
+        #ifdef DEBUG
+        std::cout << "Found append request in non-leader state - forwarding...\n";
+        std::cout << "current leader = " << leader_id_ << "\n";
+        #endif
+        forward_request(commands, num_entries);
+    }
+    #ifdef DEBUG
+    std::cout << "appending commands...\n";
+    std::cout << "Existing log:\n";
+    for (const LogEntry& e : log_) {
+        std::cout << "[(";
+        for (std::byte b : e.data_) {
+            std::cout << static_cast<int>(b) << ", ";
+        }
+        std::cout << "), " << e.term << "]\n";
+    }
+    #endif
+
+    log_.reserve(log_.size() + num_entries);
+    for (int i = 0; i < num_entries; ++i) {
+        log_.emplace_back(commands[i], CMD_SIZE, current_term_);
+    }
+    ::fseek(log_fp_, 0, SEEK_END);
+    ::fwrite(log_.data() + log_.size() - num_entries, sizeof(LogEntry), num_entries, log_fp_);
+
+    commit_entries_if_available();
+
+    #ifdef DEBUG
+    std::cout << "New log:\n";
+    for (const LogEntry& e : log_) {
+        std::cout << "[(";
+        for (std::byte b : e.data_) {
+            std::cout << static_cast<int>(b) << ", ";
+        }
+        std::cout << "), " << e.term << "]\n";
+    }
+    #endif
+}
+
+void Node::forward_request(std::vector<std::byte*>& commands) {
+    auto& el = loops_[leader_id_ & (EVENT_LOOP_THREADS - 1)];
+    size_t sent{0};
+    while (sent < commands.size()) {
+        size_t num_entries = std::min(commands.size() - sent, MAX_ENTRIES);
+        ForwardLeaderMsg msg{
+            .entries_len = num_entries,
+            .sender_id = MY_ID,
+            .dest_id = static_cast<NodeID>(leader_id_),
+            .term = current_term_
+        };
+        std::memcpy(&msg.entries, commands.data() + sent, CMD_SIZE * num_entries);
+        el.outbound_inbox.PushOne(RpcMessage(std::move(msg)));
+        sent += num_entries;
+    }
+    return;
+}
+
+void Node::forward_request(std::byte (&commands)[CMD_SIZE][MAX_ENTRIES], size_t num_entries) {
+    auto& el = loops_[leader_id_ & (EVENT_LOOP_THREADS - 1)];
+    ForwardLeaderMsg msg{
+        .entries_len = num_entries,
+        .sender_id = MY_ID,
+        .dest_id = static_cast<NodeID>(leader_id_),
+        .term = current_term_
+    };
+    std::memcpy(&msg.entries, &commands, CMD_SIZE * num_entries);
+    el.outbound_inbox.PushOne(msg);
 }
 
 NodeID Node::get_leader() {

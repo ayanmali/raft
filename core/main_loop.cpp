@@ -559,6 +559,19 @@ void Node::MainLoop() {
                     }
                 }
 
+                else if constexpr (std::is_same_v<T, ForwardLeaderMsg>) {
+                    if (payload.term != current_term_
+                        || payload.sender_id < 0
+                        || payload.sender_id > node_ids_.total_bits()
+                        || !node_ids_[payload.sender_id]) {
+                            #ifdef DEBUG
+                            std::cout << "forwarded request has a stale term = " << payload.term << " or invalid sender id = " << payload.sender_id << "\n";
+                            #endif
+                            return {};
+                        }
+                    append_commands(payload.entries, payload.entries_len);
+                }
+
                 // These are control messages sent to event loops, not handled by Node.
                 else if constexpr (std::is_same_v<T, ArmTimer>
                     || std::is_same_v<T, DisarmTimer>

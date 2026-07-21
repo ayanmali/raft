@@ -361,6 +361,34 @@ VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload) {
     return {};
 }
 
+VoidExpectedF EventLoop::post_inflight(ForwardLeaderMsg& payload) {
+    #ifdef DEBUG
+    std::cout << "Posting FL RPC to outbound queue for node " << payload.dest_id << "\n";
+    #endif
+    auto it = peer_conns.find(payload.dest_id);
+    if (it == peer_conns.end()) {
+        return UnexpectedF(
+            std::format("Failed to post FL RPC to inflight queue: peer id {} not found in peer_conns\n", payload.dest_id)
+        );
+    }
+    PeerConn& p = it->second;
+
+    BufByteWriter writer{p.wbuf};
+    writer.serialize(payload);
+
+    if (p.state == PeerConn::State::Connected) {
+        VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
+        if (!modify_ok) {
+            return UnexpectedF(std::format(
+                "Failed to post FL RPC to inflight queue for peer {}:\n{}",
+                p.peer_id, modify_ok.error()
+            ));
+        }
+        Wake();
+    }
+    return {};
+}
+
 VoidExpectedF EventLoop::arm_heartbeat_timer(NodeID peer_id) {
     #ifdef DEBUG
     std::cout << "arming heartbeat timer for peer " << peer_id << "\n";

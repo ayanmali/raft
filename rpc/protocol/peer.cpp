@@ -202,3 +202,30 @@ void BufByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
 
     std::memcpy(buf + ptr, &net_done, sizeof(net_done));
 };
+
+void BufByteWriter::serialize(const ForwardLeaderMsg& payload) {
+    auto msg_size           =  htonl(payload.size() + sizeof(uint8_t));
+    auto net_id             =  FL_RPC_ID;
+    auto net_entries_len    =  htonll(payload.entries_len);
+    auto net_sender_id      =  htonl(payload.sender_id);
+    auto net_term           =  htonl(payload.term);
+
+    size_t ptr = 0;
+
+    std::memcpy(buf, &msg_size, sizeof(msg_size));
+    ptr += sizeof(msg_size);
+
+    std::memcpy(buf + ptr, &net_id, sizeof(net_id));
+    ptr += sizeof(net_id);
+
+    std::memcpy(buf + ptr, &net_entries_len, sizeof(net_entries_len));
+    ptr += sizeof(net_entries_len);
+
+    std::memcpy(buf + ptr, &payload.entries, CMD_SIZE * payload.entries_len);
+    ptr += CMD_SIZE * payload.entries_len;
+
+    std::memcpy(buf + ptr, &net_sender_id, sizeof(net_sender_id));
+    ptr += sizeof(net_sender_id);
+
+    std::memcpy(buf + ptr, &net_term, sizeof(net_term));
+};

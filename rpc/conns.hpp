@@ -31,7 +31,8 @@ constexpr size_t REQ_SIZE = std::max(
   {
       AppendEntriesReqPayload::size(),
       RequestVoteReqPayload::size(),
-      InstallSnapshotReqPayload::size()
+      InstallSnapshotReqPayload::size(),
+      ForwardLeaderMsg::size()
   }
 );
 constexpr uint32_t RESP_SIZE = static_cast<uint32_t>(

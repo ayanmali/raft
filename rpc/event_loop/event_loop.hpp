@@ -81,6 +81,7 @@ struct EventLoop {
     VoidExpectedF post_inflight(AppendEntriesReqPayload& payload);
     VoidExpectedF post_inflight(RequestVoteReqPayload& payload);
     VoidExpectedF post_inflight(InstallSnapshotReqPayload& payload);
+    VoidExpectedF post_inflight(ForwardLeaderMsg& payload);
 
     VoidExpectedF post_reply(AppendEntriesRespPayload& payload);
     VoidExpectedF post_reply(RequestVoteRespPayload& payload);

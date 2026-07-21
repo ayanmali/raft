@@ -66,9 +66,13 @@ public:
     void MainLoop();
 
     void append_commands(std::vector<std::byte*>&);
-    void append_commands(std::vector<int16_t>&);
-    void append_commands(std::vector<int32_t>&);
-    void append_commands(std::vector<int64_t>&);
+    // void append_commands(std::vector<int16_t>&);
+    // void append_commands(std::vector<int32_t>&);
+    // void append_commands(std::vector<int64_t>&);
+    void append_commands(std::byte (&)[CMD_SIZE][MAX_ENTRIES], size_t num_entries);
+
+    void forward_request(std::vector<std::byte*>&);
+    void forward_request(std::byte (&)[CMD_SIZE][MAX_ENTRIES], size_t num_entries);
 
     NodeID get_leader();
     // TODO: replace AoS EventLoop w/ SoA pattern
@@ -121,16 +125,16 @@ public:
     FILE*                                                           sm_fp_                   = nullptr;
     void(*apply_entry)(FILE*, const LogEntry&);
     void(*create_snapshot)(FILE*, FILE*);
-    NodeID                                                          leader_id_;
-    int                                                             installing_snapshot_id_ = -1;
-    int                                                             voted_for_              = -1;
-    uint32_t                                                        last_applied_idx_       = 0;
-    uint32_t                                                        last_applied_term_      = 0;
-    uint32_t                                                        last_applied_idx_ss_    = 0;
-    uint32_t                                                        last_applied_term_ss_   = 0;
-    uint32_t                                                        current_term_           = 0;
-    uint32_t                                                        commit_index_           = 0;     // index of highest log entry known to be committed
+    int                                                             leader_id_               = -1;
+    int                                                             installing_snapshot_id_  = -1;
+    int                                                             voted_for_               = -1;
+    uint32_t                                                        last_applied_idx_        = 0;
+    uint32_t                                                        last_applied_term_       = 0;
+    uint32_t                                                        last_applied_idx_ss_     = 0;
+    uint32_t                                                        last_applied_term_ss_    = 0;
+    uint32_t                                                        current_term_            = 0;
+    uint32_t                                                        commit_index_            = 0;     // index of highest log entry known to be committed
     enum class                                                      NodeState { Follower, Candidate, Leader };
-    NodeState                                                       state_                  = NodeState::Follower;
-    bool                                                            running_                = false;
+    NodeState                                                       state_                   = NodeState::Follower;
+    bool                                                            running_                 = false;
 };

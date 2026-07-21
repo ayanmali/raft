@@ -50,11 +50,24 @@ std::expected<RpcMessage, const char*> parse_is_req(ByteReader& byte_reader, FD 
     return message;
 }
 
-constexpr std::array<ReqParserFunc, IS_REPLY_ID - IS_RPC_ID> make_parser_table() {
-    std::array<ReqParserFunc, IS_REPLY_ID - IS_RPC_ID> table{};
-    table[AE_REPLY_ID - IS_RPC_ID - 1] = parse_ae_req;
-    table[RV_REPLY_ID - IS_RPC_ID - 1] = parse_rv_req;
-    table[IS_REPLY_ID - IS_RPC_ID - 1] = parse_is_req;
+std::expected<RpcMessage, const char*> parse_fl_req(ByteReader& byte_reader, FD fd) {
+    ForwardLeaderMsg message;
+
+    message.fd = fd;
+    if (!byte_reader.read(message.entries_len)) return Unexpected("failed to parse ForwardLeader entries_len field");
+    if (!byte_reader.read(message.entries, message.entries_len)) return Unexpected("failed to parse ForwardLeader entries field");
+    if (!byte_reader.read(message.sender_id)) return Unexpected("failed to parse ForwardLeader sender ID field");
+    if (!byte_reader.read(message.term)) return Unexpected("failed to parse ForwardLeader term field");
+
+    return message;
+}
+
+constexpr std::array<ReqParserFunc, 4> make_parser_table() {
+    std::array<ReqParserFunc, 4> table{};
+    table[0] = parse_ae_req;
+    table[1] = parse_rv_req;
+    table[2] = parse_is_req;
+    table[3] = parse_fl_req;
 
     return table;
 }

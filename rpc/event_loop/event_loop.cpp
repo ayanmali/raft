@@ -311,7 +311,10 @@ VoidExpectedF EventLoop::DrainInbox() {
         VoidExpectedF ok = std::visit([&out, this](auto&& payload) -> VoidExpectedF {
             using T = std::decay_t<decltype(payload)>;
 
-            if constexpr (std::is_same_v<T, AppendEntriesReqPayload> || std::is_same_v<T, RequestVoteReqPayload> || std::is_same_v<T, InstallSnapshotReqPayload>) {
+            if constexpr (std::is_same_v<T, AppendEntriesReqPayload>
+                || std::is_same_v<T, RequestVoteReqPayload>
+                || std::is_same_v<T, InstallSnapshotReqPayload>
+                || std::is_same_v<T, ForwardLeaderMsg>) {
                 #ifdef DEBUG
                 std::cout << "found request in event loop outbound inbox\n";
                 #endif
@@ -324,7 +327,9 @@ VoidExpectedF EventLoop::DrainInbox() {
                 }
             }
 
-            else if constexpr (std::is_same_v<T, AppendEntriesRespPayload> || std::is_same_v<T, RequestVoteRespPayload> || std::is_same_v<T, InstallSnapshotRespPayload>) {
+            else if constexpr (std::is_same_v<T, AppendEntriesRespPayload>
+                || std::is_same_v<T, RequestVoteRespPayload>
+                || std::is_same_v<T, InstallSnapshotRespPayload>) {
                 #ifdef DEBUG
                 std::cout << "found reply in event loop outbound inbox\n";
                 #endif

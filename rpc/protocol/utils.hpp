@@ -77,6 +77,15 @@ struct ByteReader {
         return true;
     }
 
+
+    template <size_t COL_SIZE, size_t ROW_SIZE>
+    bool read(std::byte (&out)[COL_SIZE][ROW_SIZE], size_t num_rows) {
+        if (remaining() < num_rows * COL_SIZE) return false;
+        std::memcpy(&out, ptr, num_rows * COL_SIZE);
+        ptr += num_rows * COL_SIZE;
+        return true;
+    }
+
     bool read(uint8_t* out, size_t size) {
         if (remaining() < size) return false;
         std::memcpy(out, ptr, size);
@@ -114,6 +123,7 @@ struct BufByteWriter {
     void serialize(const AppendEntriesRespPayload& payload);
     void serialize(const RequestVoteRespPayload& payload);
     void serialize(const InstallSnapshotRespPayload& payload);
+    void serialize(const ForwardLeaderMsg& payload);
     private:
     std::byte* buf;
 };

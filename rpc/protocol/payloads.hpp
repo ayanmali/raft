@@ -10,9 +10,10 @@ RPC request/response payload structs.
 static constexpr uint8_t AE_RPC_ID = 0;
 static constexpr uint8_t RV_RPC_ID = 1;
 static constexpr uint8_t IS_RPC_ID = 2;
-static constexpr uint8_t AE_REPLY_ID = 3;
-static constexpr uint8_t RV_REPLY_ID = 4;
-static constexpr uint8_t IS_REPLY_ID = 5;
+static constexpr uint8_t FL_RPC_ID = 3;
+static constexpr uint8_t AE_REPLY_ID = 4;
+static constexpr uint8_t RV_REPLY_ID = 5;
+static constexpr uint8_t IS_REPLY_ID = 6;
 
 using NodeID = uint32_t;
 using FD = int;
@@ -168,8 +169,20 @@ struct HeartbeatTimeout { NodeID source_id; };
 /* For supporting dynamic cluster configurations */
 struct DropPeerMsg { NodeID source_id; };
 struct AddPeerMsg { FD fd; const char* port; NodeID dest_id; };
-struct ForwardLeaderMsg { NodeID dest_id; };
+struct ForwardLeaderMsg {
+    std::byte entries[CMD_SIZE][MAX_ENTRIES];
+    size_t entries_len;
+    FD fd; // populated by the event loop on client read; not serialized across network
+    NodeID sender_id;
+    NodeID dest_id; // for routing purposes only; not serialized across network
+    uint32_t term;
+
+    static constexpr auto size() {
+        size_t s = sizeof(entries) + sizeof(entries_len) + sizeof(sender_id) + sizeof(term);
+        return s;
+    }
+};
 
 // using RpcRequest = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisArmTimer>;
 // using RpcReply = std::variant<AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload>;
-using RpcMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisarmTimer, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeout, DropPeerMsg, AddPeerMsg>;
+using RpcMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisarmTimer, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeout, DropPeerMsg, AddPeerMsg, ForwardLeaderMsg>;
