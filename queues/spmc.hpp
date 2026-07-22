@@ -78,7 +78,7 @@ struct SPMCQueue {
             const uint64_t offset = read & (N - 1);
             std::memcpy(payload, &buffer[offset], sizeof(T));
 
-            if(read_idx.compare_exchange_weak(
+            if (read_idx.compare_exchange_weak(
                 read, read + 1, std::memory_order_release, std::memory_order_relaxed)) {
                     return true;
                 }

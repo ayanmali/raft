@@ -1,12 +1,11 @@
 #pragma once
 #include "./utils.hpp"
 #include "payloads.hpp"
-#include "../../errors.hpp"
 #include <netinet/in.h>
 
 /* Inbound */
 
-inline std::expected<RpcMessage, const char*> parse_ae_reply(std::byte* rbuf) {
+inline std::variant<RpcMessage, const char*> parse_ae_reply(std::byte* rbuf) {
     AppendEntriesRespPayload response;
 
     size_t ptr = 0;
@@ -29,7 +28,7 @@ inline std::expected<RpcMessage, const char*> parse_ae_reply(std::byte* rbuf) {
     return response;
 }
 
-inline std::expected<RpcMessage, const char*> parse_rv_reply(std::byte* rbuf) {
+inline std::variant<RpcMessage, const char*> parse_rv_reply(std::byte* rbuf) {
     RequestVoteRespPayload response;
 
     size_t ptr = 0;
@@ -48,7 +47,7 @@ inline std::expected<RpcMessage, const char*> parse_rv_reply(std::byte* rbuf) {
     return response;
 }
 
-inline std::expected<RpcMessage, const char*> parse_is_reply(std::byte* rbuf) {
+inline std::variant<RpcMessage, const char*> parse_is_reply(std::byte* rbuf) {
     InstallSnapshotRespPayload response;
 
     size_t ptr = 0;
@@ -75,13 +74,13 @@ constexpr std::array<ReplyParserFunc, IS_RPC_ID + 1> make_reply_parser_table() {
 
 constexpr auto REPLY_PARSER_TABLE = make_reply_parser_table();
 
-inline std::expected<RpcMessage, const char*> parse_rbuf(std::byte* rbuf, uint32_t total_length) {
+inline std::variant<RpcMessage, const char*> parse_rbuf(std::byte* rbuf, uint32_t total_length) {
     uint8_t kind_byte;
     std::memcpy(&kind_byte, rbuf, sizeof(kind_byte));
 
     auto func = REPLY_PARSER_TABLE[kind_byte];
     if (!func)
-        return Unexpected("invalid RPC kind");
+        return ("invalid RPC kind");
 
     return func(rbuf + sizeof(kind_byte));
 }

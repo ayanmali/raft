@@ -1,64 +1,62 @@
 #pragma once
 #include "../conns.hpp"
 #include "./utils.hpp"
-#include "../../errors.hpp"
 #include "payloads.hpp"
-#include <expected>
 
 /* Inbound */
 
-inline std::expected<RpcMessage, const char*> parse_ae_req(ByteReader& byte_reader, FD fd) {
+inline std::variant<RpcMessage, const char*> parse_ae_req(ByteReader& byte_reader, FD fd) {
     AppendEntriesReqPayload message;
 
     message.fd = fd;
-    if (!byte_reader.read(message.entries_len)) return Unexpected("failed to parse AppendEntries entries_len field");
-    if (!byte_reader.read(message.entries, message.entries_len)) return Unexpected("failed to parse AppendEntries entries field");
-    if (!byte_reader.read(message.term)) return Unexpected("failed to parse AppendEntries term field");
-    if (!byte_reader.read(message.leader_id)) return Unexpected("failed to parse AppendEntries leader_id field");
-    if (!byte_reader.read(message.prev_log_idx)) return Unexpected("failed to parse AppendEntries prev_log_idx field");
-    if (!byte_reader.read(message.prev_log_term)) return Unexpected("failed to parse AppendEntries prev_log_term field");
-    if (!byte_reader.read(message.leader_commit)) return Unexpected("failed to parse AppendEntries leader_commit field");
+    if (!byte_reader.read(message.entries_len)) return ("failed to parse AppendEntries entries_len field");
+    if (!byte_reader.read(message.entries, message.entries_len)) return ("failed to parse AppendEntries entries field");
+    if (!byte_reader.read(message.term)) return ("failed to parse AppendEntries term field");
+    if (!byte_reader.read(message.leader_id)) return ("failed to parse AppendEntries leader_id field");
+    if (!byte_reader.read(message.prev_log_idx)) return ("failed to parse AppendEntries prev_log_idx field");
+    if (!byte_reader.read(message.prev_log_term)) return ("failed to parse AppendEntries prev_log_term field");
+    if (!byte_reader.read(message.leader_commit)) return ("failed to parse AppendEntries leader_commit field");
 
     return message;
 }
 
-inline std::expected<RpcMessage, const char*> parse_rv_req(ByteReader& byte_reader, FD fd) {
+inline std::variant<RpcMessage, const char*> parse_rv_req(ByteReader& byte_reader, FD fd) {
     RequestVoteReqPayload message;
 
     message.fd = fd;
-    if (!byte_reader.read(message.term)) return Unexpected("failed to parse RequestVote term field");
-    if (!byte_reader.read(message.candidate_id)) return Unexpected("failed to parse RequestVote candidate_id field");
-    if (!byte_reader.read(message.last_log_idx)) return Unexpected("failed to parse RequestVote last_log_idx field");
-    if (!byte_reader.read(message.last_log_term)) return Unexpected("failed to parse RequestVote last_log_term field");
+    if (!byte_reader.read(message.term)) return ("failed to parse RequestVote term field");
+    if (!byte_reader.read(message.candidate_id)) return ("failed to parse RequestVote candidate_id field");
+    if (!byte_reader.read(message.last_log_idx)) return ("failed to parse RequestVote last_log_idx field");
+    if (!byte_reader.read(message.last_log_term)) return ("failed to parse RequestVote last_log_term field");
 
     return message;
 }
 
-inline std::expected<RpcMessage, const char*> parse_is_req(ByteReader& byte_reader, FD fd) {
+inline std::variant<RpcMessage, const char*> parse_is_req(ByteReader& byte_reader, FD fd) {
     InstallSnapshotReqPayload message;
 
     message.fd = fd;
-    if (!byte_reader.read(message.partial_state, sizeof(message.partial_state))) return Unexpected("failed to parse InstallSnapshot snapshot field");
-    if (!byte_reader.read(message.cluster_raw_size)) return Unexpected("failed to parse InstallSnapshot cluster_raw_size field");
-    if (!byte_reader.read(message.cluster, message.cluster_raw_size)) return Unexpected("failed to parse InstallSnapshot cluster field");
-    if (!byte_reader.read(message.last_included_idx)) return Unexpected("failed to parse InstallSnapshot last_included_idx field");
-    if (!byte_reader.read(message.last_included_term)) return Unexpected("failed to parse InstallSnapshot last_included_term field");
-    if (!byte_reader.read(message.offset)) return Unexpected("failed to parse InstallSnapshot offset field");
-    if (!byte_reader.read(message.term)) return Unexpected("failed to parse InstallSnapshot term field");
-    if (!byte_reader.read(message.leader_id)) return Unexpected("failed to parse InstallSnapshot leader_id field");
-    if (!byte_reader.read(message.done)) return Unexpected("failed to parse InstallSnapshot done field");
+    if (!byte_reader.read(message.partial_state, sizeof(message.partial_state))) return ("failed to parse InstallSnapshot snapshot field");
+    if (!byte_reader.read(message.cluster_raw_size)) return ("failed to parse InstallSnapshot cluster_raw_size field");
+    if (!byte_reader.read(message.cluster, message.cluster_raw_size)) return ("failed to parse InstallSnapshot cluster field");
+    if (!byte_reader.read(message.last_included_idx)) return ("failed to parse InstallSnapshot last_included_idx field");
+    if (!byte_reader.read(message.last_included_term)) return ("failed to parse InstallSnapshot last_included_term field");
+    if (!byte_reader.read(message.offset)) return ("failed to parse InstallSnapshot offset field");
+    if (!byte_reader.read(message.term)) return ("failed to parse InstallSnapshot term field");
+    if (!byte_reader.read(message.leader_id)) return ("failed to parse InstallSnapshot leader_id field");
+    if (!byte_reader.read(message.done)) return ("failed to parse InstallSnapshot done field");
 
     return message;
 }
 
-inline std::expected<RpcMessage, const char*> parse_fl_req(ByteReader& byte_reader, FD fd) {
+inline std::variant<RpcMessage, const char*> parse_fl_req(ByteReader& byte_reader, FD fd) {
     ForwardLeaderMsg message;
 
     message.fd = fd;
-    if (!byte_reader.read(message.entries_len)) return Unexpected("failed to parse ForwardLeader entries_len field");
-    if (!byte_reader.read(message.entries, message.entries_len)) return Unexpected("failed to parse ForwardLeader entries field");
-    if (!byte_reader.read(message.sender_id)) return Unexpected("failed to parse ForwardLeader sender ID field");
-    if (!byte_reader.read(message.term)) return Unexpected("failed to parse ForwardLeader term field");
+    if (!byte_reader.read(message.entries_len)) return ("failed to parse ForwardLeader entries_len field");
+    if (!byte_reader.read(message.entries, message.entries_len)) return ("failed to parse ForwardLeader entries field");
+    if (!byte_reader.read(message.sender_id)) return ("failed to parse ForwardLeader sender ID field");
+    if (!byte_reader.read(message.term)) return ("failed to parse ForwardLeader term field");
 
     return message;
 }
@@ -75,16 +73,16 @@ constexpr std::array<ReqParserFunc, 4> make_parser_table() {
 
 constexpr auto PARSER_TABLE = make_parser_table();
 
-inline std::expected<RpcMessage, const char*> parse_rbuf(ClientConn* c, uint32_t message_size, size_t end, size_t parsed) {
-    // if (sizeof(c->rbuf_) < sizeof(uint32_t)) { return Unexpected("not enough data to read"); } // need to see message size first
+inline std::variant<RpcMessage, const char*> parse_rbuf(ClientConn* c, uint32_t message_size, size_t end, size_t parsed) {
+    // if (sizeof(c->rbuf_) < sizeof(uint32_t)) { return ("not enough data to read"); } // need to see message size first
     // ByteReader byte_reader(std::span<std::byte>(c->rbuf_ + sizeof(message_size), c->rbuf_ + sizeof(message_size) + message_size));
     ByteReader byte_reader(std::span<std::byte>(c->rbuf + parsed + sizeof(message_size), end - sizeof(message_size) - parsed));
     uint8_t rpc_id;
 
-    if (!byte_reader.read(rpc_id)) return Unexpected("failed to parse RPC id");
+    if (!byte_reader.read(rpc_id)) return ("failed to parse RPC id");
 
     auto func = PARSER_TABLE[rpc_id];
-    if (!func) return Unexpected("invalid RPC id");
+    if (!func) return ("invalid RPC id");
 
     return func(byte_reader, c->fd);
 }

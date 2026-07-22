@@ -9,35 +9,35 @@
 #include <iostream>
 #endif
 
-inline VoidExpected EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
+inline std::optional<const char*> EventLoop::modify_peer_interest(PeerConn& p, uint32_t events) {
     if (p.epoll_events == events) return {};
     epoll_event ev{};
     ev.events  = events;
     ev.data.fd = p.fd;
     if (::epoll_ctl(epoll_fd, EPOLL_CTL_MOD, p.fd, &ev) < 0) {
         DropPeer(p);
-        return Unexpected("Error modifying epoll events for peer fd");
+        return "Error modifying epoll events for peer fd";
     }
     p.epoll_events = events;
     return {};
 }
 
-inline VoidExpectedF EventLoop::AddPeer(NodeID id, const char* ip_addr, const char* port) {
+inline std::optional<std::string> EventLoop::AddPeer(NodeID id, const char* ip_addr, const char* port) {
     peer_conns.insert({id, PeerConn{ip_addr, port, id}});
     PeerConn& p = peer_conns.at(id);
-    VoidExpectedF connect_ok = StartConnect(p);
-    if (!connect_ok) {
+    std::optional<std::string> connect_err = StartConnect(p);
+    if (connect_err) {
         #ifdef DEBUG
-        std::cout << "error adding peer " << id << " (ip address = " << ip_addr << ") to configuration: " << connect_ok.error() << "\n";
+        std::cout << "error adding peer " << id << " (ip address = " << ip_addr << ") to configuration: " << connect_err.value() << "\n";
         #endif
-        return UnexpectedF(std::format(
-            "Failed to add peer:\n{}\n", connect_ok.error()
-        ));
+        return std::format(
+            "Failed to add peer:\n{}\n", connect_err.value()
+        );
     }
     return {};
 }
 
-inline VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
+inline std::optional<std::string> EventLoop::StartConnect(PeerConn& p) {
     #ifdef DEBUG
     std::cout << "attempting to connect to peer " << p.peer_id << "\n";
     #endif
@@ -48,20 +48,20 @@ inline VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
 
     addrinfo* res = nullptr;
     if (::getaddrinfo(p.ip, p.port, &hints, &res) != 0 || res == nullptr) {
-        return Unexpected("Error getting address info for peer");
+        return "Error getting address info for peer";
     }
 
     p.fd = ::socket(res->ai_family,
                      res->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC,
                      res->ai_protocol);
-    if (p.fd < 0) return Unexpected("Failed to start socket");
+    if (p.fd < 0) return "Failed to start socket";
 
     int yes = 1;
     ::setsockopt(p.fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
     int rc = ::connect(p.fd, res->ai_addr, res->ai_addrlen);
 
-    if (rc < 0 && errno != EINPROGRESS) { ::close(p.fd); return Unexpected("Failed to connect socket"); }
+    if (rc < 0 && errno != EINPROGRESS) { ::close(p.fd); return "Failed to connect socket"; }
 
     p.state         = PeerConn::State::Connecting;
     p.epoll_events  = EPOLLOUT | EPOLLRDHUP | EPOLLET;
@@ -73,34 +73,34 @@ inline VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
         p.fd = -1;
         p.state = PeerConn::State::Disconnected;
         p.epoll_events = 0;
-        return UnexpectedF(std::format(
+        return std::format(
             "Failed to connect to socket for peer {}:\nerror creating timer fd\n",
             p.peer_id
-        ));
+        );
     }
 
-    VoidExpected peer_fd_ok = register_fd(p.fd, p.epoll_events);
-    if (!peer_fd_ok) {
+    std::optional<const char*> peer_fd_err = register_fd(p.fd, p.epoll_events);
+    if (peer_fd_err) {
         ::close(p.fd);
         p.fd = -1;
         p.state = PeerConn::State::Disconnected;
         p.epoll_events = 0;
-        return UnexpectedF(std::format(
+        return std::format(
             "Failed to connect to peer {}:\n{}\n",
-            p.peer_id, peer_fd_ok.error()
-        ));
+            p.peer_id, peer_fd_err.value()
+        );
     }
     peer_fd_to_id[p.fd] = p.peer_id;
-    VoidExpected timer_fd_ok = register_fd(p.timer_fd, EPOLLIN | EPOLLET);
-    if (!timer_fd_ok) {
+    std::optional<const char*> timer_fd_err = register_fd(p.timer_fd, EPOLLIN | EPOLLET);
+    if (timer_fd_err) {
         ::close(p.timer_fd);
         p.timer_fd = -1;
         p.state = PeerConn::State::Disconnected;
         p.epoll_events = 0;
-        return UnexpectedF(std::format(
+        return std::format(
             "Failed to connect to peer {}:\n{}\n",
-            p.peer_id, timer_fd_ok.error()
-        ));
+            p.peer_id, timer_fd_err.value()
+        );
     }
     peer_timer_fd_to_id[p.timer_fd] = p.peer_id;
     #ifdef DEBUG
@@ -111,7 +111,7 @@ inline VoidExpectedF EventLoop::StartConnect(PeerConn& p) {
     return {};
 }
 
-inline VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
+inline std::optional<const char*> EventLoop::OnPeerReadable(PeerConn& p) {
     #ifdef DEBUG
     std::cout << "peer " << p.peer_id << " readable\n";
     #endif
@@ -124,7 +124,7 @@ inline VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) { break; }
         DropPeer(p);
-        return Unexpected("unexpected error attempting to read from peer socket\n");
+        return "unexpected error attempting to read from peer socket\n";
     }
 
     size_t parsed = 0;
@@ -136,20 +136,20 @@ inline VoidExpected EventLoop::OnPeerReadable(PeerConn& p) {
         if (end - parsed < frame_size) break;
 
         auto result = parse_rbuf(p.rbuf + sizeof(msg_len) + parsed, msg_len);
-        if (!result) break;
+        if (std::holds_alternative<const char*>(result)) break;
         parsed += frame_size;
 
         #ifdef DEBUG
         std::cout << "passing reply from peer " << p.peer_id << " back to node\n";
         #endif
-        post_node_inbox(std::move(*result));
+        post_node_inbox(std::move(std::get<RpcMessage>(result)));
     }
     p.rbuf_offset = end - parsed;
     if (p.rbuf_offset > 0) std::memmove(p.rbuf, p.rbuf + parsed, p.rbuf_offset); // overwrite at the beginning of the buffer
     return {};
 }
 
-inline VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
+inline std::optional<const char*> EventLoop::OnPeerWritable(PeerConn& p) {
     #ifdef DEBUG
     std::cout << "peer " << p.peer_id << " writable\n";
     #endif
@@ -159,15 +159,15 @@ inline VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
         socklen_t l = sizeof(err);
         if (::getsockopt(p.fd, SOL_SOCKET, SO_ERROR, &err, &l) < 0 || err != 0) {
             DropPeer(p);
-            return Unexpected("error attempting to write to peer socket\n");
+            return "error attempting to write to peer socket\n";
         }
         p.state = PeerConn::State::Connected;
         #ifdef DEBUG
         std::cout << "Set peer " << p.peer_id << " fd to Connected\n";
         #endif
-        VoidExpected modify_ok = modify_peer_interest(p, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET);
-        if (!modify_ok) {
-            return modify_ok;
+        std::optional<const char*> modify_err = modify_peer_interest(p, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET);
+        if (modify_err) {
+            return modify_err;
         }
     }
 
@@ -180,7 +180,7 @@ inline VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return {};
         DropPeer(p);
-        return Unexpected("unknown error after writing to peer socket\n");
+        return "unknown error after writing to peer socket\n";
     }
 
     // All bytes sent — but only clear if no new data was appended by
@@ -189,20 +189,20 @@ inline VoidExpected EventLoop::OnPeerWritable(PeerConn& p) {
     if (p.wbuf_offset >= sizeof(p.wbuf)) {
         std::memset(p.wbuf, 0, sizeof(p.wbuf));
         p.wbuf_offset = 0;
-        VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
-        if (!modify_ok) return modify_ok;
+        std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
+        if (modify_err) return modify_err;
     }
     return {};
 }
 
-inline VoidExpected EventLoop::OnPeerTimer(PeerConn& p) {
+inline std::optional<const char*> EventLoop::OnPeerTimer(PeerConn& p) {
     #ifdef DEBUG
     std::cout << "heartbeat timer fired for peer " << p.peer_id << "\n";
     #endif
     uint64_t expirations = 0;
     ssize_t n = ::read(p.timer_fd, &expirations, sizeof(expirations));
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
-        return Unexpected("error attempting to read peer timer fd\n");
+        return "error attempting to read peer timer fd\n";
     }
     if (n != sizeof(expirations) || expirations == 0) return {};
 
@@ -273,7 +273,7 @@ inline void EventLoop::DropPeer(PeerConn& p) {
 // }
 
 /* called when draining the messages in the event loop's MPSC inbox. */
-inline VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload) {
+inline std::optional<std::string> EventLoop::post_inflight(AppendEntriesReqPayload& payload) {
     #ifdef DEBUG
     std::cout << "Posting AE RPC to outbound queue for node " << payload.dest_id << "\n";
     std::cout << "payload term = " << payload.term << "\n";
@@ -283,10 +283,9 @@ inline VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload) 
     #endif
     auto it = peer_conns.find(payload.dest_id);
     if (it == peer_conns.end()) {
-        return UnexpectedF(std::format(
+        return std::format(
             "Failed to post AE RPC to inflight queue: peer id {} not found in peer_conns\n",
-            payload.dest_id
-        ));
+            payload.dest_id);
     }
     PeerConn& p = it->second;
 
@@ -294,27 +293,27 @@ inline VoidExpectedF EventLoop::post_inflight(AppendEntriesReqPayload& payload) 
     writer.serialize(payload);
 
     if (p.state == PeerConn::State::Connected) {
-        VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
-        if (!modify_ok) {
-            return UnexpectedF(std::format(
+        std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
+        if (modify_err) {
+            return std::format(
                 "Failed to post AE RPC to inflight queue for peer {}:\n{}",
-                p.peer_id, modify_ok.error()
-            ));
+                p.peer_id, modify_err.value()
+            );
         }
         Wake();
     }
     return {};
 }
 
-inline VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload) {
+inline std::optional<std::string> EventLoop::post_inflight(RequestVoteReqPayload& payload) {
     #ifdef DEBUG
     std::cout << "Posting RV RPC to outbound queue for node " << payload.dest_id << "\n";
     #endif
     auto it = peer_conns.find(payload.dest_id);
     if (it == peer_conns.end()) {
-        return UnexpectedF(std::format(
+        return std::format(
             "Failed to post RV RPC to inflight queue: peer id {} not found in peer_conns\n", payload.dest_id
-        ));
+        );
     }
     PeerConn& p = it->second;
 
@@ -322,27 +321,25 @@ inline VoidExpectedF EventLoop::post_inflight(RequestVoteReqPayload& payload) {
     writer.serialize(payload);
 
     if (p.state == PeerConn::State::Connected) {
-        VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
-        if (!modify_ok) {
-            return UnexpectedF(std::format(
+        std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
+        if (modify_err) {
+            return std::format(
                 "Failed to post RV RPC to inflight queue for peer {}:\n{}",
-                p.peer_id, modify_ok.error()
-            ));
+                p.peer_id, modify_err.value()
+            );
         }
         Wake();
     }
     return {};
 }
 
-inline VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload) {
+inline std::optional<std::string> EventLoop::post_inflight(InstallSnapshotReqPayload& payload) {
     #ifdef DEBUG
     std::cout << "Posting IS RPC to outbound queue for node " << payload.dest_id << "\n";
     #endif
     auto it = peer_conns.find(payload.dest_id);
     if (it == peer_conns.end()) {
-        return UnexpectedF(
-            std::format("Failed to post IS RPC to inflight queue: peer id {} not found in peer_conns\n", payload.dest_id)
-        );
+        return std::format("Failed to post IS RPC to inflight queue: peer id {} not found in peer_conns\n", payload.dest_id);
     }
     PeerConn& p = it->second;
 
@@ -350,27 +347,25 @@ inline VoidExpectedF EventLoop::post_inflight(InstallSnapshotReqPayload& payload
     writer.serialize(payload);
 
     if (p.state == PeerConn::State::Connected) {
-        VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
-        if (!modify_ok) {
-            return UnexpectedF(std::format(
+        std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
+        if (modify_err) {
+            return std::format(
                 "Failed to post IS RPC to inflight queue for peer {}:\n{}",
-                p.peer_id, modify_ok.error()
-            ));
+                p.peer_id, modify_err.value()
+            );
         }
         Wake();
     }
     return {};
 }
 
-inline VoidExpectedF EventLoop::post_inflight(ForwardLeaderMsg& payload) {
+inline std::optional<std::string> EventLoop::post_inflight(ForwardLeaderMsg& payload) {
     #ifdef DEBUG
     std::cout << "Posting FL RPC to outbound queue for node " << payload.dest_id << "\n";
     #endif
     auto it = peer_conns.find(payload.dest_id);
     if (it == peer_conns.end()) {
-        return UnexpectedF(
-            std::format("Failed to post FL RPC to inflight queue: peer id {} not found in peer_conns\n", payload.dest_id)
-        );
+        return std::format("Failed to post FL RPC to inflight queue: peer id {} not found in peer_conns\n", payload.dest_id);
     }
     PeerConn& p = it->second;
 
@@ -378,28 +373,28 @@ inline VoidExpectedF EventLoop::post_inflight(ForwardLeaderMsg& payload) {
     writer.serialize(payload);
 
     if (p.state == PeerConn::State::Connected) {
-        VoidExpected modify_ok = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
-        if (!modify_ok) {
-            return UnexpectedF(std::format(
+        std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
+        if (modify_err) {
+            return std::format(
                 "Failed to post FL RPC to inflight queue for peer {}:\n{}",
-                p.peer_id, modify_ok.error()
-            ));
+                p.peer_id, modify_err.value()
+            );
         }
         Wake();
     }
     return {};
 }
 
-inline VoidExpectedF EventLoop::arm_heartbeat_timer(NodeID peer_id) {
+inline std::optional<std::string> EventLoop::arm_heartbeat_timer(NodeID peer_id) {
     #ifdef DEBUG
     std::cout << "arming heartbeat timer for peer " << peer_id << "\n";
     #endif
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end() || it->second.timer_fd < 0) {
-        return UnexpectedF(std::format(
+        return std::format(
             "Failed to arm heartbeat timer for peer {}; peer id not found in peer_conns or peer timer_fd < 0\n",
             peer_id
-        ));
+        );
     }
     PeerConn& p = it->second;
 
@@ -417,22 +412,22 @@ inline VoidExpectedF EventLoop::arm_heartbeat_timer(NodeID peer_id) {
     return {};
 }
 
-inline VoidExpectedF EventLoop::disarm_heartbeat_timer(NodeID peer_id) {
+inline std::optional<std::string> EventLoop::disarm_heartbeat_timer(NodeID peer_id) {
     #ifdef DEBUG
     std::cout << "disarming heartbeat timer for node " << peer_id << "\n";
     #endif
     auto it = peer_conns.find(peer_id);
     if (it == peer_conns.end()) {
-        return UnexpectedF(std::format(
+        return std::format(
             "Failed to disarm heartbeat timer for peer {}; peer id not found in peer_conns\n",
             peer_id
-        ));
+        );
     }
     if (it->second.timer_fd < 0) {
-        return UnexpectedF(std::format(
+        return std::format(
             "Failed to disarm heartbeat timer for peer {}; peer timer_fd < 0\n",
             peer_id
-        ));
+        );
     }
     PeerConn& p = it->second;
     // Zero spec disarms; any pending expirations are cleared on the next

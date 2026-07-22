@@ -23,10 +23,10 @@ int main() {
     };
 
     Node node{};
-    VoidExpectedF node_ok = Node::CreateNode(&node, &ni, apply_func, create_snapshot);
-    if (!node_ok) {
+    std::optional<std::string> node_err = Node::CreateNode(&node, &ni, apply_func, create_snapshot);
+    if (node_err) {
         #ifdef DEBUG
-        std::cout << node_ok.error() << "\n";
+        std::cout << node_err.value() << "\n";
         #endif
         return 1;
     }

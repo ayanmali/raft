@@ -41,7 +41,7 @@ Persistence:
 
 struct Node {
 public:
-    static VoidExpectedF CreateNode(Node*, NodeInbox*, void(*)(FILE*, const LogEntry&), void(*)(FILE*, FILE*));
+    static std::optional<std::string> CreateNode(Node*, NodeInbox*, void(*)(FILE*, const LogEntry&), void(*)(FILE*, FILE*));
     ~Node();
     Node()                       = default;
     Node(const Node&)            = delete;
@@ -73,8 +73,8 @@ public:
         );
         el.Wake();
     }
-    VoidExpectedF send_append_entries(uint32_t next_idx, EventLoop&, NodeID);
-    VoidExpectedF send_install_snapshot(EventLoop&, NodeID);
+    std::optional<std::string> send_append_entries(uint32_t next_idx, EventLoop&, NodeID);
+    std::optional<std::string> send_install_snapshot(EventLoop&, NodeID);
     void request_votes();
 
     void demote();
@@ -85,7 +85,7 @@ public:
     void commit_entries_if_available();
 
     /* log compaction/snapshotting/recovery */
-    VoidExpectedF recover();
+    std::optional<std::string> recover();
 
     void write_current_term();
     void write_voted_for();
@@ -131,7 +131,7 @@ public:
 
 // Factory function
 // Node requires stable addresses (i.e. not movable)
-inline VoidExpectedF Node::CreateNode(Node* n, NodeInbox* inbox,
+inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
     void(*apply_entry_to_sm)(FILE*, const LogEntry&),
     void(*create_snapshot)(FILE*, FILE*)) {
     static_assert(EVENT_LOOP_THREADS > 0 && (EVENT_LOOP_THREADS & (EVENT_LOOP_THREADS - 1)) == 0,
@@ -169,7 +169,7 @@ inline VoidExpectedF Node::CreateNode(Node* n, NodeInbox* inbox,
         : "w+";
     n->log_fp_ = ::fopen(LOG_FILE_PATH, mode);
     if (n->log_fp_ == NULL) {
-        return UnexpectedF(std::format(
+        return (std::format(
             "Error opening log file with path {}\n{}\n",
             LOG_FILE_PATH, errno
         ));
@@ -182,29 +182,29 @@ inline VoidExpectedF Node::CreateNode(Node* n, NodeInbox* inbox,
     }
     #endif
 
-    VoidExpectedF recover_ok = n->recover();
-    if (!recover_ok) {
-        return UnexpectedF(std::format(
+    std::optional<std::string> recover_err = n->recover();
+    if (recover_err) {
+        return (std::format(
             "Failed to create node: {}\n",
-            recover_ok.error()
+            recover_err.value()
         ));
     }
 
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
         //n.loops_[i] = std::move(*loop_raw);
-        VoidExpectedF create_el_ok = EventLoop::CreateEventLoop(
+        std::optional<std::string> create_el_err = EventLoop::CreateEventLoop(
             &n->loops_[i], inbox, i, HEARTBEAT_INTERVAL
         );
-        if (!create_el_ok){
-            return UnexpectedF(
-                std::format("error creating event loop {}:\n{}\n", i, create_el_ok.error())
+        if (create_el_err){
+            return (
+                std::format("error creating event loop {}:\n{}\n", i, create_el_err.value())
             );
         }
 
         n->threads_[i] = std::thread([&n, i] {
-            VoidExpectedF loop_ok = n->loops_[i].Run();
+            std::optional<std::string> loop_err = n->loops_[i].Run();
             #ifdef DEBUG
-            std::cout << "event loop " << i << " crashed:\n" << loop_ok.error() << "\n";
+            std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
             #endif
         });
     }
@@ -223,22 +223,22 @@ inline VoidExpectedF Node::CreateNode(Node* n, NodeInbox* inbox,
 
     int i = 0;
     for (; i < MY_ID; ++i) {
-        VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
+        std::optional<std::string> add_peer_err = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
             .AddPeer(i, init_cluster[i], SERVER_PORT);
-        if (!add_peer_ok) {
-            return UnexpectedF(
-                std::format("error creating node:\n{}\n", add_peer_ok.error())
+        if (add_peer_err) {
+            return (
+                std::format("error creating node:\n{}\n", add_peer_err.value())
             );
         }
         n->node_ids_.set(i);
     }
     ++i;
     for (; i < BASE_CLUSTER_SIZE; ++i) {
-        VoidExpectedF add_peer_ok = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
+        std::optional<std::string> add_peer_err = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
             .AddPeer(i, init_cluster[i], SERVER_PORT);
-        if (!add_peer_ok) {
-            return UnexpectedF(
-                std::format("error creating node:\n{}\n", add_peer_ok.error())
+        if (add_peer_err) {
+            return (
+                std::format("error creating node:\n{}\n", add_peer_err.value())
             );
         }
         n->node_ids_.set(i);
@@ -652,7 +652,7 @@ inline void Node::commit_entries_if_available() {
     Clear the log
 
  */
-inline VoidExpectedF Node::recover() {
+inline std::optional<std::string> Node::recover() {
     // Read existing snapshot if it exists and restore the state machine
     struct stat st;
     bool snapshot_restored = false;
@@ -663,7 +663,7 @@ inline VoidExpectedF Node::recover() {
             + sizeof(last_applied_idx_) + sizeof(last_applied_term_))) {
         snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "r+");
         if (snapshot_fp_ == nullptr) {
-            return UnexpectedF(std::format(
+            return (std::format(
                 "Error opening snapshot file with path {}\n",
                 SNAPSHOT_FILE_PATH
             ));
@@ -685,7 +685,7 @@ inline VoidExpectedF Node::recover() {
 
         FILE* sm_tmp_fp = ::fopen(STATE_MACHINE_TMP_FILE_PATH, "w+");
         if (sm_tmp_fp == nullptr) {
-            return UnexpectedF(std::format(
+            return (std::format(
                 "Error opening state machine file with path {}\n",
                 STATE_MACHINE_FILE_PATH
             ));
@@ -715,7 +715,7 @@ inline VoidExpectedF Node::recover() {
         : "w+";
     sm_fp_ = ::fopen(STATE_MACHINE_FILE_PATH, sm_mode);
     if (sm_fp_ == nullptr) {
-        return UnexpectedF(std::format(
+        return (std::format(
             "Error opening state machine file with path {}\n",
             STATE_MACHINE_FILE_PATH
         ));
@@ -780,7 +780,7 @@ inline VoidExpectedF Node::recover() {
     // if (snapshot_fp_ != nullptr) ::fclose(snapshot_fp_);
     snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "r+");
     if (snapshot_fp_ == nullptr) {
-        return UnexpectedF(std::format(
+        return (std::format(
             "Error opening snapshot file with path {}\n",
             SNAPSHOT_FILE_PATH
         ));
@@ -820,7 +820,7 @@ inline void Node::flush_files() {
     last_flush_ = std::chrono::steady_clock::now();
 }
 
-inline VoidExpectedF Node::send_append_entries(uint32_t next_idx, EventLoop& el, NodeID dest_id) {
+inline std::optional<std::string> Node::send_append_entries(uint32_t next_idx, EventLoop& el, NodeID dest_id) {
     // Only send entries when the log actually has some at/after
     // next_idx. log_.size()-1 >= next_idx is restated as
     // next_idx < log_.size() to avoid uint underflow on size 0.
@@ -855,7 +855,7 @@ inline VoidExpectedF Node::send_append_entries(uint32_t next_idx, EventLoop& el,
     return {};
 }
 
-inline VoidExpectedF Node::send_install_snapshot(EventLoop& el, NodeID dest_id) {
+inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, NodeID dest_id) {
     auto p = InstallSnapshotReqPayload{
         .cluster_raw_size = node_ids_.total_size(),
         .last_included_idx = last_applied_idx_ss_,
@@ -875,7 +875,7 @@ inline VoidExpectedF Node::send_install_snapshot(EventLoop& el, NodeID dest_id) 
     // Write the first snapshot chunk to the payload
     ::fseek(snapshot_fp_, node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);
     if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
-        return UnexpectedF(std::format(
+        return (std::format(
             "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset 0",
             dest_id
         ));

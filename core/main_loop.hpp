@@ -29,7 +29,7 @@ inline void Node::MainLoop() {
             #ifdef DEBUG
             std::cout << "draining node inbox...\n";
             #endif
-            VoidExpectedF ok = std::visit([this, &message, &leader_contact](auto&& payload) -> VoidExpectedF {
+            std::optional<std::string> err = std::visit([this, &message, &leader_contact](auto&& payload) -> std::optional<std::string> {
                 using T = std::decay_t<decltype(payload)>;
 
                 /* Handlers */
@@ -219,7 +219,7 @@ inline void Node::MainLoop() {
                     // write data into snapshot file at given offset
                     if (payload.offset == 0) {
                         snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
-                        if (snapshot_tmp_fp_ == NULL) return Unexpected(
+                        if (snapshot_tmp_fp_ == NULL) return (
                             "error in InstallSnapshotRPC handler; failed to open snapshot tmp file\n"
                         );
                         //::fseek(snapshot_tmp_fp_, payload.cluster_raw_size + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);
@@ -295,7 +295,7 @@ inline void Node::MainLoop() {
 
                     const int32_t stored_next = next_indexes_[payload.server_id];
                     if (stored_next < 1) {
-                        return UnexpectedF(std::format(
+                        return (std::format(
                             "Failed to process AE reply: next_index {} for server id {} too small to derive prev_log_idx",
                             stored_next, payload.server_id
                         ));
@@ -303,7 +303,7 @@ inline void Node::MainLoop() {
                     const uint32_t prev_log_idx = stored_next - 1;
                     const size_t prev_log_idx_offset = prev_log_idx - (last_applied_idx_ + 1);
                     if (prev_log_idx_offset >= log_.size()) {
-                        return UnexpectedF(std::format(
+                        return (std::format(
                             "Failed to process AE reply: prev_log_idx offset {} out of bounds (log size = {})",
                             prev_log_idx_offset, log_.size()
                         ));
@@ -450,7 +450,7 @@ inline void Node::MainLoop() {
                         // write the snapshot chunk to the payload
                         ::fseek(snapshot_fp_, node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_) + chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE, SEEK_SET);
                         if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
-                            return UnexpectedF(std::format(
+                            return (std::format(
                                 "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset {}",
                                 payload.server_id, chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE
                             ));
@@ -474,18 +474,18 @@ inline void Node::MainLoop() {
                     auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
                     const int32_t next_idx = next_indexes_[payload.source_id];
                     if (next_idx == 0) {
-                        return UnexpectedF(std::format(
+                        return (std::format(
                             "Failed to process HeartbeatTimeout: next_index 0 for node id {} cannot derive prev_log_idx",
                             payload.source_id
                         ));
                     }
                     if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_ae_sent_[payload.source_id]) > RPC_TIMEOUT) {
                         // retry
-                        VoidExpectedF send_ae_ok = send_append_entries(next_idx, el, payload.source_id);
-                        if (!send_ae_ok) {
-                            return UnexpectedF(std::format(
+                        std::optional<std::string> send_ae_err = send_append_entries(next_idx, el, payload.source_id);
+                        if (send_ae_err) {
+                            return (std::format(
                                 "error retrying AE RPC:\n{}\n",
-                                send_ae_ok.error()
+                                send_ae_err.value()
                             ));
                         }
                     }
@@ -504,11 +504,11 @@ inline void Node::MainLoop() {
                     if (installing_snapshot_id_ == payload.source_id &&
                         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_is_sent_[payload.source_id]) > RPC_TIMEOUT) {
                         // retry
-                        VoidExpectedF send_is_ok = send_install_snapshot(el, payload.source_id);
-                        if (!send_is_ok) {
-                            return UnexpectedF(std::format(
+                        std::optional<std::string> send_is_err = send_install_snapshot(el, payload.source_id);
+                        if (send_is_err) {
+                            return (std::format(
                                 "error retrying IS RPC:\n{}\n",
-                                send_is_ok.error()
+                                send_is_err.value()
                             ));
                         }
                         return {};
@@ -521,20 +521,20 @@ inline void Node::MainLoop() {
                         last_applied_idx_ss_ = last_applied_idx_;
                         last_applied_term_ss_ = last_applied_term_;
 
-                        VoidExpectedF send_is_ok = send_install_snapshot(el, payload.source_id);
-                        if (!send_is_ok) {
-                            return UnexpectedF(std::format(
+                        std::optional<std::string> send_is_err = send_install_snapshot(el, payload.source_id);
+                        if (send_is_err) {
+                            return (std::format(
                                 "error retrying IS RPC:\n{}\n",
-                                send_is_ok.error()
+                                send_is_err.value()
                             ));
                         }
                         return {};
                     }
-                    VoidExpectedF send_ae_ok = send_append_entries(next_idx, el, payload.source_id);
-                    if (!send_ae_ok) {
-                        return UnexpectedF(std::format(
+                    std::optional<std::string> send_ae_err = send_append_entries(next_idx, el, payload.source_id);
+                    if (send_ae_err) {
+                        return (std::format(
                             "error retrying AE RPC:\n{}\n",
-                            send_ae_ok.error()
+                            send_ae_err.value()
                         ));
                     }
                 }
@@ -584,7 +584,7 @@ inline void Node::MainLoop() {
                 return {};
             }, message);
             #ifdef DEBUG
-            if (!ok) std::cout << "inbox handler error: " << ok.error() << "\n";
+            if (err) std::cout << "inbox handler error: " << err.value() << "\n";
             #else
             (void)ok;
             #endif

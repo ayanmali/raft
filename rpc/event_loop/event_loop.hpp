@@ -41,7 +41,7 @@ One event loop runs on one thread.
 */
 struct EventLoop {
     public:
-    static VoidExpectedF CreateEventLoop(EventLoop*, NodeInbox*, size_t this_id, long heartbeat_period);
+    static std::optional<std::string> CreateEventLoop(EventLoop*, NodeInbox*, size_t this_id, long heartbeat_period);
     EventLoop(size_t inbound_cap, NodeInbox*, size_t this_id, long period);
     EventLoop() = default;
     ~EventLoop();
@@ -50,10 +50,10 @@ struct EventLoop {
     EventLoop(const EventLoop&) = delete;
     EventLoop& operator=(const EventLoop&) = delete;
 
-    VoidExpectedF Run();
+    std::optional<std::string> Run();
     void Stop(); // event loop can be stopped via a signal on the event fd
     void Wake();
-    VoidExpectedF AddPeer(NodeID id, const char* ip_addr, const char* port);
+    std::optional<std::string> AddPeer(NodeID id, const char* ip_addr, const char* port);
 
     SPSCQueue<RpcMessage, INBOX_RING_CAP> outbound_inbox{};
 
@@ -84,39 +84,39 @@ struct EventLoop {
     long heartbeat_period;
 
     // ---- helpers ----
-    static VoidExpected set_nonblocking(FD fd);
-    VoidExpected register_fd(FD fd, uint32_t events);
-    VoidExpected modify_client_interest(ClientConn* c, uint32_t events);
-    VoidExpected modify_peer_interest(PeerConn& p, uint32_t events);
+    static std::optional<const char*> set_nonblocking(FD fd);
+    std::optional<const char*> register_fd(FD fd, uint32_t events);
+    std::optional<const char*> modify_client_interest(ClientConn* c, uint32_t events);
+    std::optional<const char*> modify_peer_interest(PeerConn& p, uint32_t events);
 
-    VoidExpectedF post_inflight(AppendEntriesReqPayload& payload);
-    VoidExpectedF post_inflight(RequestVoteReqPayload& payload);
-    VoidExpectedF post_inflight(InstallSnapshotReqPayload& payload);
-    VoidExpectedF post_inflight(ForwardLeaderMsg& payload);
+    std::optional<std::string> post_inflight(AppendEntriesReqPayload& payload);
+    std::optional<std::string> post_inflight(RequestVoteReqPayload& payload);
+    std::optional<std::string> post_inflight(InstallSnapshotReqPayload& payload);
+    std::optional<std::string> post_inflight(ForwardLeaderMsg& payload);
 
-    VoidExpectedF post_reply(AppendEntriesRespPayload& payload);
-    VoidExpectedF post_reply(RequestVoteRespPayload& payload);
-    VoidExpectedF post_reply(InstallSnapshotRespPayload& payload);
+    std::optional<std::string> post_reply(AppendEntriesRespPayload& payload);
+    std::optional<std::string> post_reply(RequestVoteRespPayload& payload);
+    std::optional<std::string> post_reply(InstallSnapshotRespPayload& payload);
 
     // inbound messaging
-    VoidExpected setup_listen_socket();
-    VoidExpected Accept();
-    VoidExpected OnClientReadable(ClientConn* c);
-    VoidExpected OnClientWritable(ClientConn* c);
+    std::optional<const char*> setup_listen_socket();
+    std::optional<const char*> Accept();
+    std::optional<const char*> OnClientReadable(ClientConn* c);
+    std::optional<const char*> OnClientWritable(ClientConn* c);
     void CloseClient(ClientConn* c);
 
     // outbound messaging
-    VoidExpected OnPeerWritable(PeerConn& p);
-    VoidExpected OnPeerReadable(PeerConn& p);
-    VoidExpected OnPeerTimer(PeerConn& p);
-    VoidExpectedF StartConnect(PeerConn& p);
+    std::optional<const char*> OnPeerWritable(PeerConn& p);
+    std::optional<const char*> OnPeerReadable(PeerConn& p);
+    std::optional<const char*> OnPeerTimer(PeerConn& p);
+    std::optional<std::string> StartConnect(PeerConn& p);
     void DropPeer(PeerConn& p);
 
     // wake / inbox
-    VoidExpectedF arm_heartbeat_timer(NodeID peer_id);
-    VoidExpectedF disarm_heartbeat_timer(NodeID peer_id);
-    VoidExpectedF DrainInbox();
-    VoidExpectedF OnEventFd();
+    std::optional<std::string> arm_heartbeat_timer(NodeID peer_id);
+    std::optional<std::string> disarm_heartbeat_timer(NodeID peer_id);
+    std::optional<std::string> DrainInbox();
+    std::optional<std::string> OnEventFd();
     void wake_eventfd_unconditional();
 
     // Accepts any RpcRequest/RpcReply variant, or a bare payload (e.g.
@@ -136,33 +136,33 @@ struct EventLoop {
 #include "./peer.hpp"
 
 
-inline VoidExpectedF EventLoop::CreateEventLoop(EventLoop* loop, NodeInbox* node_inbox, size_t this_id, long heartbeat_period) {
+inline std::optional<std::string> EventLoop::CreateEventLoop(EventLoop* loop, NodeInbox* node_inbox, size_t this_id, long heartbeat_period) {
     loop->node_inbox = node_inbox;
     loop->this_id = this_id;
     loop->heartbeat_period = heartbeat_period;
 
     // Epoll fd
     loop->epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
-    if (loop->epoll_fd < 0) return Unexpected("epoll_create1 failed");
+    if (loop->epoll_fd < 0) return ("epoll_create1 failed");
 
     // Listening socket
-    VoidExpected listen_ok = loop->setup_listen_socket();
-    if (!listen_ok) return Unexpected("listen socket could not be set up");
-    VoidExpected non_blocking_ok = loop->set_nonblocking(loop->listen_fd);
-    if (!non_blocking_ok) return UnexpectedF(
-        std::format("error initializing event loop:\n{}\n", non_blocking_ok.error())
+    std::optional<const char*> listen_err = loop->setup_listen_socket();
+    if (listen_err) return ("listen socket could not be set up");
+    std::optional<const char*> non_blocking_err = loop->set_nonblocking(loop->listen_fd);
+    if (non_blocking_err) return (
+        std::format("error initializing event loop:\n{}\n", non_blocking_err.value())
     );
-    VoidExpected register_ok = loop->register_fd(loop->listen_fd, EPOLLIN | EPOLLET);
-    if (!register_ok) return UnexpectedF(
-        std::format("error initializing event loop; listen fd registration failed:\n{}\n", register_ok.error())
+    std::optional<const char*> register_err = loop->register_fd(loop->listen_fd, EPOLLIN | EPOLLET);
+    if (register_err) return (
+        std::format("error initializing event loop; listen fd registration failed:\n{}\n", register_err.value())
     );
 
     // Cross-thread event fd
     loop->event_fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (loop->event_fd < 0) return Unexpected("eventfd failed");
-    register_ok = loop->register_fd(loop->event_fd, EPOLLIN | EPOLLET);
-    if (!register_ok) return UnexpectedF(
-        std::format("error initializing event loop; event fd registration failed:\n{}\n", register_ok.error())
+    if (loop->event_fd < 0) return ("eventfd failed");
+    register_err = loop->register_fd(loop->event_fd, EPOLLIN | EPOLLET);
+    if (register_err) return (
+        std::format("error initializing event loop; event fd registration failed:\n{}\n", register_err.value())
     );
 
     return {};
@@ -204,26 +204,26 @@ inline void EventLoop::wake_eventfd_unconditional() {
              // will pick up the inbox on its next wake.
 }
 
-inline VoidExpected EventLoop::set_nonblocking(FD fd) {
+inline std::optional<const char*> EventLoop::set_nonblocking(FD fd) {
     int flags = ::fcntl(fd, F_GETFL, 0);
-    if (flags < 0) return Unexpected("fcntl F_GETFL failed");
+    if (flags < 0) return ("fcntl F_GETFL failed");
     if (::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        return Unexpected("fcntl F_SETFL O_NONBLOCK failed");
+        return ("fcntl F_SETFL O_NONBLOCK failed");
     }
     return {};
 }
 
-inline VoidExpected EventLoop::register_fd(FD fd, uint32_t events) {
+inline std::optional<const char*> EventLoop::register_fd(FD fd, uint32_t events) {
     epoll_event ev{};
     ev.events  = events;
     ev.data.fd = fd;
     if (::epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
-        return Unexpected("epoll_ctl ADD failed");
+        return ("epoll_ctl ADD failed");
     }
     return {};
 }
 
-inline VoidExpected EventLoop::setup_listen_socket() {
+inline std::optional<const char*> EventLoop::setup_listen_socket() {
     addrinfo hints{};
     hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -231,11 +231,11 @@ inline VoidExpected EventLoop::setup_listen_socket() {
 
     addrinfo* res = nullptr;
     if (::getaddrinfo(nullptr, SERVER_PORT, &hints, &res) != 0 || res == nullptr) {
-        return Unexpected("getaddrinfo failed");
+        return ("getaddrinfo failed");
     }
 
     listen_fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (listen_fd < 0) return Unexpected("socket failed");
+    if (listen_fd < 0) return ("socket failed");
 
     int yes = 1;
     // SO_REUSEPORT must be set BEFORE bind() so that all N sockets
@@ -250,16 +250,16 @@ inline VoidExpected EventLoop::setup_listen_socket() {
     for (p = res; p; p = p->ai_next) {
         if (::bind(listen_fd, p->ai_addr, p->ai_addrlen) == 0) break;
     }
-    if (!p) { ::close(listen_fd); return Unexpected("bind failed"); }
+    if (!p) { ::close(listen_fd); return ("bind failed"); }
     if (::listen(listen_fd, SERVER_BACKLOG) != 0) {
         ::close(listen_fd);
-        return Unexpected("listen failed");
+        return ("listen failed");
     }
     ::freeaddrinfo(res);
     return {};
 }
 
-inline VoidExpectedF EventLoop::Run() {
+inline std::optional<std::string> EventLoop::Run() {
     #ifdef DEBUG
     std::cout << "starting event loop with id " << this_id << "\n";
     #endif
@@ -272,7 +272,7 @@ inline VoidExpectedF EventLoop::Run() {
 
         if (n < 0) {
             if (errno == EINTR) continue;
-            return Unexpected("epoll_wait failed");
+            return ("epoll_wait failed");
         }
 
         // loop over all ready FDs
@@ -291,19 +291,19 @@ inline VoidExpectedF EventLoop::Run() {
                 #ifdef DEBUG
                 std::cout << "accepting new client connection\n";
                 #endif
-                VoidExpected accept_ok = Accept();
-                if (!accept_ok) std::cout << "failed to accept new client connection; skipping:\n" << accept_ok.error() << "\n";
+                std::optional<const char*> accept_err = Accept();
+                if (accept_err) std::cout << "failed to accept new client connection; skipping:\n" << accept_err.value() << "\n";
                 continue;
             }
             if (fd == event_fd) {
                 #ifdef DEBUG
                 std::cout << "event fd awakened\n";
                 #endif
-                VoidExpectedF on_event_fd_ok = OnEventFd();
-                if (!on_event_fd_ok) {
-                    return UnexpectedF(std::format(
+                std::optional<std::string> on_event_fd_err = OnEventFd();
+                if (on_event_fd_err) {
+                    return (std::format(
                         "Failed to process new event:\n{}\n",
-                        on_event_fd_ok.error()
+                        on_event_fd_err.value()
                     ));
                 }
                 continue;
@@ -331,10 +331,10 @@ inline VoidExpectedF EventLoop::Run() {
                     #ifdef DEBUG
                     std::cout << "new client message from client with ip " << c->client_ip_addr << "\n";
                     #endif
-                    VoidExpected readable_ok = OnClientReadable(c);
-                    if (!readable_ok) {
+                    std::optional<const char*> readable_err = OnClientReadable(c);
+                    if (readable_err) {
                         #ifdef DEBUG
-                        std::cout << "failed to read incoming client message from client with ip " << c->client_ip_addr << ":\n" << readable_ok.error() << "\n";
+                        std::cout << "failed to read incoming client message from client with ip " << c->client_ip_addr << ":\n" << readable_err.value() << "\n";
                         #endif
                         continue;
                     }
@@ -343,10 +343,10 @@ inline VoidExpectedF EventLoop::Run() {
                     #ifdef DEBUG
                     std::cout << "ready to send reply to client with ip " << c->client_ip_addr << "\n";
                     #endif
-                    VoidExpected writable_ok = OnClientWritable(c);
-                    if (!writable_ok) {
+                    std::optional<const char*> writable_err = OnClientWritable(c);
+                    if (writable_err) {
                         #ifdef DEBUG
-                        std::cout << "failed to write to client socket:\n" << writable_ok.error() << "\n";
+                        std::cout << "failed to write to client socket:\n" << writable_err.value() << "\n";
                         #endif
                         continue;
                     }
@@ -377,10 +377,10 @@ inline VoidExpectedF EventLoop::Run() {
                     #ifdef DEBUG
                     std::cout << "obtained reply from peer " << p.peer_id << "\n";
                     #endif
-                    VoidExpected readable_ok = OnPeerReadable(p);
-                    if (!readable_ok) {
+                    std::optional<const char*> readable_err = OnPeerReadable(p);
+                    if (readable_err) {
                         #ifdef DEBUG
-                        std::cout << "failed to read incoming peer reply:\n" << readable_ok.error() << "\n";
+                        std::cout << "failed to read incoming peer reply:\n" << readable_err.value() << "\n";
                         #endif
                         continue;
                     }
@@ -389,10 +389,10 @@ inline VoidExpectedF EventLoop::Run() {
                     #ifdef DEBUG
                     std::cout << "ready to send RPC to peer " << p.peer_id << "\n";
                     #endif
-                    VoidExpected writable_ok = OnPeerWritable(p);
-                    if (!writable_ok) {
+                    std::optional<const char*> writable_err = OnPeerWritable(p);
+                    if (writable_err) {
                         #ifdef DEBUG
-                        std::cout << "failed to write RPC to peer socket:\n" << writable_ok.error() << "\n";
+                        std::cout << "failed to write RPC to peer socket:\n" << writable_err.value() << "\n";
                         #endif
                         continue;
                     }
@@ -406,10 +406,10 @@ inline VoidExpectedF EventLoop::Run() {
                     #ifdef DEBUG
                     std::cout << "timer fd fired for peer " << p.peer_id << "\n";
                     #endif
-                    VoidExpected peer_timer_ok = OnPeerTimer(p);
-                    if (!peer_timer_ok) {
+                    std::optional<const char*> peer_timer_err = OnPeerTimer(p);
+                    if (peer_timer_err) {
                         #ifdef DEBUG
-                        std::cout << "failed to post heartbeat payload to node inbox:\n" << peer_timer_ok.error() << "\n";
+                        std::cout << "failed to post heartbeat payload to node inbox:\n" << peer_timer_err.value() << "\n";
                         #endif
                         continue;
                     }
@@ -422,7 +422,7 @@ inline VoidExpectedF EventLoop::Run() {
 
 /* Cross-thread messaging */
 
-inline VoidExpectedF EventLoop::DrainInbox() {
+inline std::optional<std::string> EventLoop::DrainInbox() {
     // Disarm BEFORE draining the ring. Any producer that pushes after this
     // store but before we finish draining will see armed=false, rearm, and
     // re-wake -- so the next epoll_wait will see the eventfd already
@@ -434,7 +434,7 @@ inline VoidExpectedF EventLoop::DrainInbox() {
 
     RpcMessage out;
     while (outbound_inbox.PopOne(&out)) {
-        VoidExpectedF ok = std::visit([&out, this](auto&& payload) -> VoidExpectedF {
+        std::optional<std::string> ok = std::visit([&out, this](auto&& payload) -> std::optional<std::string> {
             using T = std::decay_t<decltype(payload)>;
 
             if constexpr (std::is_same_v<T, AppendEntriesReqPayload>
@@ -444,11 +444,11 @@ inline VoidExpectedF EventLoop::DrainInbox() {
                 #ifdef DEBUG
                 std::cout << "found request in event loop outbound inbox\n";
                 #endif
-                VoidExpectedF post_ok = post_inflight(payload);
-                if (!post_ok) {
-                    return UnexpectedF(std::format(
+                std::optional<std::string> post_err = post_inflight(payload);
+                if (post_err) {
+                    return (std::format(
                         "Error while draining event loop inbox - failed to post RPC to inflight queue for peer {}:\n{}",
-                        payload.dest_id, post_ok.error()
+                        payload.dest_id, post_err.value()
                     ));
                 }
             }
@@ -459,11 +459,11 @@ inline VoidExpectedF EventLoop::DrainInbox() {
                 #ifdef DEBUG
                 std::cout << "found reply in event loop outbound inbox\n";
                 #endif
-                VoidExpectedF post_ok = post_reply(payload);
-                if (!post_ok) {
-                    return UnexpectedF(std::format(
+                std::optional<std::string> post_err = post_reply(payload);
+                if (post_err) {
+                    return (std::format(
                         "Error while draining event loop inbox - failed to post reply to inflight queue for peer {}:\n{}",
-                        payload.server_id, post_ok.error()
+                        payload.server_id, post_err.value()
                     ));
                 }
             }
@@ -472,11 +472,11 @@ inline VoidExpectedF EventLoop::DrainInbox() {
                 #ifdef DEBUG
                 std::cout << "found arm timer req\n";
                 #endif
-                VoidExpectedF arm_ok = arm_heartbeat_timer(payload.dest_id);
-                if (!arm_ok) {
-                    return UnexpectedF(std::format(
+                std::optional<std::string> arm_err = arm_heartbeat_timer(payload.dest_id);
+                if (arm_err) {
+                    return (std::format(
                         "Error while draining inbox: failed to arm heartbeat timer for node {}:\n{}\n",
-                        payload.dest_id, arm_ok.error()
+                        payload.dest_id, arm_err.value()
                     ));
                 }
             }
@@ -485,11 +485,11 @@ inline VoidExpectedF EventLoop::DrainInbox() {
                 #ifdef DEBUG
                 std::cout << "found disarm timer req\n";
                 #endif
-                VoidExpectedF disarm_ok = disarm_heartbeat_timer(payload.dest_id);
-                if (!disarm_ok) {
-                    return UnexpectedF(std::format(
+                std::optional<std::string> disarm_err = disarm_heartbeat_timer(payload.dest_id);
+                if (disarm_err) {
+                    return (std::format(
                         "Error while draining inbox: failed to disarm heartbeat timer for node {}:\n{}\n",
-                        payload.dest_id, disarm_ok.error()
+                        payload.dest_id, disarm_err.value()
                     ));
                 }
             }
@@ -500,16 +500,16 @@ inline VoidExpectedF EventLoop::DrainInbox() {
                 #endif
 
                 if (auto it = client_conns.find(payload.fd); it != client_conns.end()) {
-                    VoidExpectedF add_peer_ok = AddPeer(payload.dest_id, it->second->client_ip_addr, payload.port);
-                    if (!add_peer_ok) {
-                        return UnexpectedF(std::format(
+                    std::optional<std::string> add_peer_err = AddPeer(payload.dest_id, it->second->client_ip_addr, payload.port);
+                    if (add_peer_err) {
+                        return (std::format(
                             "Failed to add peer - AddPeer failed for fd {}\n{}\n",
-                            payload.fd, add_peer_ok.error()
+                            payload.fd, add_peer_err.value()
                         ));
                     }
                 }
 
-                return UnexpectedF(std::format(
+                return (std::format(
                     "Failed to add peer - fd {} not present in client_conns\n",
                     payload.fd
                 ));
@@ -528,7 +528,7 @@ inline VoidExpectedF EventLoop::DrainInbox() {
 
 // drains this event loop's MPSC inbox
 // for each message in the inbox, enqueue onto the corresponding peer's RPC outbox
-inline VoidExpectedF EventLoop::OnEventFd() {
+inline std::optional<std::string> EventLoop::OnEventFd() {
     uint64_t counter;
     for (;;) {
         ssize_t n = ::read(event_fd, &counter, sizeof(counter));
@@ -537,11 +537,11 @@ inline VoidExpectedF EventLoop::OnEventFd() {
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
         break;
     }
-    VoidExpectedF drain_ok = DrainInbox();
-    if (!drain_ok) {
-        return UnexpectedF(std::format(
+    std::optional<std::string> drain_err = DrainInbox();
+    if (drain_err) {
+        return (std::format(
             "Error while draining inbox:\n{}\n",
-            drain_ok.error()
+            drain_err.value()
         ));
     }
     return {};

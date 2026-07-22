@@ -9,20 +9,20 @@
 #include <iostream>
 #endif
 
-inline VoidExpected EventLoop::modify_client_interest(ClientConn* c, uint32_t events) {
+inline std::optional<const char*> EventLoop::modify_client_interest(ClientConn* c, uint32_t events) {
     if (c->epoll_events == events) return {};
     epoll_event ev{};
     ev.events  = events;
     ev.data.fd = c->fd;
     if (::epoll_ctl(epoll_fd, EPOLL_CTL_MOD, c->fd, &ev) < 0) {
         CloseClient(c);
-        return Unexpected("Error modifying events for client fd");
+        return "Error modifying events for client fd";
     }
     c->epoll_events = events;
     return {};
 }
 
-inline VoidExpected EventLoop::Accept() {
+inline std::optional<const char*> EventLoop::Accept() {
     for (;;) {
         ClientConn* c = client_slab.Acquire();
         if (!c) continue;
@@ -50,10 +50,10 @@ inline VoidExpected EventLoop::Accept() {
         c->fd = fd;
         c->epoll_events = EPOLLIN | EPOLLRDHUP | EPOLLET;
 
-        VoidExpected client_fd_ok = register_fd(fd, c->epoll_events);
-        if (!client_fd_ok) {
+        std::optional<const char*> client_fd_err = register_fd(fd, c->epoll_events);
+        if (client_fd_err) {
             #ifdef DEBUG
-            std::cout << "error accepting client connection:\n" << client_fd_ok.error() << "\n";
+            std::cout << "error accepting client connection:\n" << client_fd_err.value() << "\n";
             #endif
             ::close(fd);
             client_slab.Release(c);
@@ -64,7 +64,7 @@ inline VoidExpected EventLoop::Accept() {
     return {};
 }
 
-inline VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
+inline std::optional<const char*> EventLoop::OnClientWritable(ClientConn* c) {
     #ifdef DEBUG
     std::cout << "client with ip " << c->client_ip_addr << " writable\n";
     #endif
@@ -85,10 +85,10 @@ inline VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
     }
     std::memset(c->wbuf, 0, c->wbuf_size);
     c->wbuf_offset = 0;
-    VoidExpected modify_ok = modify_client_interest(c, c->epoll_events & ~EPOLLOUT);
-    if (!modify_ok) {
+    std::optional<const char*> modify_err = modify_client_interest(c, c->epoll_events & ~EPOLLOUT);
+    if (modify_err) {
         #ifdef DEBUG
-        std::cout << modify_ok.error() << "\n";
+        std::cout << modify_err.value() << "\n";
         #endif
     }
     // if (c.closing && c.pending_tasks == 0) ReapClient(c);
@@ -96,10 +96,10 @@ inline VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
         client_conns.erase(c->fd);
         client_slab.Release(c);
     }
-    return modify_ok;
+    return modify_err;
 }
 
-inline VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
+inline std::optional<const char*> EventLoop::OnClientReadable(ClientConn* c) {
     // TODO: if latency is too high here, replace c.rbuf w a ring buffer, or use readv
     #ifdef DEBUG
     std::cout << "client with ip " << c->client_ip_addr << " readable\n";
@@ -116,7 +116,7 @@ inline VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) { break; }
         CloseClient(c);
-        return Unexpected("unexpected error attempting to read client message\n");
+        return "unexpected error attempting to read client message\n";
     }
 
     // drain as many complete request frames as the buffer can hold
@@ -133,13 +133,13 @@ inline VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
         if (end - parsed < frame_size) break;
 
         auto request_raw = parse_rbuf(c, msg_len, end, parsed); // erases the read bytes in rbuf
-        if (!request_raw) break;
+        if (std::holds_alternative<const char*>(request_raw)) break;
         parsed += frame_size;
 
         #ifdef DEBUG
         std::cout << "posting inbound request from client with client_ip_addr " << c->client_ip_addr << " to node inbox\n";
         #endif
-        post_node_inbox(std::move(*request_raw));
+        post_node_inbox(std::move(std::get<RpcMessage>(request_raw)));
     }
     c->rbuf_offset = end - parsed;
     if (c->rbuf_offset > 0) std::memmove(c->rbuf, c->rbuf + parsed, c->rbuf_offset);
@@ -163,12 +163,10 @@ inline void EventLoop::CloseClient(ClientConn* c) {
     //if (c.pending_tasks == 0) ReapClient(c);
 }
 
-inline VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload) {
+inline std::optional<std::string> EventLoop::post_reply(AppendEntriesRespPayload& payload) {
     auto it = client_conns.find(payload.client_fd);
     if (it == client_conns.end()) {
-        return UnexpectedF(
-            std::format("client fd {} not found\n", payload.client_fd)
-        );
+        return std::format("client fd {} not found\n", payload.client_fd);
     } // message gets dropped
     ClientConn* c = it->second;
     #ifdef DEBUG
@@ -181,21 +179,19 @@ inline VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload) {
     writer.serialize(payload);
 
     if (c->wbuf_offset < c->wbuf_size) {
-        VoidExpected modify_ok = modify_client_interest(c, c->epoll_events | EPOLLOUT);
-        if (!modify_ok) {
-            return UnexpectedF(modify_ok.error());
+        std::optional<const char*> modify_err = modify_client_interest(c, c->epoll_events | EPOLLOUT);
+        if (modify_err) {
+            return modify_err.value();
         }
         Wake();
     }
     return {};
 }
 
-inline VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload) {
+inline std::optional<std::string> EventLoop::post_reply(RequestVoteRespPayload& payload) {
     auto it = client_conns.find(payload.client_fd);
     if (it == client_conns.end()) {
-        return UnexpectedF(
-            std::format("client id {} not found\n", payload.client_fd)
-        );
+        return std::format("client id {} not found\n", payload.client_fd);
     } // message gets dropped
     ClientConn* c = it->second;
     #ifdef DEBUG
@@ -211,21 +207,19 @@ inline VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload) {
     std::cout << "wbuf offset = " << c->wbuf_offset << ", wbuf size = " << sizeof(c->wbuf) << "\n";
     #endif
     if (c->wbuf_offset < c->wbuf_size) {
-        VoidExpected modify_ok = modify_client_interest(c, c->epoll_events | EPOLLOUT);
-        if (!modify_ok) {
-            return UnexpectedF(modify_ok.error());
+        std::optional<const char*> modify_err = modify_client_interest(c, c->epoll_events | EPOLLOUT);
+        if (modify_err) {
+            return modify_err.value();
         }
         Wake();
     }
     return {};
 }
 
-inline VoidExpectedF EventLoop::post_reply(InstallSnapshotRespPayload& payload) {
+inline std::optional<std::string> EventLoop::post_reply(InstallSnapshotRespPayload& payload) {
     auto it = client_conns.find(payload.client_fd);
     if (it == client_conns.end()) {
-        return UnexpectedF(
-            std::format("client id {} not found\n", payload.client_fd)
-        );
+        return std::format("client id {} not found\n", payload.client_fd);
     } // message gets dropped
     ClientConn* c = it->second;
     #ifdef DEBUG
@@ -238,9 +232,9 @@ inline VoidExpectedF EventLoop::post_reply(InstallSnapshotRespPayload& payload) 
     writer.serialize(payload);
 
     if (c->wbuf_offset < c->wbuf_size) {
-        VoidExpected modify_ok = modify_client_interest(c, c->epoll_events | EPOLLOUT);
-        if (!modify_ok) {
-            return UnexpectedF(modify_ok.error());
+        std::optional<const char*> modify_err = modify_client_interest(c, c->epoll_events | EPOLLOUT);
+        if (modify_err) {
+            return modify_err.value();
         }
         Wake();
     }
