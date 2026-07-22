@@ -2,23 +2,6 @@
 /*
 Raft node.
 
-Concurrency model:
-  - N is the number of worker threads. Each thread owns a self-contained
-    EventLoop:
-      * its own listening socket bound to SERVER_PORT via SO_REUSEPORT
-        (the kernel hashes incoming connection 4-tuples to one queue,
-        so each thread sees a disjoint set of inbound clients);
-      * its own eventfd for cross-thread wakeups;
-      * its own epoll instance covering listen fd, eventfd, accepted
-        client fds, and the loop's slice of peer fds.
-  - Peers are sharded across loops by `peer_id % N`. Outbound RPCs to
-    peer p are always sent from loop p % N; inbound replies for that
-    peer arrive on the same loop. No cross-thread peer state.
-  - Raft state (currentTerm, votedFor, log, commitIndex, lastApplied)
-    is held on Node and protected by `state_mu_`. Inbound RPC handlers
-    and outbound reply handlers all run on event-loop threads and
-    acquire the mutex.
-
 Persistence:
   On disk:
     - currentTerm
