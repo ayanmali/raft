@@ -50,11 +50,11 @@ static constexpr int SERVER_BACKLOG = 10; // max # of connections allowed to wai
 // static constexpr uint32_t INLINE_PAYLOAD_BYTES = 256;
 
 // Connection slab capacity. New accepts beyond this cap are closed immediately.
-static constexpr size_t MAX_SERVER_CONNS = 512;
+static constexpr size_t MAX_SERVER_CONNS = 16;
 
-static constexpr int MAX_ENTRIES = 12; // maximum number of entries to append with any given AE RPC
+static constexpr size_t MAX_ENTRIES = 12; // maximum number of entries to append with any given AE RPC
 
-static constexpr size_t LOG_COMPACT_THRESHOLD = 5;
+static constexpr size_t LOG_COMPACT_THRESHOLD = 4;
 
 static constexpr std::chrono::milliseconds RPC_TIMEOUT{MAX_ELECTION_TIMEOUT_MS * 3};
 
@@ -65,6 +65,7 @@ static constexpr const char* METADATA_FILE_PATH = "/root/raft/persistence/metada
 static constexpr const char* SNAPSHOT_FILE_PATH = "/root/raft/persistence/snapshot";
 static constexpr const char* SNAPSHOT_TMP_FILE_PATH = "/root/raft/persistence/snapshot_tmp";
 static constexpr const char* STATE_MACHINE_FILE_PATH = "/root/raft/persistence/state";
+static constexpr const char* STATE_MACHINE_TMP_FILE_PATH = "/root/raft/persistence/state_tmp";
 
 // The peer configuration is IDENTICAL on every node in the cluster. A peer's
 // index in this array is its globally consistent NodeID. Each node lists
