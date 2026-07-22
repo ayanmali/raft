@@ -1,3 +1,4 @@
+#pragma once
 #include "./node.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -6,7 +7,7 @@
 #include <chrono>
 #endif
 
-void Node::MainLoop() {
+inline void Node::MainLoop() {
     #ifdef DEBUG
     std::cout << "starting node loop (main thread)\n";
     #endif

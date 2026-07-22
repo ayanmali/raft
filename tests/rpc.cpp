@@ -1,4 +1,5 @@
 #include "../core/node.hpp"
+#include "../rpc/event_loop/event_loop.hpp"
 #include <thread>
 
 #include <iostream>

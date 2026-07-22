@@ -1,3 +1,4 @@
+#pragma once
 #include "./event_loop.hpp"
 #include "../protocol/utils.hpp"
 #include <arpa/inet.h>
@@ -8,7 +9,7 @@
 #include <iostream>
 #endif
 
-VoidExpected EventLoop::modify_client_interest(ClientConn* c, uint32_t events) {
+inline VoidExpected EventLoop::modify_client_interest(ClientConn* c, uint32_t events) {
     if (c->epoll_events == events) return {};
     epoll_event ev{};
     ev.events  = events;
@@ -21,7 +22,7 @@ VoidExpected EventLoop::modify_client_interest(ClientConn* c, uint32_t events) {
     return {};
 }
 
-VoidExpected EventLoop::Accept() {
+inline VoidExpected EventLoop::Accept() {
     for (;;) {
         ClientConn* c = client_slab.Acquire();
         if (!c) continue;
@@ -63,7 +64,7 @@ VoidExpected EventLoop::Accept() {
     return {};
 }
 
-VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
+inline VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
     #ifdef DEBUG
     std::cout << "client with ip " << c->client_ip_addr << " writable\n";
     #endif
@@ -98,7 +99,7 @@ VoidExpected EventLoop::OnClientWritable(ClientConn* c) {
     return modify_ok;
 }
 
-VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
+inline VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
     // TODO: if latency is too high here, replace c.rbuf w a ring buffer, or use readv
     #ifdef DEBUG
     std::cout << "client with ip " << c->client_ip_addr << " readable\n";
@@ -145,7 +146,7 @@ VoidExpected EventLoop::OnClientReadable(ClientConn* c) {
     return {};
 }
 
-void EventLoop::CloseClient(ClientConn* c) {
+inline void EventLoop::CloseClient(ClientConn* c) {
     #ifdef DEBUG
     std::cout << "closing client with ip " << c->client_ip_addr << "\n";
     #endif
@@ -162,7 +163,7 @@ void EventLoop::CloseClient(ClientConn* c) {
     //if (c.pending_tasks == 0) ReapClient(c);
 }
 
-VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload) {
+inline VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload) {
     auto it = client_conns.find(payload.client_fd);
     if (it == client_conns.end()) {
         return UnexpectedF(
@@ -189,7 +190,7 @@ VoidExpectedF EventLoop::post_reply(AppendEntriesRespPayload& payload) {
     return {};
 }
 
-VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload) {
+inline VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload) {
     auto it = client_conns.find(payload.client_fd);
     if (it == client_conns.end()) {
         return UnexpectedF(
@@ -219,7 +220,7 @@ VoidExpectedF EventLoop::post_reply(RequestVoteRespPayload& payload) {
     return {};
 }
 
-VoidExpectedF EventLoop::post_reply(InstallSnapshotRespPayload& payload) {
+inline VoidExpectedF EventLoop::post_reply(InstallSnapshotRespPayload& payload) {
     auto it = client_conns.find(payload.client_fd);
     if (it == client_conns.end()) {
         return UnexpectedF(
