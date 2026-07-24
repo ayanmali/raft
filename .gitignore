@@ -9,8 +9,12 @@ rpc/protocol.hpp
 rpc/serde.hpp
 thread_pool/*
 unit
+prof
 debug.log
 persistence/log
 persistence/metadata
 persistence/snapshot
 persistence/state
+*.data
+*.perf
+*.old

@@ -1,3 +1,4 @@
+#!/bin/bash
 echo 'fetching latest code...'
 git pull
 echo 'compiling...'
