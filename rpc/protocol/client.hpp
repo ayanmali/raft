@@ -5,7 +5,7 @@
 
 /* Inbound */
 
-inline std::variant<RpcMessage, const char*> parse_ae_req(ByteReader& byte_reader, FD fd) {
+inline std::variant<NodeMessage, const char*> parse_ae_req(ByteReader& byte_reader, FD fd) {
     AppendEntriesReqPayload message;
 
     message.fd = fd;
@@ -20,7 +20,7 @@ inline std::variant<RpcMessage, const char*> parse_ae_req(ByteReader& byte_reade
     return message;
 }
 
-inline std::variant<RpcMessage, const char*> parse_rv_req(ByteReader& byte_reader, FD fd) {
+inline std::variant<NodeMessage, const char*> parse_rv_req(ByteReader& byte_reader, FD fd) {
     RequestVoteReqPayload message;
 
     message.fd = fd;
@@ -32,7 +32,7 @@ inline std::variant<RpcMessage, const char*> parse_rv_req(ByteReader& byte_reade
     return message;
 }
 
-inline std::variant<RpcMessage, const char*> parse_is_req(ByteReader& byte_reader, FD fd) {
+inline std::variant<NodeMessage, const char*> parse_is_req(ByteReader& byte_reader, FD fd) {
     InstallSnapshotReqPayload message;
 
     message.fd = fd;
@@ -49,7 +49,7 @@ inline std::variant<RpcMessage, const char*> parse_is_req(ByteReader& byte_reade
     return message;
 }
 
-inline std::variant<RpcMessage, const char*> parse_fl_req(ByteReader& byte_reader, FD fd) {
+inline std::variant<NodeMessage, const char*> parse_fl_req(ByteReader& byte_reader, FD fd) {
     ForwardLeaderMsg message;
 
     message.fd = fd;
@@ -73,7 +73,7 @@ constexpr std::array<ReqParserFunc, 4> make_parser_table() {
 
 constexpr auto PARSER_TABLE = make_parser_table();
 
-inline std::variant<RpcMessage, const char*> parse_rbuf(ClientConn* c, uint32_t message_size, size_t end, size_t parsed) {
+inline std::variant<NodeMessage, const char*> parse_rbuf(ClientConn* c, uint32_t message_size, size_t end, size_t parsed) {
     // if (sizeof(c->rbuf_) < sizeof(uint32_t)) { return ("not enough data to read"); } // need to see message size first
     // ByteReader byte_reader(std::span<std::byte>(c->rbuf_ + sizeof(message_size), c->rbuf_ + sizeof(message_size) + message_size));
     ByteReader byte_reader(std::span<std::byte>(c->rbuf + parsed + sizeof(message_size), end - sizeof(message_size) - parsed));

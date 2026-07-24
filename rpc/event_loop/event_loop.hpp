@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../../config.hpp"
 #include "../../queues/mpsc.hpp"
 #include "../conns.hpp"
 #include "../../errors.hpp"
@@ -25,13 +26,12 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 
-constexpr int EPOLL_BATCH = 64; // max # of fds processed per loop iteration
 constexpr int MAX_ATTEMPTS = 10;
 
 constexpr size_t INBOX_RING_CAP = 1024; // per producer; must be power of 2
 
 // for processing incoming requests/replies
-using NodeInbox = MPSC<RpcMessage, INBOX_RING_CAP, EVENT_LOOP_THREADS>;
+using NodeInbox = MPSC<NodeMessage, INBOX_RING_CAP, EVENT_LOOP_THREADS>;
 
 struct ReplyHandlerVisitor;
 struct RequestHandlerVisitor;
@@ -55,7 +55,7 @@ struct EventLoop {
     void Wake();
     std::optional<std::string> AddPeer(NodeID id, const char* ip_addr, const char* port);
 
-    SPSCQueue<RpcMessage, INBOX_RING_CAP> outbound_inbox{};
+    SPSCQueue<EventLoopMessage, INBOX_RING_CAP> outbound_inbox{};
 
     std::atomic<bool> stopped{false};
 
@@ -119,12 +119,10 @@ struct EventLoop {
     std::optional<std::string> OnEventFd();
     void wake_eventfd_unconditional();
 
-    // Accepts any RpcRequest/RpcReply variant, or a bare payload (e.g.
-    // DropPeerMsg), and widens it into the RpcMessage variant before pushing.
-    bool post_node_inbox(RpcMessage&& msg) {
+    bool post_node_inbox(NodeMessage&& msg) {
         for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt) {
             if (node_inbox->Push(this_id,
-                RpcMessage(std::forward<RpcMessage>(msg)))) {
+                NodeMessage(std::forward<NodeMessage>(msg)))) {
                 return true;
             }
         }
@@ -432,7 +430,7 @@ inline std::optional<std::string> EventLoop::DrainInbox() {
     #endif
     wake_armed.store(false, std::memory_order_release);
 
-    RpcMessage out;
+    EventLoopMessage out;
     while (outbound_inbox.PopOne(&out)) {
         std::optional<std::string> ok = std::visit([&out, this](auto&& payload) -> std::optional<std::string> {
             using T = std::decay_t<decltype(payload)>;
@@ -513,10 +511,6 @@ inline std::optional<std::string> EventLoop::DrainInbox() {
                     "Failed to add peer - fd {} not present in client_conns\n",
                     payload.fd
                 ));
-            }
-
-            else if constexpr (std::is_same_v<T, HeartbeatTimeout> || std::is_same_v<T, DropPeerMsg>){
-                // These payloads are only sent from EventLoop to Node.
             }
 
             else static_assert(false, "non-exhaustive visitor!");

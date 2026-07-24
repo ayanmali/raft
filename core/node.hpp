@@ -64,12 +64,13 @@ public:
     void forward_request(std::byte (&)[CMD_SIZE][MAX_ENTRIES], size_t num_entries);
 
     NodeID get_leader();
+
     // TODO: replace AoS EventLoop w/ SoA pattern
     private:
     template <typename T>
     void send(T&& payload, EventLoop& el) {
         el.outbound_inbox.PushOne(
-            RpcMessage(std::forward<T>(payload))
+            EventLoopMessage(std::forward<T>(payload))
         );
         el.Wake();
     }
@@ -195,7 +196,7 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
         std::optional<std::string> create_el_err = EventLoop::CreateEventLoop(
             &n->loops_[i], inbox, i, HEARTBEAT_INTERVAL
         );
-        if (create_el_err){
+        if (create_el_err) {
             return (
                 std::format("error creating event loop {}:\n{}\n", i, create_el_err.value())
             );
@@ -203,9 +204,9 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
 
         n->threads_[i] = std::thread([&n, i] {
             std::optional<std::string> loop_err = n->loops_[i].Run();
-            #ifdef DEBUG
-            std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
-            #endif
+            // #ifdef DEBUG
+            // std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
+            // #endif
         });
     }
 
@@ -221,19 +222,8 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
     setup_peers(init_cluster);
     //static_assert(static_cast<size_t>(MY_ID) < BASE_CLUSTER_SIZE, "This node's ID exceeds the cluster size");
 
-    int i = 0;
-    for (; i < MY_ID; ++i) {
-        std::optional<std::string> add_peer_err = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
-            .AddPeer(i, init_cluster[i], SERVER_PORT);
-        if (add_peer_err) {
-            return (
-                std::format("error creating node:\n{}\n", add_peer_err.value())
-            );
-        }
-        n->node_ids_.set(i);
-    }
-    ++i;
-    for (; i < BASE_CLUSTER_SIZE; ++i) {
+    for (int i = 0; i < BASE_CLUSTER_SIZE; ++i) {
+        if (i == MY_ID) continue;
         std::optional<std::string> add_peer_err = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
             .AddPeer(i, init_cluster[i], SERVER_PORT);
         if (add_peer_err) {
@@ -253,11 +243,6 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
 }
 
 inline Node::~Node() {
-    Stop();
-}
-
-inline void Node::Stop() {
-    if (!running_) return;
     running_ = false;
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
         if (!loops_[i].stopped.load(std::memory_order_acquire)) loops_[i].Stop();
@@ -268,6 +253,10 @@ inline void Node::Stop() {
     if (snapshot_fp_ != nullptr) ::fclose(snapshot_fp_);
     ::fclose(sm_fp_);
     if (snapshot_tmp_fp_ != nullptr) ::fclose(snapshot_tmp_fp_);
+}
+
+inline void Node::Stop() {
+    inbox_->Push(0, StopNodeMsg{});
 }
 
 // ---- outbound --------------------------------------------------------
@@ -281,7 +270,7 @@ inline void Node::request_votes() {
 
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
         el.outbound_inbox.PushOne(
-            RpcMessage(RequestVoteReqPayload{
+            EventLoopMessage(RequestVoteReqPayload{
                 .dest_id = id,
                 .term = current_term_,
                 .candidate_id = MY_ID,
@@ -417,7 +406,7 @@ inline void Node::forward_request(std::vector<std::byte*>& commands) {
             .term = current_term_
         };
         std::memcpy(&msg.entries, commands.data() + sent, CMD_SIZE * num_entries);
-        el.outbound_inbox.PushOne(RpcMessage(std::move(msg)));
+        el.outbound_inbox.PushOne(EventLoopMessage(std::move(msg)));
         sent += num_entries;
     }
     return;
@@ -452,13 +441,7 @@ inline void Node::demote() {
     for (size_t i = 0; i < next_indexes_.size(); ++i) {
         if (next_indexes_[i] < 0) continue;
         next_indexes_[i] = 1;
-    }
-    for (size_t i = 0; i < match_indexes_.size(); ++i) {
-        if (match_indexes_[i] < 0) continue;
         match_indexes_[i] = 0;
-    }
-    for (size_t i = 0; i < chunks_sent_.size(); ++i) {
-        if (chunks_sent_[i] < 0) continue;
         chunks_sent_[i] = 0;
     }
 
@@ -471,7 +454,7 @@ inline void Node::demote() {
 
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
         el.outbound_inbox.PushOne(
-            RpcMessage(
+            EventLoopMessage(
                 DisarmTimer{ .dest_id = id }
             )
         );
@@ -484,17 +467,11 @@ inline void Node::become_leader() {
     std::cout << "This node (id = " << MY_ID << ") won the election\n";
     #endif
     const uint32_t last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_; // logical index
-    for (int32_t& i : next_indexes_) {
-        if (i < 0) continue;
-        i = last_log_idx + 1;
-    }
-    for (int32_t& i : match_indexes_) { // is this needed?
-        if (i < 0) continue;
-        i = 0;
-    }
-    for (size_t& i : chunks_sent_) { // is this needed?
-        if (i < 0) continue;
-        i = 0;
+    for (int i = 0; i < next_indexes_.size(); ++i) {
+        if (next_indexes_[i] < 0) continue;
+        next_indexes_[i] = last_log_idx + 1;
+        match_indexes_[i] = 0;
+        chunks_sent_[i] = 0;
     }
 
     voters_.clear();
@@ -523,7 +500,7 @@ inline void Node::become_leader() {
         // send heartbeat rpc
         // const uint32_t prev_log_term = log_.back().term;
         // el->outbound_inbox.PushOne(
-        //     std::make_unique<RpcMessage>(
+        //     std::make_unique<EventLoopMessage>(
         //         AppendEntriesReqPayload{
         //             std::span<LogEntry>{},
         //             id,
@@ -541,7 +518,7 @@ inline void Node::become_leader() {
         // arm this peer's heartbeat timer so we know when to send the next heartbeat.
         el.outbound_inbox.PushOne(
             // send heartbeat rpc
-            RpcMessage(
+            EventLoopMessage(
                 ArmTimer{ .dest_id = id }
             )
         );
@@ -569,7 +546,7 @@ inline void Node::add_peer_if_not_exists(NodeID node_id, FD fd, EventLoop& el) {
     // match_indexes_, chunks_sent, last_ae_sent, last_rv_sent_, and last_is_sent_ are default initialized correctly at the corresponding index.
 
     el.outbound_inbox.PushOne(
-        RpcMessage(
+        EventLoopMessage(
             AddPeerMsg{ .fd = fd, .port = SERVER_PORT, .dest_id = node_id }
         )
     );

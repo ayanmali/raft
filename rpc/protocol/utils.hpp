@@ -18,11 +18,11 @@
 static constexpr uint32_t MAX_VECTOR_SIZE_SANITY = 8192;
 struct ByteReader;
 
-using ReqParserFunc = std::variant<RpcMessage, const char*>(*)(ByteReader&, FD);
-using ReplyParserFunc = std::variant<RpcMessage, const char*>(*)(std::byte*);
+using ReqParserFunc = std::variant<NodeMessage, const char*>(*)(ByteReader&, FD);
+using ReplyParserFunc = std::variant<NodeMessage, const char*>(*)(std::byte*);
 
-std::variant<RpcMessage, const char*> parse_rbuf(std::byte* rbuf, uint32_t total_length);
-std::variant<RpcMessage, const char*> parse_rbuf(ClientConn* c, uint32_t msg_len, size_t end, size_t parsed);
+std::variant<NodeMessage, const char*> parse_rbuf(std::byte* rbuf, uint32_t total_length);
+std::variant<NodeMessage, const char*> parse_rbuf(ClientConn* c, uint32_t msg_len, size_t end, size_t parsed);
 
 struct ByteReader {
     public:

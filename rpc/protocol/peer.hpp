@@ -5,7 +5,7 @@
 
 /* Inbound */
 
-inline std::variant<RpcMessage, const char*> parse_ae_reply(std::byte* rbuf) {
+inline std::variant<NodeMessage, const char*> parse_ae_reply(std::byte* rbuf) {
     AppendEntriesRespPayload response;
 
     size_t ptr = 0;
@@ -28,7 +28,7 @@ inline std::variant<RpcMessage, const char*> parse_ae_reply(std::byte* rbuf) {
     return response;
 }
 
-inline std::variant<RpcMessage, const char*> parse_rv_reply(std::byte* rbuf) {
+inline std::variant<NodeMessage, const char*> parse_rv_reply(std::byte* rbuf) {
     RequestVoteRespPayload response;
 
     size_t ptr = 0;
@@ -47,7 +47,7 @@ inline std::variant<RpcMessage, const char*> parse_rv_reply(std::byte* rbuf) {
     return response;
 }
 
-inline std::variant<RpcMessage, const char*> parse_is_reply(std::byte* rbuf) {
+inline std::variant<NodeMessage, const char*> parse_is_reply(std::byte* rbuf) {
     InstallSnapshotRespPayload response;
 
     size_t ptr = 0;
@@ -74,7 +74,7 @@ constexpr std::array<ReplyParserFunc, IS_RPC_ID + 1> make_reply_parser_table() {
 
 constexpr auto REPLY_PARSER_TABLE = make_reply_parser_table();
 
-inline std::variant<RpcMessage, const char*> parse_rbuf(std::byte* rbuf, uint32_t total_length) {
+inline std::variant<NodeMessage, const char*> parse_rbuf(std::byte* rbuf, uint32_t total_length) {
     uint8_t kind_byte;
     std::memcpy(&kind_byte, rbuf, sizeof(kind_byte));
 

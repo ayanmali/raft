@@ -11,7 +11,7 @@ inline void Node::MainLoop() {
     #ifdef DEBUG
     std::cout << "starting node loop (main thread)\n";
     #endif
-    while (true) {
+    while (running_) {
         // TODO: notify client that entries were committed
         if (last_applied_idx_ != commit_index_) {
             #ifdef DEBUG
@@ -25,7 +25,7 @@ inline void Node::MainLoop() {
 
         // check the reply inbox for new replies that have arrived
         bool leader_contact{false};
-        inbox_->DrainAll([this, &leader_contact](RpcMessage&& message) {
+        inbox_->DrainAll([this, &leader_contact](NodeMessage&& message) {
             #ifdef DEBUG
             std::cout << "draining node inbox...\n";
             #endif
@@ -573,10 +573,9 @@ inline void Node::MainLoop() {
                     append_commands(payload.entries, payload.entries_len);
                 }
 
-                // These are control messages sent to event loops, not handled by Node.
-                else if constexpr (std::is_same_v<T, ArmTimer>
-                    || std::is_same_v<T, DisarmTimer>
-                    || std::is_same_v<T, AddPeerMsg>) {}
+                else if constexpr (std::is_same_v<T, StopNodeMsg>) {
+                    running_ = false;
+                }
 
                 else {
                     static_assert(false, "non-exhaustive visitor");

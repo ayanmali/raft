@@ -139,7 +139,7 @@ inline std::optional<const char*> EventLoop::OnClientReadable(ClientConn* c) {
         #ifdef DEBUG
         std::cout << "posting inbound request from client with client_ip_addr " << c->client_ip_addr << " to node inbox\n";
         #endif
-        post_node_inbox(std::move(std::get<RpcMessage>(request_raw)));
+        post_node_inbox(std::move(std::get<NodeMessage>(request_raw)));
     }
     c->rbuf_offset = end - parsed;
     if (c->rbuf_offset > 0) std::memmove(c->rbuf, c->rbuf + parsed, c->rbuf_offset);

@@ -142,7 +142,7 @@ inline std::optional<const char*> EventLoop::OnPeerReadable(PeerConn& p) {
         #ifdef DEBUG
         std::cout << "passing reply from peer " << p.peer_id << " back to node\n";
         #endif
-        post_node_inbox(std::move(std::get<RpcMessage>(result)));
+        post_node_inbox(std::move(std::get<NodeMessage>(result)));
     }
     p.rbuf_offset = end - parsed;
     if (p.rbuf_offset > 0) std::memmove(p.rbuf, p.rbuf + parsed, p.rbuf_offset); // overwrite at the beginning of the buffer
@@ -206,7 +206,7 @@ inline std::optional<const char*> EventLoop::OnPeerTimer(PeerConn& p) {
     }
     if (n != sizeof(expirations) || expirations == 0) return {};
 
-    post_node_inbox(RpcMessage{HeartbeatTimeout{.source_id = p.peer_id}});
+    post_node_inbox(NodeMessage{HeartbeatTimeout{.source_id = p.peer_id}});
     return {};
 }
 
@@ -232,7 +232,7 @@ inline void EventLoop::DropPeer(PeerConn& p) {
     std::memset(p.rbuf, 0, sizeof(p.rbuf));
     peer_conns.erase(p.peer_id);
     // send message to node thread to remove this peer from its nodes list
-    post_node_inbox(RpcMessage{DropPeerMsg{.source_id = p.peer_id}});
+    post_node_inbox(NodeMessage{DropPeerMsg{.source_id = p.peer_id}});
 }
 
 /* Enqueue functions post a new message to the back of the destination peer struct's outbox queue. */

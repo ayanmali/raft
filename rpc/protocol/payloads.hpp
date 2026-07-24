@@ -183,6 +183,7 @@ struct ForwardLeaderMsg {
     }
 };
 
-// using RpcRequest = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisArmTimer>;
-// using RpcReply = std::variant<AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload>;
-using RpcMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisarmTimer, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeout, DropPeerMsg, AddPeerMsg, ForwardLeaderMsg>;
+struct StopNodeMsg {};
+
+using NodeMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeout, DropPeerMsg, ForwardLeaderMsg, StopNodeMsg>;
+using EventLoopMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisarmTimer, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, AddPeerMsg, ForwardLeaderMsg>;
