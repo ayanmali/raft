@@ -13,6 +13,8 @@ static constexpr size_t CACHE_LINE_SIZE = std::hardware_destructive_interference
 
 static constexpr uint EVENT_LOOP_THREADS = 1;
 
+constexpr int EPOLL_BATCH = 64; // max # of fds processed per loop iteration
+
 static constexpr int MIN_ELECTION_TIMEOUT_MS = 150;
 static constexpr int MAX_ELECTION_TIMEOUT_MS = 300;
 
