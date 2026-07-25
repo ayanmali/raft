@@ -615,7 +615,8 @@ inline void Node::commit_entries_if_available() {
             apply_entry(sm_fp_, log_[i - (last_applied_idx_ + 1)]);
         }
     }
-    last_applied_term_ = log_[commit_index_ - (last_applied_idx_ + 1)].term;
+
+    last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - (last_applied_idx_ + 1)].term;
     last_applied_idx_ = commit_index_;
 }
 
