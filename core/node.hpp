@@ -275,7 +275,7 @@ inline void Node::request_votes() {
                 .term = current_term_,
                 .candidate_id = MY_ID,
                 .last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_,
-                .last_log_term = log_.back().term
+                .last_log_term = log_.empty() ? 0 : log_.back().term
             })
         );
         last_rv_sent_[id] = std::chrono::steady_clock::now();
