@@ -285,12 +285,16 @@ inline void Node::request_votes() {
 
 inline void Node::append_commands(std::vector<std::byte*>& commands) {
     //const uint32_t last_log_idx = log_.size() - 1;
-    if (state_ != NodeState::Leader && leader_id_ >= 0) {
+    #ifdef DEBUG
+    std::cout << "Found append request; state = " << static_cast<int>(state_) << "; leader_id = " << leader_id_ << "\n";
+    #endif
+    if (state_ != NodeState::Leader && leader_id_ != -1) {
         #ifdef DEBUG
-        std::cout << "Found append request in non-leader state - forwarding...\n";
+        std::cout << "Not in non-leader state - forwarding...\n";
         std::cout << "current leader = " << leader_id_ << "\n";
         #endif
         forward_request(commands);
+        return;
     }
     #ifdef DEBUG
     std::cout << "appending commands...\n";
@@ -354,12 +358,16 @@ inline void Node::append_commands(std::vector<std::byte*>& commands) {
 
 inline void Node::append_commands(std::byte (&commands)[CMD_SIZE][MAX_ENTRIES], size_t num_entries) {
     //const uint32_t last_log_idx = log_.size() - 1;
-    if (state_ != NodeState::Leader && leader_id_ >= 0) {
+    #ifdef DEBUG
+    std::cout << "Found append request; state = " << static_cast<int>(state_) << "; leader_id = " << leader_id_ << "\n";
+    #endif
+    if (state_ != NodeState::Leader && leader_id_ != -1) {
         #ifdef DEBUG
-        std::cout << "Found append request in non-leader state - forwarding...\n";
+        std::cout << "Not in non-leader state - forwarding...\n";
         std::cout << "current leader = " << leader_id_ << "\n";
         #endif
         forward_request(commands, num_entries);
+        return;
     }
     #ifdef DEBUG
     std::cout << "appending commands...\n";
