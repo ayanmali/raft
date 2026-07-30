@@ -314,7 +314,7 @@ inline void Node::append_commands(std::vector<std::byte*>& commands) {
     commit_entries_if_available();
 
     #ifdef DEBUG
-    std::cout << "New log:\n";
+    std::cout << "New log (size = " << log_.size() << "):\n";
     for (const LogEntry& e : log_) {
         std::cout << "[(";
         for (std::byte b : e.data_) {
@@ -383,7 +383,7 @@ inline void Node::append_commands(std::byte (&commands)[CMD_SIZE][MAX_ENTRIES], 
     commit_entries_if_available();
 
     #ifdef DEBUG
-    std::cout << "New log:\n";
+    std::cout << "New log (size = " << log_.size() << "):\n";
     for (const LogEntry& e : log_) {
         std::cout << "[(";
         for (std::byte b : e.data_) {
