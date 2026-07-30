@@ -40,8 +40,9 @@ int main() {
             two,
             three
         };
-        std::this_thread::sleep_for(std::chrono::seconds(4));
+        std::this_thread::sleep_for(std::chrono::seconds(5));
         node.append_commands(data);
+        std::this_thread::sleep_for(std::chrono::seconds(30));
         node.Stop();
     });
     node.MainLoop();
