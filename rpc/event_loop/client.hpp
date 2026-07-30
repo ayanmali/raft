@@ -133,7 +133,12 @@ inline std::optional<const char*> EventLoop::OnClientReadable(ClientConn* c) {
         if (end - parsed < frame_size) break;
 
         auto request_raw = parse_rbuf(c, msg_len, end, parsed); // erases the read bytes in rbuf
-        if (std::holds_alternative<const char*>(request_raw)) break;
+        if (std::holds_alternative<const char*>(request_raw)) {
+            #ifdef DEBUG
+            std::cout << "error parsing rbuf (client side read): " << std::get<const char*>(request_raw) << "\n";
+            #endif
+            break;
+        }
         parsed += frame_size;
 
         #ifdef DEBUG
