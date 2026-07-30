@@ -120,6 +120,9 @@ struct EventLoop {
     void wake_eventfd_unconditional();
 
     bool post_node_inbox(NodeMessage&& msg) {
+        #ifdef DEBUG
+        std::cout << "Posting message to node inbox\n";
+        #endif
         for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt) {
             if (node_inbox->Push(this_id,
                 NodeMessage(std::forward<NodeMessage>(msg)))) {

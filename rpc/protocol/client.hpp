@@ -63,29 +63,31 @@ inline std::variant<NodeMessage, const char*> parse_fl_req(ByteReader& byte_read
 
 constexpr std::array<ReqParserFunc, 4> make_parser_table() {
     std::array<ReqParserFunc, 4> table{};
-    table[0] = parse_ae_req;
-    table[1] = parse_rv_req;
-    table[2] = parse_is_req;
-    table[3] = parse_fl_req;
+    table[AE_RPC_ID] = parse_ae_req;
+    table[RV_RPC_ID] = parse_rv_req;
+    table[IS_RPC_ID] = parse_is_req;
+    table[FL_RPC_ID] = parse_fl_req;
 
     return table;
 }
 
-constexpr auto PARSER_TABLE = make_parser_table();
+    constexpr auto PARSER_TABLE = make_parser_table();
 
-inline std::variant<NodeMessage, const char*> parse_rbuf(ClientConn* c, uint32_t message_size, size_t end, size_t parsed) {
-    // if (sizeof(c->rbuf_) < sizeof(uint32_t)) { return ("not enough data to read"); } // need to see message size first
-    // ByteReader byte_reader(std::span<std::byte>(c->rbuf_ + sizeof(message_size), c->rbuf_ + sizeof(message_size) + message_size));
-    ByteReader byte_reader(std::span<std::byte>(c->rbuf + parsed + sizeof(message_size), end - sizeof(message_size) - parsed));
-    uint8_t rpc_id;
+    inline std::variant<NodeMessage, const char*> parse_rbuf(ClientConn* c, uint32_t message_size, size_t parsed) {
+        // if (sizeof(c->rbuf_) < sizeof(uint32_t)) { return ("not enough data to read"); } // need to see message size first
+        // ByteReader byte_reader(std::span<std::byte>(c->rbuf_ + sizeof(message_size), c->rbuf_ + sizeof(message_size) + message_size));
+        // Restrict reads to this frame's payload so we can't accidentally read into the next frame.
+        ByteReader byte_reader(std::span<std::byte>(c->rbuf + parsed + sizeof(message_size), message_size));
+        uint8_t rpc_id;
 
-    if (!byte_reader.read(rpc_id)) return ("failed to parse RPC id");
+        if (!byte_reader.read(rpc_id)) return ("failed to parse RPC id");
 
-    auto func = PARSER_TABLE[rpc_id];
-    if (!func) return ("invalid RPC id");
+        if (rpc_id >= PARSER_TABLE.size()) return ("invalid RPC id");
+        auto func = PARSER_TABLE[rpc_id];
+        if (!func) return ("invalid RPC id");
 
-    return func(byte_reader, c->fd);
-}
+        return func(byte_reader, c->fd);
+    }
 
 /* Outbound */
 

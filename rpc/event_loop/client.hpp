@@ -129,15 +129,18 @@ inline std::optional<const char*> EventLoop::OnClientReadable(ClientConn* c) {
         uint32_t net_len;
         std::memcpy(&net_len, c->rbuf + parsed, sizeof(net_len));
         uint32_t msg_len = ntohl(net_len);
+        // Prevent getting stuck when a peer advertises an absurd size that can never fit in `rbuf`.
+        if (msg_len > sizeof(c->rbuf) - sizeof(uint32_t)) {
+            CloseClient(c);
+            return "client sent oversized request frame\n";
+        }
         size_t frame_size = msg_len + sizeof(msg_len);
         if (end - parsed < frame_size) break;
 
-        auto request_raw = parse_rbuf(c, msg_len, end, parsed); // erases the read bytes in rbuf
+        auto request_raw = parse_rbuf(c, msg_len, parsed); // erases the read bytes in rbuf
         if (std::holds_alternative<const char*>(request_raw)) {
-            #ifdef DEBUG
-            std::cout << "error parsing rbuf (client side read): " << std::get<const char*>(request_raw) << "\n";
-            #endif
-            break;
+            CloseClient(c);
+            return std::get<const char*>(request_raw);
         }
         parsed += frame_size;
 
