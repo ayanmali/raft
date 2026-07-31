@@ -26,7 +26,7 @@ Buffering convention (used by both flavors):
 #include <utility>
 #include <algorithm>
 
-enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot };
+enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot, ForwardLeader };
 constexpr size_t REQ_SIZE = std::max(
   {
       AppendEntriesReqPayload::size(),

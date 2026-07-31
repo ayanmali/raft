@@ -129,10 +129,6 @@ inline std::optional<const char*> EventLoop::OnClientReadable(ClientConn* c) {
         uint32_t net_len;
         std::memcpy(&net_len, c->rbuf + parsed, sizeof(net_len));
         uint32_t msg_len = ntohl(net_len);
-        #ifdef DEBUG
-        std::cout << "message len = " << msg_len << "\n";
-        #endif
-        // Prevent getting stuck when a peer advertises an absurd size that can never fit in `rbuf`.
         if (msg_len > sizeof(c->rbuf) - sizeof(uint32_t)) {
             CloseClient(c);
             return "client sent oversized request frame\n";

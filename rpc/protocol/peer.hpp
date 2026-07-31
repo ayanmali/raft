@@ -66,26 +66,37 @@ inline std::variant<NodeMessage, const char*> parse_is_reply(std::byte* rbuf) {
     return response;
 }
 
-constexpr std::array<ReplyParserFunc, IS_RPC_ID + 1> make_reply_parser_table() {
-    std::array<ReplyParserFunc, IS_RPC_ID + 1> table{};
-    table[AE_RPC_ID] = parse_ae_reply;
-    table[RV_RPC_ID] = parse_rv_reply;
-    table[IS_RPC_ID] = parse_is_reply;
+// constexpr std::array<ReplyParserFunc, 3> make_reply_parser_table() {
+//     std::array<ReplyParserFunc, 3> table{};
+//     table[RpcKind::AppendEntries] = parse_ae_reply;
+//     table[RpcKind::RequestVote] = parse_rv_reply;
+//     table[RpcKind::InstallSnapshot] = parse_is_reply;
 
-    return table;
-}
+//     return table;
+// }
 
-constexpr auto REPLY_PARSER_TABLE = make_reply_parser_table();
+// constexpr auto REPLY_PARSER_TABLE = make_reply_parser_table();
 
 inline std::variant<NodeMessage, const char*> parse_rbuf(std::byte* rbuf, uint32_t total_length) {
     uint8_t kind_byte;
     std::memcpy(&kind_byte, rbuf, sizeof(kind_byte));
 
-    auto func = REPLY_PARSER_TABLE[kind_byte];
-    if (!func)
-        return ("invalid RPC kind");
+    switch (static_cast<RpcKind>(kind_byte)) {
+        case RpcKind::AppendEntries:
+            return parse_ae_reply(rbuf + sizeof(kind_byte));
+        case RpcKind::RequestVote:
+            return parse_rv_reply(rbuf + sizeof(kind_byte));
+        case RpcKind::InstallSnapshot:
+            return parse_is_reply(rbuf + sizeof(kind_byte));
+        default:
+            return "invalid RPC kind";
+    }
 
-    return func(rbuf + sizeof(kind_byte));
+    // auto func = REPLY_PARSER_TABLE[kind_byte];
+    // if (!func)
+    //     return ("invalid RPC kind");
+
+    // return func(rbuf + sizeof(kind_byte));
 }
 
 /* Outbound */
@@ -95,7 +106,7 @@ inline void BufByteWriter::serialize(AppendEntriesReqPayload& payload) {
         payload.entries[i].term = htonl(payload.entries[i].term);
     }
     auto msg_size           =  htonl(payload.size() + sizeof(uint8_t));
-    auto net_id             =  AE_RPC_ID;
+    auto net_id             =  RpcKind::AppendEntries;
     auto net_entries_len    =  htonll(payload.entries_len);
     auto net_term           =  htonl(payload.term);
     auto net_leader_id      =  htonl(payload.leader_id);
@@ -138,7 +149,7 @@ inline void BufByteWriter::serialize(const RequestVoteReqPayload& payload) {
     std::cout << "payload.size() = " << payload.size() << "\n";
     std::cout << "msg size = " << msg_size << "\n";
     #endif
-    auto net_id            = RV_RPC_ID;
+    auto net_id            = RpcKind::RequestVote;
     auto net_term          = htonl(payload.term);
     auto net_candidate_id  = htonl(payload.candidate_id);
     auto net_last_log_idx  = htonl(payload.last_log_idx);
@@ -166,7 +177,7 @@ inline void BufByteWriter::serialize(const RequestVoteReqPayload& payload) {
 
 inline void BufByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
     auto msg_size               = htonl(payload.size() + sizeof(uint8_t));
-    auto net_id                 = IS_RPC_ID;
+    auto net_id                 = RpcKind::InstallSnapshot;
     auto net_cluster_raw_size   = htonll(payload.cluster_raw_size);
     auto net_last_included_idx  = htonl(payload.last_included_idx);
     auto net_last_included_term = htonl(payload.last_included_term);
@@ -212,7 +223,7 @@ inline void BufByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
 
 inline void BufByteWriter::serialize(const ForwardLeaderMsg& payload) {
     auto msg_size           =  htonl(payload.size() + sizeof(uint8_t));
-    auto net_id             =  FL_RPC_ID;
+    auto net_id             =  RpcKind::ForwardLeader;
     auto net_entries_len    =  htonll(payload.entries_len);
     auto net_sender_id      =  htonl(payload.sender_id);
     auto net_term           =  htonl(payload.term);
