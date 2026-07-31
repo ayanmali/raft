@@ -2,6 +2,9 @@
 #include "./utils.hpp"
 #include "payloads.hpp"
 #include <netinet/in.h>
+#ifdef DEBUG
+#include <iostream>
+#endif
 
 /* Inbound */
 
