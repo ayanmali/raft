@@ -105,7 +105,8 @@ inline void Node::MainLoop() {
 
                     current_term_ = payload.term;
                     write_current_term();
-                    if (state_ != NodeState::Follower) demote();
+                    // if (state_ != NodeState::Follower) demote();
+                    demote();
                     leader_id_ = payload.leader_id;
                     leader_contact = true;
 
@@ -146,6 +147,8 @@ inline void Node::MainLoop() {
                         current_term_ = payload.term;
                         write_current_term();
                         demote();
+                        leader_id_ = payload.candidate_id;
+                        leader_contact = true;
                     }
 
                     if (payload.term < current_term_ || voted_for_ != -1) {
@@ -160,8 +163,6 @@ inline void Node::MainLoop() {
                         return {};
                     }
 
-                    leader_id_ = payload.candidate_id;
-                    leader_contact = true;
                     const uint32_t last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_; // logical index
                     const uint32_t last_log_term = log_.empty() ? 0 : log_.back().term;
                     if (payload.last_log_term > last_log_term
@@ -190,6 +191,14 @@ inline void Node::MainLoop() {
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
                     add_peer_if_not_exists(payload.leader_id, payload.fd, el);
 
+                    if (payload.term > current_term_) {
+                        current_term_ = payload.term;
+                        write_current_term();
+                        demote();
+                        leader_id_ = payload.leader_id;
+                        leader_contact = true;
+                    }
+
                     if (payload.term < current_term_ || payload.last_included_idx < last_applied_idx_) {
                         #ifdef DEBUG
                         if (payload.term < current_term_) {
@@ -202,19 +211,10 @@ inline void Node::MainLoop() {
                         return {};
                     }
 
-                    else if (payload.term > current_term_) {
-                        current_term_ = payload.term;
-                        write_current_term();
-                        demote();
-                    }
-
                     send(InstallSnapshotRespPayload{
                         .client_fd = payload.fd,
                         .server_id = MY_ID,
                         .term = current_term_}, el);
-
-                    leader_id_ = payload.leader_id;
-                    leader_contact = true;
 
                     // write data into snapshot file at given offset
                     if (payload.offset == 0) {
@@ -290,6 +290,8 @@ inline void Node::MainLoop() {
                         current_term_ = payload.term;
                         write_current_term();
                         demote();
+                        leader_id_ = payload.term;
+                        leader_contact = true;
                         return {};
                     }
 
@@ -391,25 +393,27 @@ inline void Node::MainLoop() {
                     }
                     std::cout << "\n";
                     #endif
+
                     last_rv_sent_[payload.server_id] = std::chrono::steady_clock::time_point::max();
 
-                    if (state_ != NodeState::Candidate
-                        || !voters_.insert(payload.server_id).second
+                    if (payload.term > current_term_) {
+                        current_term_ = payload.term;
+                        write_current_term();
+                        demote();
+                        leader_id_ = payload.server_id;
+                        leader_contact = true;
+                    }
+
+                    if (payload.vote_granted == 0
+                        || state_ != NodeState::Candidate
                         || payload.term < current_term_
+                        || !voters_.insert(payload.server_id).second
                     ) {
                         #ifdef DEBUG
                         std::cout << "this node is no longer a candidate, or node " << payload.server_id << " has already voted for this node, or payload term is less than this node's current term; skipping\n";
                         #endif
                         return {};
                     }
-
-                    if (payload.term > current_term_) {
-                        current_term_ = payload.term;
-                        write_current_term();
-                        demote();
-                    }
-
-                    if (payload.vote_granted == 0) { return {}; }
 
                     // become leader if quorum of votes achieved
                     if (voters_.size() > (node_ids_.size() + 1) / 2) {
@@ -557,6 +561,10 @@ inline void Node::MainLoop() {
                     if (voted_for_ == payload.source_id) {
                         voted_for_ = -1;
                         write_voted_for();
+                    }
+
+                    if (leader_id_ == payload.source_id) {
+                        leader_id_ = -1;
                     }
                 }
 

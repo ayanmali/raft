@@ -63,7 +63,7 @@ public:
     void forward_request(std::vector<std::byte*>&);
     void forward_request(std::byte (&)[CMD_SIZE][MAX_ENTRIES], size_t num_entries);
 
-    NodeID get_leader();
+    int get_leader();
 
     // TODO: replace AoS EventLoop w/ SoA pattern
     private:
@@ -432,7 +432,7 @@ inline void Node::forward_request(std::byte (&commands)[CMD_SIZE][MAX_ENTRIES], 
     el.outbound_inbox.PushOne(msg);
 }
 
-inline NodeID Node::get_leader() {
+inline int Node::get_leader() {
     return leader_id_;
 }
 
