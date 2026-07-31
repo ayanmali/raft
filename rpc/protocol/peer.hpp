@@ -131,6 +131,10 @@ inline void BufByteWriter::serialize(AppendEntriesReqPayload& payload) {
 
 inline void BufByteWriter::serialize(const RequestVoteReqPayload& payload) {
     auto msg_size          = htonl(payload.size() + sizeof(uint8_t));
+    #ifdef DEBUG
+    std::cout << "payload.size() = " << payload.size() << "\n";
+    std::cout << "msg size = " << msg_size << "\n";
+    #endif
     auto net_id            = RV_RPC_ID;
     auto net_term          = htonl(payload.term);
     auto net_candidate_id  = htonl(payload.candidate_id);
