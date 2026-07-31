@@ -171,10 +171,10 @@ inline std::optional<const char*> EventLoop::OnPeerWritable(PeerConn& p) {
         }
     }
 
-    while (p.wbuf_offset < sizeof(p.wbuf)) {
+    while (p.wbuf_offset < p.wbuf_size) {
         ssize_t n = ::send(p.fd,
             p.wbuf + p.wbuf_offset,
-            sizeof(p.wbuf) - p.wbuf_offset,
+            p.wbuf_size - p.wbuf_offset,
             MSG_NOSIGNAL);
         if (n > 0) { p.wbuf_offset += static_cast<size_t>(n); continue; }
         if (n < 0 && errno == EINTR) continue;
@@ -186,9 +186,10 @@ inline std::optional<const char*> EventLoop::OnPeerWritable(PeerConn& p) {
     // All bytes sent — but only clear if no new data was appended by
     // post_inflight while we were sending (same-thread interleaving via
     // DrainInbox in the same epoll batch).
-    if (p.wbuf_offset >= sizeof(p.wbuf)) {
-        std::memset(p.wbuf, 0, sizeof(p.wbuf));
+    if (p.wbuf_offset >= p.wbuf_size) {
+        std::memset(p.wbuf, 0, p.wbuf_size);
         p.wbuf_offset = 0;
+        p.wbuf_size = 0;
         std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
         if (modify_err) return modify_err;
     }
@@ -229,7 +230,9 @@ inline void EventLoop::DropPeer(PeerConn& p) {
     p.epoll_events = 0;
     std::memset(p.wbuf, 0, sizeof(p.wbuf));
     p.wbuf_offset = 0;
+    p.wbuf_size = 0;
     std::memset(p.rbuf, 0, sizeof(p.rbuf));
+    p.rbuf_offset = 0;
     peer_conns.erase(p.peer_id);
     // send message to node thread to remove this peer from its nodes list
     post_node_inbox(NodeMessage{DropPeerMsg{.source_id = p.peer_id}});
@@ -289,6 +292,7 @@ inline std::optional<std::string> EventLoop::post_inflight(AppendEntriesReqPaylo
     }
     PeerConn& p = it->second;
 
+    p.wbuf_size = payload.size() + sizeof(uint32_t) + sizeof(uint8_t);
     BufByteWriter writer{p.wbuf};
     writer.serialize(payload);
 
@@ -317,6 +321,7 @@ inline std::optional<std::string> EventLoop::post_inflight(RequestVoteReqPayload
     }
     PeerConn& p = it->second;
 
+    p.wbuf_size = payload.size() + sizeof(uint32_t) + sizeof(uint8_t);
     BufByteWriter writer{p.wbuf};
     writer.serialize(payload);
 
@@ -343,6 +348,7 @@ inline std::optional<std::string> EventLoop::post_inflight(InstallSnapshotReqPay
     }
     PeerConn& p = it->second;
 
+    p.wbuf_size = payload.size() + sizeof(uint32_t) + sizeof(uint8_t);
     BufByteWriter writer{p.wbuf};
     writer.serialize(payload);
 
@@ -369,6 +375,7 @@ inline std::optional<std::string> EventLoop::post_inflight(ForwardLeaderMsg& pay
     }
     PeerConn& p = it->second;
 
+    p.wbuf_size = payload.size() + sizeof(uint32_t) + sizeof(uint8_t);
     BufByteWriter writer{p.wbuf};
     writer.serialize(payload);
 

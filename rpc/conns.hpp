@@ -47,8 +47,8 @@ constexpr uint32_t RESP_SIZE = static_cast<uint32_t>(
 
 struct ClientConn {
     // std::vector<std::byte> rbuf;
-    std::byte rbuf[REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind)];
-    std::byte wbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)];
+    std::byte rbuf[REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind)]{};
+    std::byte wbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)]{};
 
     char client_ip_addr[INET_ADDRSTRLEN];
 
@@ -217,15 +217,16 @@ Buffering (mirrors ClientConn):
 struct PeerConn {
     // Single write buffer for all outbound data (requests are serialized
     // and appended). wbuf_offset tracks chunked-send progress.
-    std::byte wbuf[REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind)];
+    std::byte wbuf[REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind)]{};
 
-    std::byte rbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)];
+    std::byte rbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)]{};
 
     // Configuration (set once when the peer subset is wired into the loop).
     const char* ip        = nullptr;
     const char* port      = nullptr;
 
     size_t wbuf_offset    = 0;
+    size_t wbuf_size      = 0;
     size_t rbuf_offset    = 0;
 
     NodeID      peer_id   = 0;
