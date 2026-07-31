@@ -18,10 +18,14 @@ inline void Node::MainLoop() {
             std::cout << "applying log entries from last applied index = " << last_applied_idx_ << " up to and including commit index = " << commit_index_ << "\n";
             #endif
             for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
+                #ifdef DEBUG
+                std::cout << "applying entry at logical index " << i << "\n";
+                #endif
                 apply_entry(sm_fp_, log_[i - (last_applied_idx_ + 1)]);
             }
         }
         last_applied_idx_ = commit_index_;
+        last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - (last_applied_idx_ + 1)].term;
 
         // check the reply inbox for new replies that have arrived
         bool leader_contact{false};
@@ -133,7 +137,11 @@ inline void Node::MainLoop() {
                     }
                     std::cout << "\n";
 
+                    std::cout << "Current state = " << static_cast<int>(state_) << "\n";
+
                     std::cout << "Payload term = " << payload.term << ", this node's term = " << current_term_ << "\n";
+                    std::cout << "Payload last log term = " << payload.last_log_term << "\n";
+                    std::cout << "Payload last log idx = " << payload.last_log_idx << "\n";
                     std::cout << "This node's voted_for = " << voted_for_ << "\n";
                     std::cout << "This node's voters = ";
                     for (auto v : voters_) {
@@ -151,21 +159,22 @@ inline void Node::MainLoop() {
                         leader_contact = true;
                     }
 
-                    if (payload.term < current_term_ || voted_for_ != -1) {
-                        #ifdef DEBUG
-                        std::cout << "rejecting RV from node " << payload.candidate_id << "\n";
-                        #endif
-                        send(RequestVoteRespPayload{
-                            .client_fd = payload.fd,
-                            .server_id = MY_ID,
-                            .term = current_term_,
-                            .vote_granted = 0}, el);
-                        return {};
-                    }
+                    // if (payload.term < current_term_ || voted_for_ != -1) {
+                    //     #ifdef DEBUG
+                    //     std::cout << "rejecting RV from node " << payload.candidate_id << "\n";
+                    //     #endif
+                    //     send(RequestVoteRespPayload{
+                    //         .client_fd = payload.fd,
+                    //         .server_id = MY_ID,
+                    //         .term = current_term_,
+                    //         .vote_granted = 0}, el);
+                    //     return {};
+                    // }
 
                     const uint32_t last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_; // logical index
                     const uint32_t last_log_term = log_.empty() ? 0 : log_.back().term;
-                    if (payload.last_log_term > last_log_term
+                    if (voted_for_ == -1
+                    ||  payload.last_log_term > last_log_term
                     || (payload.last_log_term == last_log_term
                         && payload.last_log_idx >= last_log_idx))
                     {
@@ -179,9 +188,19 @@ inline void Node::MainLoop() {
                         #ifdef DEBUG
                         std::cout << "voting for node " << payload.candidate_id << "\n";
                         #endif
+                        return {};
                     }
 
+                    #ifdef DEBUG
+                    std::cout << "rejecting RV from node " << payload.candidate_id << "\n";
+                    #endif
+                    send(RequestVoteRespPayload{
+                        .client_fd = payload.fd,
+                        .server_id = MY_ID,
+                        .term = current_term_,
+                        .vote_granted = 0}, el);
                     return {};
+
                 }
 
                 else if constexpr (std::is_same_v<T, InstallSnapshotReqPayload>) {
@@ -383,6 +402,8 @@ inline void Node::MainLoop() {
                         std::cout << id << ", ";
                     }
                     std::cout << "\n";
+
+                    std::cout << "Current state = " << static_cast<int>(state_) << "\n";
 
                     std::cout << "Payload term = " << payload.term << ", this node's term = " << current_term_ << "\n";
                     std::cout << "vote granted = " << static_cast<int>(payload.vote_granted) << "\n";

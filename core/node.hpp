@@ -361,12 +361,13 @@ inline void Node::append_commands(std::byte (&commands)[CMD_SIZE][MAX_ENTRIES], 
     #ifdef DEBUG
     std::cout << "Found append request; state = " << static_cast<int>(state_) << "; leader_id = " << leader_id_ << "\n";
     #endif
-    if (state_ != NodeState::Leader && leader_id_ != -1) {
-        #ifdef DEBUG
-        std::cout << "Not in non-leader state - forwarding...\n";
-        std::cout << "current leader = " << leader_id_ << "\n";
-        #endif
-        forward_request(commands, num_entries);
+    if (state_ != NodeState::Leader) {
+        if (leader_id_ != -1) {
+            #ifdef DEBUG
+            std::cout << "Not in non-leader state - forwarding...\n";
+            #endif
+            forward_request(commands, num_entries);
+        }
         return;
     }
     #ifdef DEBUG
@@ -482,10 +483,11 @@ inline void Node::become_leader() {
         chunks_sent_[i] = 0;
     }
 
+    leader_id_ = MY_ID;
+    state_ = NodeState::Leader;
     voters_.clear();
     voted_for_ = -1;
     write_voted_for();
-    state_ = NodeState::Leader;
 
     // placeholder entry allows this node to assert its leadership to other nodes on the next heartbeat
     log_.push_back(LogEntry(current_term_));
@@ -558,6 +560,7 @@ inline void Node::add_peer_if_not_exists(NodeID node_id, FD fd, EventLoop& el) {
             AddPeerMsg{ .fd = fd, .port = SERVER_PORT, .dest_id = node_id }
         )
     );
+    el.Wake();
     #ifdef DEBUG
     std::cout << "added node w/ id " << node_id << " to node_ids_\n";
     #endif
@@ -620,6 +623,9 @@ inline void Node::commit_entries_if_available() {
     #endif
     if (last_applied_idx_ != commit_index_) {
         for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
+            #ifdef DEBUG
+            std::cout << "applying entry at logical index " << i << "\n";
+            #endif
             apply_entry(sm_fp_, log_[i - (last_applied_idx_ + 1)]);
         }
     }
