@@ -309,7 +309,7 @@ inline void Node::MainLoop() {
                         current_term_ = payload.term;
                         write_current_term();
                         demote();
-                        leader_id_ = payload.term;
+                        leader_id_ = payload.server_id;
                         leader_contact = true;
                         return {};
                     }

@@ -181,7 +181,7 @@ inline std::optional<std::string> EventLoop::post_reply(AppendEntriesRespPayload
     #endif
     //++c.pending_tasks;
 
-    c->wbuf_size = payload.size() + sizeof(payload.size()) + sizeof(RpcKind);
+    c->wbuf_size = payload.size() + sizeof(uint32_t) + sizeof(RpcKind);
     BufByteWriter writer{c->wbuf};
     writer.serialize(payload);
 
@@ -206,7 +206,7 @@ inline std::optional<std::string> EventLoop::post_reply(RequestVoteRespPayload& 
     #endif
     //++c.pending_tasks;
 
-    c->wbuf_size = payload.size() + sizeof(payload.size()) + sizeof(RpcKind);
+    c->wbuf_size = payload.size() + sizeof(uint32_t) + sizeof(RpcKind);
     BufByteWriter writer{c->wbuf};
     writer.serialize(payload);
 
@@ -234,7 +234,7 @@ inline std::optional<std::string> EventLoop::post_reply(InstallSnapshotRespPaylo
     #endif
     //++c.pending_tasks;
 
-    c->wbuf_size = payload.size() + sizeof(payload.size()) + sizeof(RpcKind);
+    c->wbuf_size = payload.size() + sizeof(uint32_t) + sizeof(RpcKind);
     BufByteWriter writer{c->wbuf};
     writer.serialize(payload);
 
