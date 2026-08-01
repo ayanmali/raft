@@ -613,10 +613,9 @@ inline void Node::commit_entries_if_available() {
             #endif
             apply_entry(sm_fp_, log_[i - (last_applied_idx_ + 1)]);
         }
+        last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - (last_applied_idx_ + 1)].term;
+        last_applied_idx_ = commit_index_;
     }
-
-    last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - (last_applied_idx_ + 1)].term;
-    last_applied_idx_ = commit_index_;
 }
 
 /*
@@ -718,7 +717,7 @@ inline std::optional<std::string> Node::recover() {
     // (when a snapshot was restored), or to 0 (when no snapshot exists).
     for (size_t v = 0; v < log_.size(); ++v) {
         apply_entry(sm_fp_, log_[v]);
-        last_applied_idx_ = last_applied_idx_ + 1;
+        ++last_applied_idx_;
         last_applied_term_ = log_[v].term;
     }
 
