@@ -24,8 +24,8 @@ inline void Node::MainLoop() {
                 apply_entry(sm_fp_, log_[i - (last_applied_idx_ + 1)]);
             }
         }
-        last_applied_idx_ = commit_index_;
         last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - (last_applied_idx_ + 1)].term;
+        last_applied_idx_ = commit_index_;
 
         // check the reply inbox for new replies that have arrived
         bool leader_contact{false};
