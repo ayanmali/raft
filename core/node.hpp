@@ -474,14 +474,10 @@ inline void Node::demote() {
 inline void Node::become_leader() {
     #ifdef DEBUG
     std::cout << "This node (id = " << MY_ID << ") won the election\n";
+
+    std::cout << "log.size() = " << log_.size() << "\n";
+    std::cout << "last_applied_idx_ = " << last_applied_idx_ << "\n";
     #endif
-    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_; // logical index
-    for (int i = 0; i < next_indexes_.size(); ++i) {
-        if (next_indexes_[i] < 0) continue;
-        next_indexes_[i] = last_log_idx + 1;
-        match_indexes_[i] = 0;
-        chunks_sent_[i] = 0;
-    }
 
     leader_id_ = MY_ID;
     state_ = NodeState::Leader;
@@ -491,6 +487,14 @@ inline void Node::become_leader() {
 
     // placeholder entry allows this node to assert its leadership to other nodes on the next heartbeat
     log_.push_back(LogEntry(current_term_));
+
+    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_; // logical index
+    for (int i = 0; i < next_indexes_.size(); ++i) {
+        if (next_indexes_[i] < 0) continue;
+        next_indexes_[i] = last_log_idx + 1;
+        match_indexes_[i] = 0;
+        chunks_sent_[i] = 0;
+    }
     #ifdef DEBUG
     std::cout << "writing placeholder log entry to file...\n";
     #endif
@@ -507,27 +511,8 @@ inline void Node::become_leader() {
         if (!node_ids_[id]) continue;
 
         auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
-        // send heartbeat rpc
-        // const uint32_t prev_log_term = log_.back().term;
-        // el->outbound_inbox.PushOne(
-        //     std::make_unique<EventLoopMessage>(
-        //         AppendEntriesReqPayload{
-        //             std::span<LogEntry>{},
-        //             id,
-        //             current_term_,
-        //             MY_ID,
-        //             last_log_idx,
-        //             prev_log_term,
-        //             commit_index_
-        //         }
-        //     )
-        // );
-        // #ifdef DEBUG
-        // std::cout << "posted heartbeat message to peer " << id << "\n";
-        // #endif
         // arm this peer's heartbeat timer so we know when to send the next heartbeat.
         el.outbound_inbox.PushOne(
-            // send heartbeat rpc
             EventLoopMessage(
                 ArmTimer{ .dest_id = id }
             )
