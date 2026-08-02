@@ -159,24 +159,24 @@ inline void Node::MainLoop() {
                         leader_contact = true;
                     }
 
-                    // if (payload.term < current_term_ || voted_for_ != -1) {
-                    //     #ifdef DEBUG
-                    //     std::cout << "rejecting RV from node " << payload.candidate_id << "\n";
-                    //     #endif
-                    //     send(RequestVoteRespPayload{
-                    //         .client_fd = payload.fd,
-                    //         .server_id = MY_ID,
-                    //         .term = current_term_,
-                    //         .vote_granted = 0}, el);
-                    //     return {};
-                    // }
+                    if (payload.term < current_term_) {
+                        #ifdef DEBUG
+                        std::cout << "rejecting RV from node " << payload.candidate_id << "\n";
+                        #endif
+                        send(RequestVoteRespPayload{
+                            .client_fd = payload.fd,
+                            .server_id = MY_ID,
+                            .term = current_term_,
+                            .vote_granted = 0}, el);
+                        return {};
+                    }
 
                     const uint32_t last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_; // logical index
                     const uint32_t last_log_term = log_.empty() ? 0 : log_.back().term;
-                    if (voted_for_ == -1
-                    ||  payload.last_log_term > last_log_term
+                    if ((voted_for_ == -1 || voted_for_ == payload.candidate_id)
+                    &&  (payload.last_log_term > last_log_term
                     || (payload.last_log_term == last_log_term
-                        && payload.last_log_idx >= last_log_idx))
+                        && payload.last_log_idx >= last_log_idx)))
                     {
                         voted_for_ = payload.candidate_id;
                         write_voted_for();
@@ -188,6 +188,8 @@ inline void Node::MainLoop() {
                         #ifdef DEBUG
                         std::cout << "voting for node " << payload.candidate_id << "\n";
                         #endif
+                        demote();
+                        leader_contact = true; // to reset the election timer
                         return {};
                     }
 

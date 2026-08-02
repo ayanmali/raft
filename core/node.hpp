@@ -446,6 +446,7 @@ inline void Node::demote() {
     voted_for_ = -1;
     write_voted_for();
     NodeState old = state_;
+    if (old == NodeState::Follower) return;
     state_ = NodeState::Follower;
     for (size_t i = 0; i < next_indexes_.size(); ++i) {
         if (next_indexes_[i] < 0) continue;
