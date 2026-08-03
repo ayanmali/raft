@@ -819,13 +819,30 @@ inline void Node::flush_files() {
 }
 
 inline std::optional<std::string> Node::send_append_entries(uint32_t next_idx, EventLoop& el, NodeID dest_id) {
+    #ifdef DEBUG
+    std::cout << "checking for entries to send to node " << dest_id << "\n";
+    std::cout << "next index = " << next_idx << "\n";
+    #endif
     // Only send entries when the log actually has some at/after
     // next_idx. log_.size()-1 >= next_idx is restated as
     // next_idx < log_.size() to avoid uint underflow on size 0.
     const uint32_t prev_log_idx = next_idx - 1;
+    #ifdef DEBUG
+    std::cout << "prev_log_idx = " << prev_log_idx << "\n";
+    #endif
     const size_t prev_log_idx_offset = prev_log_idx - (last_applied_idx_ + 1);
+    #ifdef DEBUG
+    std::cout << "prev_log_idx_offset = " << prev_log_idx_offset << "\n";
+    #endif
     const uint32_t prev_log_term = log_[prev_log_idx_offset].term;
+    #ifdef DEBUG
+    std::cout << "prev_log_term = " << prev_log_term << "\n";
+    #endif
     const size_t next_idx_offset = next_idx - (last_applied_idx_ + 1);
+    #ifdef DEBUG
+    std::cout << "next_idx_offset = " << next_idx_offset << "\n";
+    #endif
+
     auto s = next_idx_offset < log_.size()
     ? std::span<LogEntry>(
         log_.begin() + next_idx_offset, log_.end())

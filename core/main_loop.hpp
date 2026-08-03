@@ -488,6 +488,8 @@ inline void Node::MainLoop() {
                 else if constexpr (std::is_same_v<T, HeartbeatTimeout>) {
                     #ifdef DEBUG
                     std::cout << "found heartbeat timeout for node " << payload.source_id << "; sending heartbeat...\n";
+                    std::cout << "next index = " << next_indexes_[payload.source_id] << "\n";
+                    std::cout << "last_applied_idx_ = " << last_applied_idx_ << "\n";
                     #endif
                     auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
                     const int32_t next_idx = next_indexes_[payload.source_id];
