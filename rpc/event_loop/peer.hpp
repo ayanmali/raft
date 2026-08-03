@@ -91,6 +91,7 @@ inline std::optional<std::string> EventLoop::StartConnect(PeerConn& p) {
         );
     }
     peer_fd_to_id[p.fd] = p.peer_id;
+
     std::optional<const char*> timer_fd_err = register_fd(p.timer_fd, EPOLLIN | EPOLLET);
     if (timer_fd_err) {
         ::close(p.timer_fd);

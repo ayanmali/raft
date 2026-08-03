@@ -539,7 +539,7 @@ inline void Node::become_leader() {
 }
 
 inline void Node::add_peer_if_not_exists(NodeID node_id, FD fd, EventLoop& el) {
-    if ((node_id < node_ids_.total_bits() && node_ids_[node_id]) || installing_snapshot_id_ >= 0) return;
+    if ((node_id < node_ids_.total_bits() && node_ids_[node_id]) || installing_snapshot_id_ != -1) return;
     node_ids_.add(node_id);
 
     if (next_indexes_.size() <= node_id) {
@@ -558,6 +558,15 @@ inline void Node::add_peer_if_not_exists(NodeID node_id, FD fd, EventLoop& el) {
             AddPeerMsg{ .fd = fd, .port = SERVER_PORT, .dest_id = node_id }
         )
     );
+
+    if (state_ == NodeState::Leader) {
+        el.outbound_inbox.PushOne(
+            EventLoopMessage(
+                ArmTimer{ .dest_id = node_id }
+            )
+        );
+    }
+
     el.Wake();
     #ifdef DEBUG
     std::cout << "added node w/ id " << node_id << " to node_ids_\n";
