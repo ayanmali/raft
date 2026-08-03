@@ -462,7 +462,7 @@ inline void Node::demote() {
     state_ = NodeState::Follower;
     for (size_t i = 0; i < next_indexes_.size(); ++i) {
         if (next_indexes_[i] < 0) continue;
-        next_indexes_[i] = 1;
+        next_indexes_[i] = last_applied_idx_ + log_.size() + 1; // last log idx + 1
         match_indexes_[i] = 0;
         chunks_sent_[i] = 0;
     }
@@ -550,7 +550,7 @@ inline void Node::add_peer_if_not_exists(NodeID node_id, FD fd, EventLoop& el) {
         last_rv_sent_.resize(node_id + 1, std::chrono::steady_clock::time_point::max());
         last_is_sent_.resize(node_id + 1, std::chrono::steady_clock::time_point::max());
     }
-    next_indexes_[node_id] = 1;
+    next_indexes_[node_id] = last_applied_idx_ + log_.size() + 1;
     // match_indexes_, chunks_sent, last_ae_sent, last_rv_sent_, and last_is_sent_ are default initialized correctly at the corresponding index.
 
     el.outbound_inbox.PushOne(
