@@ -173,6 +173,10 @@ inline void Node::MainLoop() {
 
                     const uint32_t last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_; // logical index
                     const uint32_t last_log_term = log_.empty() ? 0 : log_.back().term;
+                    #ifdef DEBUG
+                    std::cout << "last_log_idx = " << last_log_idx << "\n";
+                    std::cout << "last_log_term = " << last_log_term << "\n";
+                    #endif
                     if ((voted_for_ == -1 || voted_for_ == payload.candidate_id)
                     &&  (payload.last_log_term > last_log_term
                     || (payload.last_log_term == last_log_term
