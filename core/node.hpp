@@ -80,6 +80,7 @@ public:
 
     void demote();
     void become_leader();
+    void advance_to_term(uint32_t);
 
     void add_peer_if_not_exists(NodeID, FD, EventLoop&);
     uint32_t compute_new_commit_idx();
@@ -438,14 +439,24 @@ inline int Node::get_leader() {
     return leader_id_;
 }
 
+inline void Node::advance_to_term(uint32_t term) {
+    #ifdef DEBUG
+    std::cout << "this node (id " << MY_ID << ") advanced to term " << term << "\n";
+    #endif
+
+    current_term_ = term;
+    voted_for_ = -1;
+    voters_.clear();
+    write_current_term();
+    write_voted_for();
+    demote();
+}
+
 inline void Node::demote() {
     #ifdef DEBUG
     std::cout << "this node (id " << MY_ID << ") was demoted\n";
     #endif
 
-    voters_.clear();
-    voted_for_ = -1;
-    write_voted_for();
     NodeState old = state_;
     if (old == NodeState::Follower) return;
     state_ = NodeState::Follower;
@@ -483,9 +494,9 @@ inline void Node::become_leader() {
 
     leader_id_ = MY_ID;
     state_ = NodeState::Leader;
-    voters_.clear();
-    voted_for_ = -1;
-    write_voted_for();
+    // voters_.clear();
+    // voted_for_ = -1;
+    // write_voted_for();
 
     // placeholder entry allows this node to assert its leadership to other nodes on the next heartbeat
     log_.push_back(LogEntry(current_term_));

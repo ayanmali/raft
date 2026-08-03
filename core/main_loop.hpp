@@ -107,10 +107,7 @@ inline void Node::MainLoop() {
                         commit_index_ = std::min(payload.leader_commit, static_cast<uint32_t>(payload.prev_log_idx + payload.entries_len));
                     }
 
-                    current_term_ = payload.term;
-                    write_current_term();
-                    // if (state_ != NodeState::Follower) demote();
-                    demote();
+                    advance_to_term(payload.term);
                     leader_id_ = payload.leader_id;
                     leader_contact = true;
 
@@ -152,9 +149,7 @@ inline void Node::MainLoop() {
                     #endif
 
                     if (payload.term > current_term_) {
-                        current_term_ = payload.term;
-                        write_current_term();
-                        demote();
+                        advance_to_term(payload.term);
                         leader_id_ = payload.candidate_id;
                         leader_contact = true;
                     }
@@ -198,7 +193,7 @@ inline void Node::MainLoop() {
                     }
 
                     #ifdef DEBUG
-                    std::cout << "rejecting RV from node " << payload.candidate_id << "\n";
+                    std::cout << "(default) rejecting RV from node " << payload.candidate_id << "\n";
                     #endif
                     send(RequestVoteRespPayload{
                         .client_fd = payload.fd,
@@ -217,9 +212,7 @@ inline void Node::MainLoop() {
                     add_peer_if_not_exists(payload.leader_id, payload.fd, el);
 
                     if (payload.term > current_term_) {
-                        current_term_ = payload.term;
-                        write_current_term();
-                        demote();
+                        advance_to_term(payload.term);
                         leader_id_ = payload.leader_id;
                         leader_contact = true;
                     }
@@ -312,9 +305,7 @@ inline void Node::MainLoop() {
                     last_ae_sent_[payload.server_id] = std::chrono::steady_clock::time_point::max();
 
                     if (payload.term > current_term_) {
-                        current_term_ = payload.term;
-                        write_current_term();
-                        demote();
+                        advance_to_term(payload.term);
                         leader_id_ = payload.server_id;
                         leader_contact = true;
                         return {};
@@ -424,9 +415,7 @@ inline void Node::MainLoop() {
                     last_rv_sent_[payload.server_id] = std::chrono::steady_clock::time_point::max();
 
                     if (payload.term > current_term_) {
-                        current_term_ = payload.term;
-                        write_current_term();
-                        demote();
+                        advance_to_term(payload.term);
                         leader_id_ = payload.server_id;
                         leader_contact = true;
                     }
@@ -455,9 +444,7 @@ inline void Node::MainLoop() {
                     #endif
 
                     if (payload.term > current_term_) {
-                        current_term_ = payload.term;
-                        write_current_term();
-                        demote();
+                        advance_to_term(payload.term);
                     }
 
                     if (++chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE < SM_STATE_SIZE) {
