@@ -288,12 +288,13 @@ inline void Node::append_commands(std::vector<std::byte*>& commands) {
     #ifdef DEBUG
     std::cout << "Found append request; state = " << static_cast<int>(state_) << "; leader_id = " << leader_id_ << "\n";
     #endif
-    if (state_ != NodeState::Leader && leader_id_ != -1) {
-        #ifdef DEBUG
-        std::cout << "Not in non-leader state - forwarding...\n";
-        std::cout << "current leader = " << leader_id_ << "\n";
-        #endif
-        forward_request(commands);
+    if (state_ != NodeState::Leader) {
+        if (leader_id_ != -1) {
+            #ifdef DEBUG
+            std::cout << "Not in non-leader state - forwarding...\n";
+            #endif
+            forward_request(commands);
+        }
         return;
     }
     #ifdef DEBUG
