@@ -544,7 +544,8 @@ inline void Node::add_peer_if_not_exists(NodeID node_id, FD fd, EventLoop& el) {
         chunks_sent_.resize(node_id + 1);
     }
     next_indexes_[node_id] = last_applied_idx_ + log_.size() + 1;
-    // match_indexes_, chunks_sent, are default initialized correctly at the corresponding index.
+    match_indexes_[node_id] = 0;
+    chunks_sent_[node_id] = 0;
 
     el.outbound_inbox.PushOne(
         EventLoopMessage(
