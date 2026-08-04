@@ -296,6 +296,7 @@ inline void Node::append_commands(std::vector<std::byte*>& commands) {
     }
     #ifdef DEBUG
     std::cout << "appending commands...\n";
+    std::cout << "last_applied_idx_ = " << last_applied_idx_ << "\n";
     std::cout << "Existing log:\n";
     for (const LogEntry& e : log_) {
         std::cout << "[(";
@@ -370,6 +371,7 @@ inline void Node::append_commands(std::byte (&commands)[CMD_SIZE][MAX_ENTRIES], 
     }
     #ifdef DEBUG
     std::cout << "appending commands...\n";
+    std::cout << "last_applied_idx_ = " << last_applied_idx_ << "\n";
     std::cout << "Existing log:\n";
     for (const LogEntry& e : log_) {
         std::cout << "[(";
@@ -573,7 +575,7 @@ inline uint32_t Node::compute_new_commit_idx() {
     // if (node_ids_.empty()) return commit_index_;
     if (node_ids_.empty()) return log_.size() + last_applied_idx_;
 
-    auto freqs = std::unordered_map<int32_t, uint32_t>(match_indexes_.size());
+    std::unordered_map<int32_t, uint32_t> freqs(match_indexes_.size());
     for (auto match_idx : match_indexes_) {
         if (match_idx < 0) continue;
         ++freqs[match_idx];
