@@ -42,6 +42,7 @@ struct AppendEntriesReqPayload {
     uint32_t leader_commit;
 
     AppendEntriesReqPayload(size_t entries_len, NodeID dest_id, uint32_t term, uint32_t leader_id, uint32_t prev_log_idx, uint32_t prev_log_term, uint32_t leader_commit) :
+        entries_len(entries_len),
         dest_id(dest_id),
         term(term),
         leader_id(leader_id),

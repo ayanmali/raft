@@ -857,9 +857,6 @@ inline std::optional<std::string> Node::send_append_entries(int32_t next_idx, Ev
         prev_log_term,
         commit_index_
     };
-    #ifdef DEBUG
-    std::cout << "payload.entries_len = " << p.entries_len << "\n";
-    #endif
     std::memcpy(p.entries, s.data(), sizeof(LogEntry) * s.size());
     send(std::move(p), el);
     return {};
