@@ -615,6 +615,21 @@ inline void Node::commit_entries_if_available() {
     // commit newly appended entries if possible
     // TODO: notify client that entries were committed
     uint32_t new_commit_idx = compute_new_commit_idx();
+    #ifdef DEBUG
+    std::cout << "current commit idx = " << commit_index_ << "\n";
+    std::cout << "match indexes: ";
+    for (auto n : match_indexes_) {
+        std::cout << n << ", ";
+    }
+    std::cout << "\n";
+
+    if (new_commit_idx == commit_index_) {
+        std::cout << "nothing to commit\n";
+    }
+    else {
+        std::cout << "new commit idx = " << new_commit_idx << "\n";
+    }
+    #endif
     if (new_commit_idx == commit_index_) return;
     commit_index_ = new_commit_idx;
 
