@@ -580,6 +580,13 @@ inline uint32_t Node::compute_new_commit_idx() {
     }
     ++freqs[log_.size() + last_applied_idx_];
 
+    #ifdef DEBUG
+    std::cout << "Frequencies map:\n";
+    for (const auto& [k,v] : freqs) {
+        std::cout << k << ", " << v << "\n";
+    }
+    #endif
+
     // fast path
     auto kv_max_freq = std::max_element(freqs.begin(), freqs.end(), [](const std::pair<uint32_t, uint32_t>& a, const std::pair<uint32_t, uint32_t>& b){
        return a.second < b.second;
