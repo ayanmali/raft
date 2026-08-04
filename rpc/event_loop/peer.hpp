@@ -384,6 +384,7 @@ inline std::optional<std::string> EventLoop::post_inflight(AppendEntriesReqPaylo
     std::cout << "payload prev log index = " << payload.prev_log_idx << "\n";
     std::cout << "payload prev log term = " << payload.prev_log_term << "\n";
     std::cout << "payload leader commit = " << payload.leader_commit << "\n";
+    std::cout << "payload entries_len = " << payload.entries_len << "\n";
     #endif
     auto it = peer_conns.find(payload.dest_id);
     if (it == peer_conns.end()) {
