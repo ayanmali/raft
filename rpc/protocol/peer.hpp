@@ -81,14 +81,14 @@ inline std::variant<NodeMessage, const char*> parse_rbuf(std::byte* rbuf, uint32
     std::memcpy(&kind_byte, rbuf, sizeof(kind_byte));
 
     itimerspec zero{};
-    switch (static_cast<TimerKind>(kind_byte)) {
-        case TimerKind::AE:
+    switch (static_cast<RpcKind>(kind_byte)) {
+        case RpcKind::AppendEntries:
             ::timerfd_settime(timer_fds.get_ae_timeout(), 0, &zero, nullptr);
             return parse_ae_reply(rbuf + sizeof(kind_byte));
-        case TimerKind::RV:
+        case RpcKind::RequestVote:
             ::timerfd_settime(timer_fds.get_rv_timeout(), 0, &zero, nullptr);
             return parse_rv_reply(rbuf + sizeof(kind_byte));
-        case TimerKind::IS:
+        case RpcKind::InstallSnapshot:
             ::timerfd_settime(timer_fds.get_is_timeout(), 0, &zero, nullptr);
             return parse_is_reply(rbuf + sizeof(kind_byte));
         default:
