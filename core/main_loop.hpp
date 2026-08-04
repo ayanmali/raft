@@ -302,7 +302,6 @@ inline void Node::MainLoop() {
                     }
                     std::cout << "\n";
                     #endif
-                    last_ae_sent_[payload.server_id] = std::chrono::steady_clock::time_point::max();
 
                     if (payload.term > current_term_) {
                         advance_to_term(payload.term);
@@ -352,7 +351,6 @@ inline void Node::MainLoop() {
 
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
                         send(std::move(p), el);
-                        last_ae_sent_[payload.server_id] = std::chrono::steady_clock::now();
 
                         return {};
                     }
@@ -411,8 +409,6 @@ inline void Node::MainLoop() {
                     }
                     std::cout << "\n";
                     #endif
-
-                    last_rv_sent_[payload.server_id] = std::chrono::steady_clock::time_point::max();
 
                     if (payload.term > current_term_) {
                         advance_to_term(payload.term);
@@ -474,7 +470,6 @@ inline void Node::MainLoop() {
                             ));
                         }
                         send(std::move(p), el);
-                        last_is_sent_[payload.server_id] = std::chrono::steady_clock::now();
                         return {};
                     };
 
@@ -486,6 +481,7 @@ inline void Node::MainLoop() {
 
                 // heartbeats are sent per follower, not all at once.
                 else if constexpr (std::is_same_v<T, HeartbeatTimeout>) {
+                    if (state_ != NodeState::Leader) return {}; // in case this node was demoted in the interim
                     #ifdef DEBUG
                     std::cout << "found heartbeat timeout for node " << payload.source_id << "; sending heartbeat...\n";
                     std::cout << "next index = " << next_indexes_[payload.source_id] << "\n";
@@ -499,40 +495,7 @@ inline void Node::MainLoop() {
                             payload.source_id
                         ));
                     }
-                    if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_ae_sent_[payload.source_id]) > RPC_TIMEOUT) {
-                        // retry
-                        std::optional<std::string> send_ae_err = send_append_entries(next_idx, el, payload.source_id);
-                        if (send_ae_err) {
-                            return (std::format(
-                                "error retrying AE RPC:\n{}\n",
-                                send_ae_err.value()
-                            ));
-                        }
-                    }
-                    if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_rv_sent_[payload.source_id]) > RPC_TIMEOUT) {
-                        // retry
-                        auto p = RequestVoteReqPayload{
-                            .dest_id = payload.source_id,
-                            .term = current_term_,
-                            .candidate_id = MY_ID,
-                            .last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_,
-                            .last_log_term = log_.back().term,
-                        };
-                        send(std::move(p), el);
-                        last_rv_sent_[payload.source_id] = std::chrono::steady_clock::now();
-                    }
-                    if (installing_snapshot_id_ == payload.source_id &&
-                        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_is_sent_[payload.source_id]) > RPC_TIMEOUT) {
-                        // retry
-                        std::optional<std::string> send_is_err = send_install_snapshot(el, payload.source_id);
-                        if (send_is_err) {
-                            return (std::format(
-                                "error retrying IS RPC:\n{}\n",
-                                send_is_err.value()
-                            ));
-                        }
-                        return {};
-                    }
+
                     // if last log index >= this follower's nextIndex,
                     // then send AE RPC w/ log entries starting at nextIndex. Otherwise, send term w/ no entries
 
@@ -569,9 +532,6 @@ inline void Node::MainLoop() {
                     next_indexes_[payload.source_id] = -1;
                     match_indexes_[payload.source_id] = -1;
                     chunks_sent_[payload.source_id] = -1;
-                    last_ae_sent_[payload.source_id] = std::chrono::steady_clock::time_point::max();
-                    last_rv_sent_[payload.source_id] = std::chrono::steady_clock::time_point::max();
-                    last_is_sent_[payload.source_id] = std::chrono::steady_clock::time_point::max();
 
                     voters_.erase(payload.source_id);
                     if (voted_for_ == payload.source_id) {
@@ -597,6 +557,58 @@ inline void Node::MainLoop() {
                     append_commands(payload.entries, payload.entries_len);
                 }
 
+                else if constexpr (std::is_same_v<T, AETimeout>) {
+                    // Stale AE retry timer after demotion; only a leader retries AEs.
+                    if (state_ != NodeState::Leader) return {};
+                    auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
+                    const int32_t next_idx = next_indexes_[payload.source_id];
+                    if (next_idx == 0) {
+                        return (std::format(
+                            "Failed to process HeartbeatTimeout: next_index 0 for node id {} cannot derive prev_log_idx",
+                            payload.source_id
+                        ));
+                    }
+
+                    std::optional<std::string> send_ae_err = send_append_entries(next_idx, el, payload.source_id);
+                    if (send_ae_err) {
+                        return (std::format(
+                            "error retrying AE RPC:\n{}\n",
+                            send_ae_err.value()
+                        ));
+                    }
+                }
+
+                else if constexpr (std::is_same_v<T, RVTimeout>) {
+                    // Only a candidate still seeking votes retries; guards
+                    // against a stale RV timer firing after winning/demotion.
+                    if (state_ != NodeState::Candidate) return {};
+                    auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
+                    // retry
+                    auto p = RequestVoteReqPayload{
+                        .dest_id = payload.source_id,
+                        .term = current_term_,
+                        .candidate_id = MY_ID,
+                        .last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_,
+                        .last_log_term = log_.empty() ? 0 : log_.back().term,
+                    };
+                    send(std::move(p), el);
+                }
+
+                else if constexpr (std::is_same_v<T, ISTimeout>) {
+                    // retry; only a leader (still installing this snapshot) retries
+                    if (state_ != NodeState::Leader) return {};
+                    if (installing_snapshot_id_ != payload.source_id) return {};
+
+                    auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
+                    std::optional<std::string> send_is_err = send_install_snapshot(el, payload.source_id);
+                    if (send_is_err) {
+                        return (std::format(
+                            "error retrying IS RPC:\n{}\n",
+                            send_is_err.value()
+                        ));
+                    }
+                }
+
                 else if constexpr (std::is_same_v<T, StopNodeMsg>) {
                     running_ = false;
                 }
@@ -607,9 +619,9 @@ inline void Node::MainLoop() {
                 return {};
             }, message);
             #ifdef DEBUG
-            if (err) std::cout << "inbox handler error: " << err.value() << "\n";
+if (err) std::cout << "inbox handler error: " << err.value() << "\n";
             #else
-            (void)ok;
+            (void)err;
             #endif
         });
 

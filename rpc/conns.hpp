@@ -23,6 +23,7 @@ Buffering convention (used by both flavors):
 #include <cstring>
 #include <sys/types.h>
 #include <type_traits>
+#include <unistd.h>
 #include <utility>
 #include <algorithm>
 
@@ -214,6 +215,55 @@ Buffering (mirrors ClientConn):
           followed by a 1-byte RpcKind and the payload, so the parser is
           self-describing — no per-request tracking needed.
 */
+
+enum class TimerKind : uint8_t { Heartbeat=0, AE=1, RV=2, IS=3 };
+
+struct TimerFDs {
+    FD fds[4] = {-1, -1, -1, -1};
+
+    int get_heartbeat() {
+        return fds[static_cast<uint8_t>(TimerKind::Heartbeat)];
+    }
+    int get_ae_timeout() {
+        return fds[static_cast<uint8_t>(TimerKind::AE)];
+    }
+    int get_rv_timeout() {
+        return fds[static_cast<uint8_t>(TimerKind::RV)];
+    }
+    int get_is_timeout() {
+        return fds[static_cast<uint8_t>(TimerKind::IS)];
+    }
+
+    void set_heartbeat(FD fd) {
+        fds[static_cast<uint8_t>(TimerKind::Heartbeat)] = fd;
+    }
+    void set_ae_timeout(FD fd) {
+        fds[static_cast<uint8_t>(TimerKind::AE)] = fd;
+    }
+    void set_rv_timeout(FD fd) {
+        fds[static_cast<uint8_t>(TimerKind::RV)] = fd;
+    }
+    void set_is_timeout(FD fd) {
+        fds[static_cast<uint8_t>(TimerKind::IS)] = fd;
+    }
+
+    ~TimerFDs() {
+        if (get_heartbeat() != -1) {
+            close(get_heartbeat());
+        }
+        if (get_ae_timeout() != -1) {
+            close(get_ae_timeout());
+        }
+        if (get_rv_timeout() != -1) {
+            close(get_rv_timeout());
+        }
+        if (get_is_timeout() != -1) {
+            close(get_is_timeout());
+        }
+    }
+
+};
+
 struct PeerConn {
     // Single write buffer for all outbound data (requests are serialized
     // and appended). wbuf_offset tracks chunked-send progress.
@@ -229,10 +279,11 @@ struct PeerConn {
     size_t wbuf_size      = 0;
     size_t rbuf_offset    = 0;
 
-    NodeID      peer_id   = 0;
+    NodeID peer_id        = 0;
 
-    FD    fd              = -1;
-    FD timer_fd           = -1;
+    FD fd                 = -1;
+
+    TimerFDs timer_fds{};
 
     uint32_t epoll_events = 0;
 
@@ -241,4 +292,5 @@ struct PeerConn {
     State state           = State::Disconnected;
 
     PeerConn(const char* ip_, const char* port_, NodeID peer_id_) : ip{ip_}, port{port_}, peer_id{peer_id_} {}
+
 };

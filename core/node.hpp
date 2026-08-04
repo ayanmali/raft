@@ -74,7 +74,7 @@ public:
         );
         el.Wake();
     }
-    std::optional<std::string> send_append_entries(uint32_t next_idx, EventLoop&, NodeID);
+    std::optional<std::string> send_append_entries(int32_t next_idx, EventLoop&, NodeID);
     std::optional<std::string> send_install_snapshot(EventLoop&, NodeID);
     void request_votes();
 
@@ -95,9 +95,6 @@ public:
 
     std::unordered_set<NodeID>                                      voters_;
     std::vector<LogEntry>                                           log_;
-    std::vector<std::chrono::steady_clock::time_point>              last_ae_sent_            = std::vector<std::chrono::steady_clock::time_point>(BASE_CLUSTER_SIZE, std::chrono::steady_clock::time_point::max());
-    std::vector<std::chrono::steady_clock::time_point>              last_rv_sent_            = std::vector<std::chrono::steady_clock::time_point>(BASE_CLUSTER_SIZE, std::chrono::steady_clock::time_point::max());
-    std::vector<std::chrono::steady_clock::time_point>              last_is_sent_            = std::vector<std::chrono::steady_clock::time_point>(BASE_CLUSTER_SIZE, std::chrono::steady_clock::time_point::max());
     std::vector<size_t>                                             chunks_sent_             = std::vector<size_t>(BASE_CLUSTER_SIZE, 0); // after every IS RPC send, increment by 1
     std::vector<int32_t>                                            next_indexes_            = std::vector<int32_t>(BASE_CLUSTER_SIZE, 1);         // leader-only, one per peer
     std::vector<int32_t>                                            match_indexes_           = std::vector<int32_t>(BASE_CLUSTER_SIZE, 0);         // leader-only, one per peer
@@ -195,7 +192,7 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
         //n.loops_[i] = std::move(*loop_raw);
         std::optional<std::string> create_el_err = EventLoop::CreateEventLoop(
-            &n->loops_[i], inbox, i, HEARTBEAT_INTERVAL
+            &n->loops_[i], inbox, i, HEARTBEAT_INTERVAL_MS, RPC_TIMEOUT_MS
         );
         if (create_el_err) {
             return (
@@ -279,7 +276,6 @@ inline void Node::request_votes() {
                 .last_log_term = log_.empty() ? 0 : log_.back().term
             })
         );
-        last_rv_sent_[id] = std::chrono::steady_clock::now();
     }
     for (auto& loop : loops_) { loop.Wake(); }
 }
@@ -546,12 +542,9 @@ inline void Node::add_peer_if_not_exists(NodeID node_id, FD fd, EventLoop& el) {
         next_indexes_.resize(node_id + 1);
         match_indexes_.resize(node_id + 1);
         chunks_sent_.resize(node_id + 1);
-        last_ae_sent_.resize(node_id + 1, std::chrono::steady_clock::time_point::max());
-        last_rv_sent_.resize(node_id + 1, std::chrono::steady_clock::time_point::max());
-        last_is_sent_.resize(node_id + 1, std::chrono::steady_clock::time_point::max());
     }
     next_indexes_[node_id] = last_applied_idx_ + log_.size() + 1;
-    // match_indexes_, chunks_sent, last_ae_sent, last_rv_sent_, and last_is_sent_ are default initialized correctly at the corresponding index.
+    // match_indexes_, chunks_sent, are default initialized correctly at the corresponding index.
 
     el.outbound_inbox.PushOne(
         EventLoopMessage(
@@ -818,7 +811,7 @@ inline void Node::flush_files() {
     last_flush_ = std::chrono::steady_clock::now();
 }
 
-inline std::optional<std::string> Node::send_append_entries(uint32_t next_idx, EventLoop& el, NodeID dest_id) {
+inline std::optional<std::string> Node::send_append_entries(int32_t next_idx, EventLoop& el, NodeID dest_id) {
     #ifdef DEBUG
     std::cout << "checking for entries to send to node " << dest_id << "\n";
     std::cout << "next index = " << next_idx << "\n";
@@ -866,7 +859,6 @@ inline std::optional<std::string> Node::send_append_entries(uint32_t next_idx, E
     };
     std::memcpy(p.entries, s.data(), sizeof(LogEntry) * s.size());
     send(std::move(p), el);
-    last_ae_sent_[dest_id] = std::chrono::steady_clock::now();
     return {};
 }
 
@@ -896,7 +888,6 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
         ));
     }
     send(std::move(p), el);
-    last_is_sent_[dest_id] = std::chrono::steady_clock::now();
     return {};
 }
 

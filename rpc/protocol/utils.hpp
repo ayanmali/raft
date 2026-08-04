@@ -21,7 +21,7 @@ struct ByteReader;
 using ReqParserFunc = std::variant<NodeMessage, const char*>(*)(ByteReader&, FD);
 using ReplyParserFunc = std::variant<NodeMessage, const char*>(*)(std::byte*);
 
-std::variant<NodeMessage, const char*> parse_rbuf(std::byte* rbuf, uint32_t total_length);
+std::variant<NodeMessage, const char*> parse_rbuf(std::byte* rbuf, uint32_t total_length, TimerFDs& timer_fds);
 std::variant<NodeMessage, const char*> parse_rbuf(ClientConn* c, uint32_t msg_len, size_t parsed);
 
 struct ByteReader {

@@ -41,7 +41,7 @@ One event loop runs on one thread.
 */
 struct EventLoop {
     public:
-    static std::optional<std::string> CreateEventLoop(EventLoop*, NodeInbox*, size_t this_id, long heartbeat_period);
+    static std::optional<std::string> CreateEventLoop(EventLoop*, NodeInbox*, size_t this_id, long heartbeat_period_ms, long rpc_timeout_ms);
     EventLoop(size_t inbound_cap, NodeInbox*, size_t this_id, long period);
     EventLoop() = default;
     ~EventLoop();
@@ -79,9 +79,10 @@ struct EventLoop {
     // Outbound
 
     std::unordered_map<FD, NodeID> peer_fd_to_id;
-    std::unordered_map<FD, NodeID> peer_timer_fd_to_id; // for heartbeats
+    std::unordered_map<FD, std::pair<NodeID, TimerKind>> peer_timer_fd_map; // heartbeats and RPC timeouts
 
-    long heartbeat_period;
+    long heartbeat_period_ms;
+    long rpc_timeout_ms;
 
     // ---- helpers ----
     static std::optional<const char*> set_nonblocking(FD fd);
@@ -108,7 +109,10 @@ struct EventLoop {
     // outbound messaging
     std::optional<const char*> OnPeerWritable(PeerConn& p);
     std::optional<const char*> OnPeerReadable(PeerConn& p);
-    std::optional<const char*> OnPeerTimer(PeerConn& p);
+    std::optional<const char*> OnPeerHeartbeatTimeout(PeerConn& p);
+    std::optional<const char*> OnPeerAERPCTimeout(PeerConn& p);
+    std::optional<const char*> OnPeerRVRPCTimeout(PeerConn& p);
+    std::optional<const char*> OnPeerISRPCTimeout(PeerConn& p);
     std::optional<std::string> StartConnect(PeerConn& p);
     void DropPeer(PeerConn& p);
 
@@ -136,11 +140,11 @@ struct EventLoop {
 #include "./client.hpp"
 #include "./peer.hpp"
 
-
-inline std::optional<std::string> EventLoop::CreateEventLoop(EventLoop* loop, NodeInbox* node_inbox, size_t this_id, long heartbeat_period) {
+inline std::optional<std::string> EventLoop::CreateEventLoop(EventLoop* loop, NodeInbox* node_inbox, size_t this_id, long heartbeat_period_ms, long rpc_timeout_ms) {
     loop->node_inbox = node_inbox;
     loop->this_id = this_id;
-    loop->heartbeat_period = heartbeat_period;
+    loop->heartbeat_period_ms = heartbeat_period_ms;
+    loop->rpc_timeout_ms = rpc_timeout_ms;
 
     // Epoll fd
     loop->epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
@@ -401,16 +405,25 @@ inline std::optional<std::string> EventLoop::Run() {
                 continue;
             }
 
-            if (auto it = peer_timer_fd_to_id.find(fd); it != peer_timer_fd_to_id.end()) {
-                PeerConn& p = peer_conns.at(it->second);
+            if (auto it = peer_timer_fd_map.find(fd); it != peer_timer_fd_map.end()) {
+                auto [peer_id, kind] = it->second;
+                PeerConn& p = peer_conns.at(peer_id);
                 if (e & EPOLLIN) {
                     #ifdef DEBUG
-                    std::cout << "timer fd fired for peer " << p.peer_id << "\n";
+                    const char* kind_name[] = {"heartbeat", "AE", "RV", "IS"};
+                    std::cout << kind_name[static_cast<uint8_t>(kind)] << " timer fired for peer " << p.peer_id << "\n";
                     #endif
-                    std::optional<const char*> peer_timer_err = OnPeerTimer(p);
-                    if (peer_timer_err) {
+                    std::optional<const char*> timer_err;
+                    switch (kind) {
+                        case TimerKind::Heartbeat: timer_err = OnPeerHeartbeatTimeout(p); break;
+                        case TimerKind::AE:        timer_err = OnPeerAERPCTimeout(p); break;
+                        case TimerKind::RV:        timer_err = OnPeerRVRPCTimeout(p); break;
+                        case TimerKind::IS:        timer_err = OnPeerISRPCTimeout(p); break;
+                    }
+                    if (timer_err) {
                         #ifdef DEBUG
-                        std::cout << "failed to post heartbeat payload to node inbox:\n" << peer_timer_err.value() << "\n";
+                        std::cout << "failed to handle " << kind_name[static_cast<uint8_t>(kind)]
+                                  << " timer for peer " << p.peer_id << ":\n" << timer_err.value() << "\n";
                         #endif
                         continue;
                     }
@@ -476,7 +489,7 @@ inline std::optional<std::string> EventLoop::DrainInbox() {
                 std::optional<std::string> arm_err = arm_heartbeat_timer(payload.dest_id);
                 if (arm_err) {
                     return (std::format(
-                        "Error while draining inbox: failed to arm heartbeat timer for node {}:\n{}\n",
+                        "Error while draining inbox: failed to arm timers for node {}:\n{}\n",
                         payload.dest_id, arm_err.value()
                     ));
                 }
@@ -489,7 +502,7 @@ inline std::optional<std::string> EventLoop::DrainInbox() {
                 std::optional<std::string> disarm_err = disarm_heartbeat_timer(payload.dest_id);
                 if (disarm_err) {
                     return (std::format(
-                        "Error while draining inbox: failed to disarm heartbeat timer for node {}:\n{}\n",
+                        "Error while draining inbox: failed to disarm timers for node {}:\n{}\n",
                         payload.dest_id, disarm_err.value()
                     ));
                 }

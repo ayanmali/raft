@@ -2,8 +2,10 @@
 #include "./utils.hpp"
 #include "payloads.hpp"
 #include <netinet/in.h>
+#include <sys/timerfd.h>
 
 /* Inbound */
+constexpr long NS_PER_SEC = 1'000'000'000;
 
 inline std::variant<NodeMessage, const char*> parse_ae_reply(std::byte* rbuf) {
     AppendEntriesRespPayload response;
@@ -74,16 +76,20 @@ inline std::variant<NodeMessage, const char*> parse_is_reply(std::byte* rbuf) {
 
 // constexpr auto REPLY_PARSER_TABLE = make_reply_parser_table();
 
-inline std::variant<NodeMessage, const char*> parse_rbuf(std::byte* rbuf, uint32_t total_length) {
+inline std::variant<NodeMessage, const char*> parse_rbuf(std::byte* rbuf, uint32_t total_length, TimerFDs& timer_fds) {
     uint8_t kind_byte;
     std::memcpy(&kind_byte, rbuf, sizeof(kind_byte));
 
-    switch (static_cast<RpcKind>(kind_byte)) {
-        case RpcKind::AppendEntries:
+    itimerspec zero{};
+    switch (static_cast<TimerKind>(kind_byte)) {
+        case TimerKind::AE:
+            ::timerfd_settime(timer_fds.get_ae_timeout(), 0, &zero, nullptr);
             return parse_ae_reply(rbuf + sizeof(kind_byte));
-        case RpcKind::RequestVote:
+        case TimerKind::RV:
+            ::timerfd_settime(timer_fds.get_rv_timeout(), 0, &zero, nullptr);
             return parse_rv_reply(rbuf + sizeof(kind_byte));
-        case RpcKind::InstallSnapshot:
+        case TimerKind::IS:
+            ::timerfd_settime(timer_fds.get_is_timeout(), 0, &zero, nullptr);
             return parse_is_reply(rbuf + sizeof(kind_byte));
         default:
             return "invalid RPC kind";
