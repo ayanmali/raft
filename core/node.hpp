@@ -116,6 +116,8 @@ public:
     int                                                             leader_id_               = -1;
     int                                                             installing_snapshot_id_  = -1;
     int                                                             voted_for_               = -1;
+    uint32_t                                                        base_logical_idx_        = 1; // logical indexes are 1-based
+    uint32_t                                                        base_term_               = 0;
     uint32_t                                                        last_applied_idx_        = 0;
     uint32_t                                                        last_applied_term_       = 0;
     uint32_t                                                        last_applied_idx_ss_     = 0;
@@ -272,8 +274,8 @@ inline void Node::request_votes() {
                 .dest_id = id,
                 .term = current_term_,
                 .candidate_id = MY_ID,
-                .last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_,
-                .last_log_term = log_.empty() ? 0 : log_.back().term
+                .last_log_idx = static_cast<uint32_t>(log_.size() - 1) + base_logical_idx_,
+                .last_log_term = log_.empty() ? base_term_ : log_.back().term
             })
         );
     }
@@ -460,7 +462,7 @@ inline void Node::demote() {
     state_ = NodeState::Follower;
     for (size_t i = 0; i < next_indexes_.size(); ++i) {
         if (next_indexes_[i] < 0) continue;
-        next_indexes_[i] = last_applied_idx_ + log_.size() + 1; // last log idx + 1
+        next_indexes_[i] = static_cast<uint32_t>(log_.size()) + base_logical_idx_; // last log idx + 1
         match_indexes_[i] = 0;
         chunks_sent_[i] = 0;
     }
@@ -499,7 +501,7 @@ inline void Node::become_leader() {
     // placeholder entry allows this node to assert its leadership to other nodes on the next heartbeat
     log_.push_back(LogEntry(current_term_));
 
-    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_; // logical index
+    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size() - 1) + base_logical_idx_; // logical index
     for (int i = 0; i < next_indexes_.size(); ++i) {
         if (next_indexes_[i] < 0) continue;
         next_indexes_[i] = last_log_idx + 1;
@@ -545,7 +547,7 @@ inline void Node::add_peer_if_not_exists(NodeID node_id, FD fd, EventLoop& el) {
         match_indexes_.resize(node_id + 1);
         chunks_sent_.resize(node_id + 1);
     }
-    next_indexes_[node_id] = last_applied_idx_ + log_.size() + 1;
+    next_indexes_[node_id] = static_cast<uint32_t>(log_.size()) + base_logical_idx_;
     match_indexes_[node_id] = 0;
     chunks_sent_[node_id] = 0;
 
@@ -573,14 +575,19 @@ inline uint32_t Node::compute_new_commit_idx() {
     // No peers => no quorum to compute. Guards std::max_element below from
     // dereferencing end() on an empty map.
     // if (node_ids_.empty()) return commit_index_;
-    if (node_ids_.empty()) return log_.size() + last_applied_idx_;
+    if (node_ids_.empty()) return (log_.size() - 1) + base_logical_idx_;
 
     std::unordered_map<int32_t, uint32_t> freqs(match_indexes_.size());
     for (auto match_idx : match_indexes_) {
         if (match_idx < 0) continue;
         ++freqs[match_idx];
     }
-    ++freqs[log_.size() + last_applied_idx_];
+    if (!log_.empty()) {
+        ++freqs[(log_.size() - 1) + base_logical_idx_];
+    }
+    else {
+        ++freqs[base_logical_idx_ - 1];
+    }
 
     #ifdef DEBUG
     std::cout << "Frequencies map:\n";
@@ -596,8 +603,8 @@ inline uint32_t Node::compute_new_commit_idx() {
     if (kv_max_freq == freqs.end()) return commit_index_;
     if (kv_max_freq->second <= node_ids_.size() / 2) return commit_index_;
     if (kv_max_freq->first > commit_index_
-        && kv_max_freq->first - (last_applied_idx_ + 1) < log_.size()
-        && log_[kv_max_freq->first - (last_applied_idx_ + 1)].term == current_term_) {
+        && kv_max_freq->first - base_logical_idx_ < log_.size()
+        && log_[kv_max_freq->first - base_logical_idx_].term == current_term_) {
         return kv_max_freq->first;
     }
 
@@ -613,8 +620,8 @@ inline uint32_t Node::compute_new_commit_idx() {
     for (auto& [match_idx, count] : freqs_vec) {
         if (count <= node_ids_.size() / 2) break;
         if (match_idx > commit_index_
-            && match_idx - (last_applied_idx_ + 1) < log_.size()
-            && log_[match_idx - (last_applied_idx_ + 1)].term == current_term_) {
+            && match_idx - base_logical_idx_ < log_.size()
+            && log_[match_idx - base_logical_idx_].term == current_term_) {
             return match_idx;
         }
     }
@@ -651,10 +658,11 @@ inline void Node::commit_entries_if_available() {
             #ifdef DEBUG
             std::cout << "applying entry at logical index " << i << "\n";
             #endif
-            apply_entry(sm_fp_, log_[i - (last_applied_idx_ + 1)]);
+            apply_entry(sm_fp_, log_[i - base_logical_idx_]);
         }
-        last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - (last_applied_idx_ + 1)].term;
+        // last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - (last_applied_idx_ + 1)].term;
         last_applied_idx_ = commit_index_;
+        last_applied_term_ = log_.empty() ? base_term_ : log_[commit_index_ - base_logical_idx_].term;
     }
 }
 
@@ -749,6 +757,7 @@ inline std::optional<std::string> Node::recover() {
             log_.resize(log_.size() + num_entries);
             ::fread(&log_.front(), sizeof(LogEntry), num_entries, log_fp_);
         }
+
     }
 
     // Apply all log entries to the state machine. After a previous log
@@ -805,6 +814,9 @@ inline std::optional<std::string> Node::recover() {
     // Advance commit_index to reflect the fully compacted state
     commit_index_ = last_applied_idx_;
 
+    base_logical_idx_ = last_applied_idx_ + 1;
+    base_term_ = last_applied_term_;
+
     // Seek state machine file to end for future appends
     //::fseek(sm_fp_, 0, SEEK_END);
     return {};
@@ -848,15 +860,11 @@ inline std::optional<std::string> Node::send_append_entries(int32_t next_idx, Ev
     #ifdef DEBUG
     std::cout << "prev_log_idx = " << prev_log_idx << "\n";
     #endif
-    const size_t prev_log_idx_offset = prev_log_idx - (last_applied_idx_ + 1);
-    #ifdef DEBUG
-    std::cout << "prev_log_idx_offset = " << prev_log_idx_offset << "\n";
-    #endif
-    const uint32_t prev_log_term = log_[prev_log_idx_offset].term;
+    const uint32_t prev_log_term = prev_log_idx == base_logical_idx_ - 1 ? base_term_ : log_[prev_log_idx - base_logical_idx_].term;
     #ifdef DEBUG
     std::cout << "prev_log_term = " << prev_log_term << "\n";
     #endif
-    const size_t next_idx_offset = next_idx - (last_applied_idx_ + 1);
+    const size_t next_idx_offset = next_idx - base_logical_idx_;
     #ifdef DEBUG
     std::cout << "next_idx_offset = " << next_idx_offset << "\n";
     #endif

@@ -21,10 +21,11 @@ inline void Node::MainLoop() {
                 #ifdef DEBUG
                 std::cout << "applying entry at logical index " << i << "\n";
                 #endif
-                apply_entry(sm_fp_, log_[i - (last_applied_idx_ + 1)]);
+                apply_entry(sm_fp_, log_[i - base_logical_idx_]);
             }
-            last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - (last_applied_idx_ + 1)].term;
+            // last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - (last_applied_idx_ + 1)].term;
             last_applied_idx_ = commit_index_;
+            last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - base_logical_idx_].term;
         }
 
         // check the reply inbox for new replies that have arrived
@@ -66,12 +67,29 @@ inline void Node::MainLoop() {
                     // reply false if:
                     // term < current_term
                     // log doesn't contain an entry at prev_log_index whose term matches prev_log_term
-                    const size_t log_offset = payload.prev_log_idx - (last_applied_idx_ + 1);
+                    const size_t log_offset = payload.prev_log_idx - base_logical_idx_;
 
-                    if (current_term_ > payload.term
-                    || log_offset >= log_.size()
-                    || log_[log_offset].term != payload.prev_log_term
-                    ) {
+                    if (current_term_ > payload.term) {
+                        send(AppendEntriesRespPayload{
+                            .entries_len = 0,
+                            .client_fd = payload.fd,
+                            .server_id = MY_ID,
+                            .term = current_term_,
+                            .success = 0}, el);
+                        return {};
+                    }
+
+                    if (payload.prev_log_idx == base_logical_idx_ - 1 && payload.prev_log_term != base_term_) {
+                        send(AppendEntriesRespPayload{
+                            .entries_len = 0,
+                            .client_fd = payload.fd,
+                            .server_id = MY_ID,
+                            .term = current_term_,
+                            .success = 0}, el);
+                        return {};
+                    }
+
+                    if (log_offset >= log_.size() || log_[log_offset].term != payload.prev_log_term) {
                         send(AppendEntriesRespPayload{
                             .entries_len = 0,
                             .client_fd = payload.fd,
@@ -166,8 +184,8 @@ inline void Node::MainLoop() {
                         return {};
                     }
 
-                    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_; // logical index
-                    const uint32_t last_log_term = log_.empty() ? 0 : log_.back().term;
+                    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size() - 1) + base_logical_idx_; // logical index
+                    const uint32_t last_log_term = log_.empty() ? base_term_ : log_.back().term;
                     #ifdef DEBUG
                     std::cout << "last_log_idx = " << last_log_idx << "\n";
                     std::cout << "last_log_term = " << last_log_term << "\n";
@@ -261,7 +279,7 @@ inline void Node::MainLoop() {
                     ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
 
                     if (payload.last_included_idx > last_applied_idx_) {
-                        const size_t offset = payload.last_included_idx - (last_applied_idx_ + 1);
+                        const size_t offset = payload.last_included_idx - base_logical_idx_;
                         if (offset < log_.size() && log_[offset].term == payload.last_included_term) {
                             // Matching entry found; discard entries up to and including last_included_idx
                             log_.erase(log_.begin(), log_.begin() + offset + 1);
@@ -269,6 +287,7 @@ inline void Node::MainLoop() {
                             // Conflict or snapshot extends beyond log; discard all entries
                             log_.clear();
                         }
+
                         ::freopen(LOG_FILE_PATH, "w+", log_fp_);
                         ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
                         ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
@@ -278,8 +297,11 @@ inline void Node::MainLoop() {
                         ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
                     }
                     node_ids_.reset(payload.cluster, payload.cluster_raw_size);
+                    commit_index_ = payload.last_included_idx;
                     last_applied_idx_ = payload.last_included_idx;
                     last_applied_term_ = payload.last_included_term;
+                    base_logical_idx_ = payload.last_included_idx + 1;
+                    base_term_ = payload.last_included_term;
                     return {};
                 }
 
@@ -318,14 +340,14 @@ inline void Node::MainLoop() {
                         ));
                     }
                     const uint32_t prev_log_idx = stored_next - 1;
-                    const size_t prev_log_idx_offset = prev_log_idx - (last_applied_idx_ + 1);
+                    const long prev_log_idx_offset = prev_log_idx < base_logical_idx_ ? 0 : prev_log_idx - base_logical_idx_;
                     if (prev_log_idx_offset >= log_.size()) {
                         return (std::format(
                             "Failed to process AE reply: prev_log_idx offset {} out of bounds (log size = {})",
                             prev_log_idx_offset, log_.size()
                         ));
                     }
-                    const uint32_t prev_log_term = log_[prev_log_idx_offset].term;
+                    const uint32_t prev_log_term = prev_log_idx == base_logical_idx_ - 1 ? base_term_ : log_[prev_log_idx_offset].term;
 
                     /*
                      on fail:
@@ -474,8 +496,8 @@ inline void Node::MainLoop() {
                     };
 
                     chunks_sent_[payload.server_id] = 0;
-                    next_indexes_[payload.server_id] = last_applied_idx_ + 1; // should this be last_applied_idx_ss_?
-                    match_indexes_[payload.server_id] = last_applied_idx_; // should this be last_applied_idx_ss_?
+                    next_indexes_[payload.server_id] = last_applied_idx_ss_ + 1; // should this be last_applied_idx_ss_?
+                    match_indexes_[payload.server_id] = last_applied_idx_ss_; // should this be last_applied_idx_ss_?
                     installing_snapshot_id_ = -1;
                 }
 
@@ -588,8 +610,8 @@ inline void Node::MainLoop() {
                         .dest_id = payload.source_id,
                         .term = current_term_,
                         .candidate_id = MY_ID,
-                        .last_log_idx = static_cast<uint32_t>(log_.size()) + last_applied_idx_,
-                        .last_log_term = log_.empty() ? 0 : log_.back().term,
+                        .last_log_idx = static_cast<uint32_t>(log_.size() - 1) + base_logical_idx_,
+                        .last_log_term = log_.empty() ? base_term_ : log_.back().term,
                     };
                     send(std::move(p), el);
                 }
@@ -637,7 +659,14 @@ if (err) std::cout << "inbox handler error: " << err.value() << "\n";
             #endif
             // TODO: may need to optimize this if its too slow
             // log entries have been applied to the state machine; they may be discarded
-            log_.erase(log_.begin(), log_.end());
+            if (last_applied_idx_ < base_logical_idx_) /* large uncommitted log */ {
+                base_term_ = last_applied_term_;
+            }
+            else if (!log_.empty()) {
+                base_term_ = log_[last_applied_idx_ - base_logical_idx_].term;
+            }
+            base_logical_idx_ = last_applied_idx_ + 1;
+            log_.clear();
 
             ::freopen(LOG_FILE_PATH, "w+", log_fp_); // clears the file and sets the file position to the beginning
             ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
