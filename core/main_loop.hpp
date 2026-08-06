@@ -130,6 +130,23 @@ inline void Node::MainLoop() {
                         }
                     }
 
+                    if (payload.entries_len == 0) {
+                        if (current_term_ != payload.term) advance_to_term(payload.term);
+                        leader_id_ = payload.leader_id;
+                        leader_contact = true;
+
+                        #ifdef DEBUG
+                        std::cout << "accepting AE RPC\n";
+                        #endif
+                        send(AppendEntriesRespPayload{
+                            .entries_len = payload.entries_len,
+                            .client_fd = payload.fd,
+                            .server_id = MY_ID,
+                            .term = current_term_,
+                            .success = 1}, el);
+                        return {};
+                    }
+
                     const size_t after_prev_offset = payload.prev_log_idx >= base_logical_idx_
                         ? payload.prev_log_idx - base_logical_idx_ + 1
                         : 0;
@@ -163,7 +180,7 @@ inline void Node::MainLoop() {
                         commit_index_ = std::min(payload.leader_commit, static_cast<uint32_t>(payload.prev_log_idx + payload.entries_len));
                     }
 
-                    advance_to_term(payload.term);
+                    if (current_term_ != payload.term) advance_to_term(payload.term);
                     leader_id_ = payload.leader_id;
                     leader_contact = true;
 

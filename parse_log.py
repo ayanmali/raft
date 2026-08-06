@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-import struct
 import os
+import struct
 
 LOG_FILE = "/root/raft/persistence/log"
 CMD_SIZE = 4

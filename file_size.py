@@ -1,8 +1,9 @@
-import sys
 import os
+import sys
+
 
 def main():
-    if int(len(sys.argv)) < 2 or sys.argv[1] != '-f':
+    if len(sys.argv) < 2 or sys.argv[1] != '-f':
         print("""
             Usage:
                 python3 file_size.py -f {FILE_PATH}
