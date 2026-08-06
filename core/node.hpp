@@ -866,7 +866,7 @@ inline std::optional<std::string> Node::send_append_entries(int32_t next_idx, Ev
     #ifdef DEBUG
     std::cout << "prev_log_term = " << prev_log_term << "\n";
     #endif
-    const size_t next_idx_offset = next_idx - base_logical_idx_ - 1;
+    const size_t next_idx_offset = next_idx - base_logical_idx_;
     #ifdef DEBUG
     std::cout << "next_idx_offset = " << next_idx_offset << "\n";
     #endif

@@ -748,7 +748,7 @@ if (err) std::cout << "inbox handler error: " << err.value() << "\n";
         if (duration < election_timeout_) continue;
 
         // start election
-        if (state_ == NodeState::Candidate) continue;
+        if (state_ == NodeState::Candidate || voted_for_ != -1) continue;
         #ifdef DEBUG
         std::cout << "election timeout; starting election...\n";
         #endif
