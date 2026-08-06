@@ -420,6 +420,7 @@ inline void Node::forward_request(std::vector<std::byte*>& commands) {
         el.outbound_inbox.PushOne(EventLoopMessage(std::move(msg)));
         sent += num_entries;
     }
+    el.Wake();
     return;
 }
 
@@ -651,7 +652,7 @@ inline void Node::commit_entries_if_available() {
     commit_index_ = new_commit_idx;
 
     #ifdef DEBUG
-    std::cout << "applying entries from last applied index = " << last_applied_idx_ << " to commit index = " << commit_index_ << "\n";
+    std::cout << "applying entries from last applied index = " << last_applied_idx_ + 1 << " to commit index = " << commit_index_ << "\n";
     #endif
     if (last_applied_idx_ != commit_index_) {
         for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
@@ -898,6 +899,16 @@ inline std::optional<std::string> Node::send_append_entries(int32_t next_idx, Ev
 }
 
 inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, NodeID dest_id) {
+    #ifdef DEBUG
+    std::cout << "Sending InstallSnapshot RPC:\n";
+    std::cout << "cluster raw size = " << node_ids_.total_size() << "\n";
+    std::cout << "last_included_idx = " << last_applied_idx_ss_ << "\n";
+    std::cout << "last_included_term = " << last_applied_term_ss_ << "\n";
+    std::cout << "offset = " << chunks_sent_[dest_id] * SNAPSHOT_CHUNK_SIZE << "\n";
+    std::cout << "dest id = " << dest_id << "\n";
+    std::cout << "leader_id = " << MY_ID << "\n";
+    std::cout << "done = " << ((chunks_sent_[dest_id] + 1) * SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE) << "\n";
+    #endif
     auto p = InstallSnapshotReqPayload{
         .cluster_raw_size = node_ids_.total_size(),
         .last_included_idx = last_applied_idx_ss_,
@@ -913,6 +924,13 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
     std::memcpy(p.cluster, node_ids_.data(), node_ids_.total_size());
     node_ids_.unset(MY_ID);
     node_ids_.set(dest_id);
+    #ifdef DEBUG
+    std::cout << "payload cluster as uint8_ts: ";
+    for (auto n : p.cluster) {
+        std::cout << n << ", ";
+    }
+    std::cout << "\n";
+    #endif
 
     // Write the first snapshot chunk to the payload
     ::fseek(snapshot_fp_, node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);

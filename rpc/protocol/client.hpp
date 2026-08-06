@@ -2,6 +2,9 @@
 #include "../conns.hpp"
 #include "./utils.hpp"
 #include "payloads.hpp"
+#ifdef DEBUG
+#include <iostream>
+#endif
 
 /* Inbound */
 
@@ -38,6 +41,15 @@ inline std::variant<NodeMessage, const char*> parse_is_req(ByteReader& byte_read
     message.fd = fd;
     if (!byte_reader.read(message.partial_state, sizeof(message.partial_state))) return ("failed to parse InstallSnapshot snapshot field");
     if (!byte_reader.read(message.cluster_raw_size)) return ("failed to parse InstallSnapshot cluster_raw_size field");
+    #ifdef DEBUG
+    std::cout << "partial state = ";
+    for (const auto x : message.partial_state) {
+        std::cout << static_cast<int>(x) << ", ";
+    }
+    std::cout << "\n";
+
+    std::cout << "cluster raw size = " << message.cluster_raw_size << "\n";
+    #endif
     if (!byte_reader.read(message.cluster, message.cluster_raw_size)) return ("failed to parse InstallSnapshot cluster field");
     if (!byte_reader.read(message.last_included_idx)) return ("failed to parse InstallSnapshot last_included_idx field");
     if (!byte_reader.read(message.last_included_term)) return ("failed to parse InstallSnapshot last_included_term field");

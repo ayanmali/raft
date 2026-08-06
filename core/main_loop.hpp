@@ -566,6 +566,8 @@ inline void Node::MainLoop() {
                     // if last log index >= this follower's nextIndex,
                     // then send AE RPC w/ log entries starting at nextIndex. Otherwise, send term w/ no entries
 
+                    // TODO: replace
+                    // if (next_idx < base_logical_idx_) {
                     if (next_idx < last_applied_idx_) {
                         installing_snapshot_id_ = payload.source_id;
                         last_applied_idx_ss_ = last_applied_idx_;
