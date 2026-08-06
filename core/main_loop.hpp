@@ -48,6 +48,7 @@ inline void Node::MainLoop() {
                     std::cout << "prev log index = " << payload.prev_log_idx << "\n";
                     std::cout << "prev log term = " << payload.prev_log_term << "\n";
                     std::cout << "commit index = " << payload.leader_commit << "\n";
+                    std::cout << "log size = " << log_.size() << "\n";
 
                     std::cout << "next indexes: ";
                     for (auto n : next_indexes_) {
