@@ -852,6 +852,8 @@ inline std::optional<std::string> Node::send_append_entries(int32_t next_idx, Ev
     #ifdef DEBUG
     std::cout << "checking for entries to send to node " << dest_id << "\n";
     std::cout << "next index = " << next_idx << "\n";
+    std::cout << "base logical idx = " << base_logical_idx_ << "\n";
+    std::cout << "log_.size() == " << log_.size() << "\n";
     #endif
     // Only send entries when the log actually has some at/after
     // next_idx. log_.size()-1 >= next_idx is restated as
