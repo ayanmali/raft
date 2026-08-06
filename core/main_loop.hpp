@@ -66,9 +66,9 @@ inline void Node::MainLoop() {
 
                     // reply false if:
                     // term < current_term
-                    // log doesn't contain an entry at prev_log_index whose term matches prev_log_term
-                    const size_t log_offset = payload.prev_log_idx - base_logical_idx_;
-
+                    // log doesn't contain an entry at prev_log_index whose term matches prev_log_term.
+                    // prev_log_idx == base_logical_idx_ - 1 references the last entry covered by the
+                    // snapshot, which is validated against base_term_ instead
                     if (current_term_ > payload.term) {
                         send(AppendEntriesRespPayload{
                             .entries_len = 0,
@@ -79,7 +79,7 @@ inline void Node::MainLoop() {
                         return {};
                     }
 
-                    if (payload.prev_log_idx == base_logical_idx_ - 1 && payload.prev_log_term != base_term_) {
+                    if (payload.prev_log_idx < base_logical_idx_ - 1) {
                         send(AppendEntriesRespPayload{
                             .entries_len = 0,
                             .client_fd = payload.fd,
@@ -89,26 +89,44 @@ inline void Node::MainLoop() {
                         return {};
                     }
 
-                    if (log_offset >= log_.size() || log_[log_offset].term != payload.prev_log_term) {
-                        send(AppendEntriesRespPayload{
-                            .entries_len = 0,
-                            .client_fd = payload.fd,
-                            .server_id = MY_ID,
-                            .term = current_term_,
-                            .success = 0}, el);
-                        return {};
+                    if (payload.prev_log_idx == base_logical_idx_ - 1) {
+                        if (payload.prev_log_term != base_term_) {
+                            send(AppendEntriesRespPayload{
+                                .entries_len = 0,
+                                .client_fd = payload.fd,
+                                .server_id = MY_ID,
+                                .term = current_term_,
+                                .success = 0}, el);
+                            return {};
+                        }
                     }
+                    else {
+                        const size_t log_offset = payload.prev_log_idx - base_logical_idx_;
+                        if (log_offset >= log_.size() || log_[log_offset].term != payload.prev_log_term) {
+                            send(AppendEntriesRespPayload{
+                                .entries_len = 0,
+                                .client_fd = payload.fd,
+                                .server_id = MY_ID,
+                                .term = current_term_,
+                                .success = 0}, el);
+                            return {};
+                        }
+                    }
+
+                    const size_t after_prev_offset = payload.prev_log_idx >= base_logical_idx_
+                        ? payload.prev_log_idx - base_logical_idx_ + 1
+                        : 0;
 
                     // if an existing entry conflicts w/ a new one (same index but
                     // different terms), delete the existing entry and all that
                     // follow it. The scan is bounded by BOTH the number of local
                     // log entries after prev_log_idx and the number of incoming
                     // entries, so neither log_ nor payload.entries is indexed OOB.
-                    const size_t existing_after_prev = log_.size() - log_offset - 1;
+                    const size_t existing_after_prev = log_.size() - after_prev_offset;
                     const size_t scan_limit = std::min(existing_after_prev, payload.entries_len);
                     size_t i = 0;
                     for (; i < scan_limit; ++i) {
-                        const size_t log_idx = log_offset + i + 1;
+                        const size_t log_idx = after_prev_offset + i;
                         if (log_[log_idx].term != payload.entries[i].term) {
                             // conflict: truncate the local log from this index on.
                             log_.erase(log_.begin() + log_idx, log_.end());
