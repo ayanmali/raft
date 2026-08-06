@@ -44,6 +44,7 @@ inline void Node::MainLoop() {
                     std::cout << "found AE RPC from node " << payload.leader_id << "\n";
                     std::cout << "payload term = " << payload.term << "\n";
                     std::cout << "current term = " << current_term_ << "\n";
+                    std::cout << "entries_len = " << payload.entries_len << "\n";
                     std::cout << "prev log index = " << payload.prev_log_idx << "\n";
                     std::cout << "prev log term = " << payload.prev_log_term << "\n";
                     std::cout << "commit index = " << payload.leader_commit << "\n";
@@ -70,6 +71,9 @@ inline void Node::MainLoop() {
                     // prev_log_idx == base_logical_idx_ - 1 references the last entry covered by the
                     // snapshot, which is validated against base_term_ instead
                     if (current_term_ > payload.term) {
+                        #ifdef DEBUG
+                        std::cout << "rejecting AE RPC: current term > payload term\n";
+                        #endif
                         send(AppendEntriesRespPayload{
                             .entries_len = 0,
                             .client_fd = payload.fd,
@@ -80,6 +84,9 @@ inline void Node::MainLoop() {
                     }
 
                     if (payload.prev_log_idx < base_logical_idx_ - 1) {
+                        #ifdef DEBUG
+                        std::cout << "rejecting AE RPC: payload prev log idx < base logical idx - 1\n";
+                        #endif
                         send(AppendEntriesRespPayload{
                             .entries_len = 0,
                             .client_fd = payload.fd,
@@ -91,6 +98,9 @@ inline void Node::MainLoop() {
 
                     if (payload.prev_log_idx == base_logical_idx_ - 1) {
                         if (payload.prev_log_term != base_term_) {
+                            #ifdef DEBUG
+                            std::cout << "rejecting AE RPC: payload prev log idx == base logical idx - 1 and payload prev log term != base term\n";
+                            #endif
                             send(AppendEntriesRespPayload{
                                 .entries_len = 0,
                                 .client_fd = payload.fd,
@@ -102,7 +112,13 @@ inline void Node::MainLoop() {
                     }
                     else {
                         const size_t log_offset = payload.prev_log_idx - base_logical_idx_;
+                        #ifdef DEBUG
+                        std::cout << "log offset = " << log_offset << "\n";
+                        #endif
                         if (log_offset >= log_.size() || log_[log_offset].term != payload.prev_log_term) {
+                            #ifdef DEBUG
+                            std::cout << "rejecting AE RPC: log offset >= log_size or log[log_offset].term != payload.prev_log_term\n";
+                            #endif
                             send(AppendEntriesRespPayload{
                                 .entries_len = 0,
                                 .client_fd = payload.fd,
@@ -117,6 +133,9 @@ inline void Node::MainLoop() {
                         ? payload.prev_log_idx - base_logical_idx_ + 1
                         : 0;
 
+                    #ifdef DEBUG
+                    std::cout << "after_prev_offset = " << after_prev_offset << "\n";
+                    #endif
                     // if an existing entry conflicts w/ a new one (same index but
                     // different terms), delete the existing entry and all that
                     // follow it. The scan is bounded by BOTH the number of local
@@ -147,6 +166,9 @@ inline void Node::MainLoop() {
                     leader_id_ = payload.leader_id;
                     leader_contact = true;
 
+                    #ifdef DEBUG
+                    std::cout << "accepting AE RPC\n";
+                    #endif
                     send(AppendEntriesRespPayload{
                         .entries_len = payload.entries_len,
                         .client_fd = payload.fd,
@@ -358,7 +380,7 @@ inline void Node::MainLoop() {
                         ));
                     }
                     const uint32_t prev_log_idx = stored_next - 1;
-                    const long prev_log_idx_offset = prev_log_idx < base_logical_idx_ ? 0 : prev_log_idx - base_logical_idx_;
+                    const size_t prev_log_idx_offset = prev_log_idx < base_logical_idx_ ? 0 : prev_log_idx - base_logical_idx_;
                     if (prev_log_idx_offset >= log_.size()) {
                         return (std::format(
                             "Failed to process AE reply: prev_log_idx offset {} out of bounds (log size = {})",
