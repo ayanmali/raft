@@ -390,43 +390,30 @@ inline void Node::MainLoop() {
                     }
                     const uint32_t prev_log_term = prev_log_idx == base_logical_idx_ - 1 ? base_term_ : log_[prev_log_idx_offset].term;
 
-                    /*
-                     on fail:
-                     decrement nextIndex and retry
-                    */
-                    next_indexes_[payload.server_id] = prev_log_idx;
                     if (payload.success == 0) {
-                        auto p = AppendEntriesReqPayload{
-                            log_.size() - prev_log_idx_offset,
-                            payload.server_id,
-                            current_term_,
-                            MY_ID,
-                            prev_log_idx,
-                            prev_log_term,
-                            commit_index_
-                        };
-
-                        #ifdef DEBUG
-                        assert(log_.size() - prev_log_idx_offset <= MAX_ENTRIES);
-                        #endif
-
-                        std::memcpy(p.entries, log_.data() + prev_log_idx_offset, (log_.size() - prev_log_idx_offset) * sizeof(LogEntry));
-
+                        // on fail: decrement nextIndex and retry from there.
+                        // send_append_entries derives the new prev_log_idx from the
+                        // updated next_index, so the retry re-sends the entries that
+                        // start AFTER the decremented prev_log_idx.
+                        next_indexes_[payload.server_id] = prev_log_idx;
+                        if (next_indexes_[payload.server_id] < 1) {
+                            return (std::format(
+                                "Failed to retry AE RPC: next_index {} for server id {} already at the snapshot boundary",
+                                next_indexes_[payload.server_id], payload.server_id
+                            ));
+                        }
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
-                        send(std::move(p), el);
-
-                        return {};
+                        return send_append_entries(next_indexes_[payload.server_id], el, payload.server_id);
                     }
 
                     /*
                      on success:
-                     - nextIndex is updated to prevLogIndex + 1 + len(entries)
-                     (or simply incremented by the number of replicated entries).
+                     - nextIndex is set to prevLogIndex + 1 + len(entries)
 
                      - matchIndex is set to the index of the last entry successfully
                      appended (calculated as prevLogIndex + len(entries))
                      */
-                    next_indexes_[payload.server_id] += payload.entries_len;
+                    next_indexes_[payload.server_id] = prev_log_idx + 1 + payload.entries_len;
                     match_indexes_[payload.server_id] = prev_log_idx + payload.entries_len;
 
                     /*
