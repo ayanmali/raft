@@ -704,24 +704,24 @@ if (err) std::cout << "inbox handler error: " << err.value() << "\n";
             flush_files();
         }
 
-        if (log_.size() >= LOG_COMPACT_THRESHOLD) {
+        if (log_.size() >= LOG_COMPACT_THRESHOLD
+            /* && last_applied_idx_ >= base_logical_idx_ */
+        ) {
             #ifdef DEBUG
             std::cout << "log size reached compact threshold; compacting...\n";
             #endif
-            // TODO: may need to optimize this if its too slow
-            // log entries have been applied to the state machine; they may be discarded
-            if (last_applied_idx_ < base_logical_idx_) /* large uncommitted log */ {
-                base_term_ = last_applied_term_;
-            }
-            else if (!log_.empty()) {
-                base_term_ = log_[last_applied_idx_ - base_logical_idx_].term;
-            }
+            const size_t num_applied = last_applied_idx_ - base_logical_idx_ + 1;
+            base_term_ = log_[num_applied - 1].term;
+            log_.erase(log_.begin(), log_.begin() + num_applied);
             base_logical_idx_ = last_applied_idx_ + 1;
-            log_.clear();
 
             ::freopen(LOG_FILE_PATH, "w+", log_fp_); // clears the file and sets the file position to the beginning
             ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
             ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
+            // preserve any unapplied entries so they can be replayed after a restart
+            if (!log_.empty()) {
+                ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
+            }
 
             // create the snapshot and write to disk
             snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");

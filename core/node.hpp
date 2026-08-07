@@ -200,7 +200,7 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
             );
         }
 
-        n->threads_[i] = std::thread([&n, i] {
+        n->threads_[i] = std::thread([n, i] {
             std::optional<std::string> loop_err = n->loops_[i].Run();
             // #ifdef DEBUG
             // std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
