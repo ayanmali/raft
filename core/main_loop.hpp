@@ -754,12 +754,18 @@ if (err) std::cout << "inbox handler error: " << err.value() << "\n";
         if (duration < election_timeout_) continue;
 
         // start election
-        if (state_ == NodeState::Candidate || voted_for_ != -1) continue;
+        if (state_ == NodeState::Candidate) continue;
         #ifdef DEBUG
         std::cout << "election timeout; starting election...\n";
         #endif
 
         state_ = NodeState::Candidate;
+        // set timeout to a new random value
+        election_timeout_ = std::chrono::milliseconds(distrib_(rand_gen_));
+        #ifdef DEBUG
+        std::cout << "set election timeout to " << election_timeout_ << "\n";
+        #endif
+
         ++current_term_;
         voted_for_ = MY_ID;
         write_current_term();

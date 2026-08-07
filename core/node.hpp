@@ -93,6 +93,7 @@ public:
     void write_voted_for();
     void flush_files();
 
+    std::mt19937                                                    rand_gen_                = std::mt19937(std::random_device{}());
     std::unordered_set<NodeID>                                      voters_;
     std::vector<LogEntry>                                           log_;
     std::vector<size_t>                                             chunks_sent_             = std::vector<size_t>(BASE_CLUSTER_SIZE, 0); // after every IS RPC send, increment by 1
@@ -106,6 +107,7 @@ public:
     std::chrono::steady_clock::time_point                           last_leader_contact_;
     std::chrono::steady_clock::time_point                           last_flush_;
     std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
+    std::uniform_int_distribution<>                                 distrib_                 = std::uniform_int_distribution<>(MIN_ELECTION_TIMEOUT_MS, MAX_ELECTION_TIMEOUT_MS);
     NodeInbox*                                                      inbox_;
     FILE*                                                           log_fp_                  = nullptr;
     FILE*                                                           snapshot_fp_             = nullptr;
@@ -154,11 +156,7 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
     }();
     (void)sigpipe_ignored;
 
-    // Randomized election timeout per Raft spec.
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> distrib(MIN_ELECTION_TIMEOUT_MS, MAX_ELECTION_TIMEOUT_MS);
-    n->election_timeout_ = std::chrono::milliseconds(distrib(gen));
+    n->election_timeout_ = std::chrono::milliseconds(n->distrib_(n->rand_gen_));
     #ifdef DEBUG
     std::cout << "election timeout set to " << n->election_timeout_ << "\n";
     #endif
