@@ -709,6 +709,7 @@ if (err) std::cout << "inbox handler error: " << err.value() << "\n";
         ) {
             #ifdef DEBUG
             std::cout << "log size reached compact threshold; compacting...\n";
+            std::cout << "log_.size() = " << log_.size() << "\n";
             #endif
             const size_t num_applied = last_applied_idx_ - base_logical_idx_ + 1;
             #ifdef DEBUG
