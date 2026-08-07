@@ -711,9 +711,18 @@ if (err) std::cout << "inbox handler error: " << err.value() << "\n";
             std::cout << "log size reached compact threshold; compacting...\n";
             #endif
             const size_t num_applied = last_applied_idx_ - base_logical_idx_ + 1;
+            #ifdef DEBUG
+            std::cout << "num_applied = " << num_applied << "\n";
+            #endif
             base_term_ = log_[num_applied - 1].term;
+            #ifdef DEBUG
+            std::cout << "base_term_ = " << base_term_ << "\n";
+            #endif
             log_.erase(log_.begin(), log_.begin() + num_applied);
             base_logical_idx_ = last_applied_idx_ + 1;
+            #ifdef DEBUG
+            std::cout << "base_logical_idx_ = " << base_logical_idx_ << "\n";
+            #endif
 
             ::freopen(LOG_FILE_PATH, "w+", log_fp_); // clears the file and sets the file position to the beginning
             ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
