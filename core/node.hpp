@@ -662,6 +662,10 @@ inline void Node::commit_entries_if_available() {
         // last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - (last_applied_idx_ + 1)].term;
         last_applied_idx_ = commit_index_;
         last_applied_term_ = log_.empty() ? base_term_ : log_[commit_index_ - base_logical_idx_].term;
+        #ifdef DEBUG
+        std::cout << "last_applied_idx_ set to " << last_applied_idx_ << "\n";
+        std::cout << "last_applied_term_ set to " << last_applied_term_ << "\n";
+        #endif
     }
 }
 

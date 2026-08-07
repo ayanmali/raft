@@ -15,7 +15,7 @@ inline void Node::MainLoop() {
         // TODO: notify client that entries were committed
         if (last_applied_idx_ != commit_index_) {
             #ifdef DEBUG
-            std::cout << "applying log entries from last applied index = " << last_applied_idx_ << " up to and including commit index = " << commit_index_ << "\n";
+            std::cout << "applying log entries from last applied index = " << last_applied_idx_ + 1 << " up to and including commit index = " << commit_index_ << "\n";
             #endif
             for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
                 #ifdef DEBUG
@@ -25,7 +25,11 @@ inline void Node::MainLoop() {
             }
             // last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - (last_applied_idx_ + 1)].term;
             last_applied_idx_ = commit_index_;
-            last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - base_logical_idx_].term;
+            last_applied_term_ = log_.empty() ? base_term_ : log_[commit_index_ - base_logical_idx_].term;
+            #ifdef DEBUG
+            std::cout << "last_applied_idx_ set to " << last_applied_idx_ << "\n";
+            std::cout << "last_applied_term_ set to " << last_applied_term_ << "\n";
+            #endif
         }
 
         // check the reply inbox for new replies that have arrived
