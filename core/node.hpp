@@ -925,7 +925,7 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
     #ifdef DEBUG
     std::cout << "payload cluster as uint8_ts: ";
     for (auto n : p.cluster) {
-        std::cout << n << ", ";
+        std::cout << static_cast<int>(n) << ", ";
     }
     std::cout << "\n";
     #endif

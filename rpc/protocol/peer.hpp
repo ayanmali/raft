@@ -196,8 +196,8 @@ inline void BufByteWriter::serialize(const InstallSnapshotReqPayload& payload) {
     std::memcpy(buf + ptr, payload.partial_state, sizeof(payload.partial_state));
     ptr += sizeof(payload.partial_state);
 
-    std::memcpy(buf + ptr, &payload.cluster_raw_size, sizeof(payload.cluster_raw_size));
-    ptr += sizeof(payload.cluster_raw_size);
+    std::memcpy(buf + ptr, &net_cluster_raw_size, sizeof(net_cluster_raw_size));
+    ptr += sizeof(net_cluster_raw_size);
 
     std::memcpy(buf + ptr, payload.cluster, payload.cluster_raw_size);
     ptr += payload.cluster_raw_size;

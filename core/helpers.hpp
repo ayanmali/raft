@@ -59,21 +59,20 @@ struct DynamicBitset {
 
     bool operator[](size_t pos) {
         size_t idx = pos / BITS_PER_BYTE;
-        return static_cast<bool>((v[idx] >> pos) & 1);
+        return static_cast<bool>((v[idx] >> (pos % BITS_PER_BYTE)) & 1);
     };
 
     void set(size_t pos) {
         size_t idx = pos / BITS_PER_BYTE;
-        int prev = (v[idx] >> pos) & 1;
-        v[idx] |= (1 << pos);
+        int prev = (v[idx] >> (pos % BITS_PER_BYTE)) & 1;
+        v[idx] |= (1 << (pos % BITS_PER_BYTE));
         if (!prev) ++num_set;
     }
 
     void unset(size_t pos) {
         size_t idx = pos / BITS_PER_BYTE;
-        int prev = (v[idx] >> pos) & 1;
-        v[idx] |= (1 << pos); // set the bit
-        v[idx] ^= (1 << pos); // flip it
+        int prev = (v[idx] >> (pos % BITS_PER_BYTE)) & 1;
+        v[idx] &= ~(1 << (pos % BITS_PER_BYTE)); // unset the bit
         if (prev) --num_set;
     }
 
@@ -87,8 +86,8 @@ struct DynamicBitset {
         //if (idx < v.size()) return;
         if (idx >= v.size()) v.resize(idx + 1);
 
-        int prev = (v[idx] >> id) & 1;
-        v[idx] |= (1 << id);
+        int prev = (v[idx] >> (id % BITS_PER_BYTE)) & 1;
+        v[idx] |= (1 << (id % BITS_PER_BYTE));
         if (!prev) ++num_set;
     }
 
