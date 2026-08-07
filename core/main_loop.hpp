@@ -618,6 +618,9 @@ inline void Node::MainLoop() {
                 }
 
                 else if constexpr (std::is_same_v<T, ForwardLeaderMsg>) {
+                    #ifdef DEBUG
+                    std::cout << "found ForwardLeader message\n";
+                    #endif
                     if (payload.term != current_term_
                         || payload.sender_id < 0
                         || payload.sender_id > node_ids_.total_bits()
@@ -710,6 +713,9 @@ if (err) std::cout << "inbox handler error: " << err.value() << "\n";
             #ifdef DEBUG
             std::cout << "log size reached compact threshold; compacting...\n";
             std::cout << "log_.size() = " << log_.size() << "\n";
+            std::cout << "last_applied_idx_ = " << last_applied_idx_ << "\n";
+            std::cout << "base_logical_idx_ = " << base_logical_idx_ << "\n";
+            std::cout << "commit_index_ = " << commit_index_ << "\n";
             #endif
             const size_t num_applied = last_applied_idx_ - base_logical_idx_ + 1;
             #ifdef DEBUG
