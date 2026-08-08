@@ -241,6 +241,9 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
 }
 
 inline Node::~Node() {
+    #ifdef DEBUG
+    std::cout << "calling Node destructor\n";
+    #endif
     running_ = false;
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
         if (!loops_[i].stopped.load(std::memory_order_acquire)) loops_[i].Stop();
@@ -251,6 +254,10 @@ inline Node::~Node() {
     if (snapshot_fp_ != nullptr) ::fclose(snapshot_fp_);
     ::fclose(sm_fp_);
     if (snapshot_tmp_fp_ != nullptr) ::fclose(snapshot_tmp_fp_);
+
+    #ifdef DEBUG
+    std::cout << "completed Node destructor\n";
+    #endif
 }
 
 inline void Node::Stop() {
