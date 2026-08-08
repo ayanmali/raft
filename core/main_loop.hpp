@@ -287,6 +287,13 @@ inline void Node::MainLoop() {
                 else if constexpr (std::is_same_v<T, InstallSnapshotReqPayload>) {
                     #ifdef DEBUG
                     std::cout << "found IS RPC from node " << payload.leader_id << "\n";
+                    std::cout << "payload.term = " << payload.term << "\n";
+                    std::cout << "payload.cluster_raw_size = " << payload.cluster_raw_size << "\n";
+                    std::cout << "payload.last_included_idx = " << payload.last_included_idx << "\n";
+                    std::cout << "payload.last_included_term = " << payload.last_included_term << "\n";
+                    std::cout << "payload.offset = " << payload.offset << "\n";
+                    std::cout << "payload.leader_id = " << payload.leader_id << "\n";
+                    std::cout << "payload.done = " << payload.done << "\n";
                     #endif
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
                     add_peer_if_not_exists(payload.leader_id, payload.fd, el);
@@ -509,6 +516,7 @@ inline void Node::MainLoop() {
                 else if constexpr (std::is_same_v<T, InstallSnapshotRespPayload>) {
                     #ifdef DEBUG
                     std::cout << "found IS reply from node " << payload.server_id << "\n";
+                    std::cout << "payload.term = " << payload.term << "\n";
                     #endif
 
                     if (payload.term > current_term_) {

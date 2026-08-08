@@ -174,9 +174,6 @@ inline std::optional<std::string> EventLoop::CreateEventLoop(EventLoop* loop, No
 }
 
 inline EventLoop::~EventLoop() {
-    #ifdef DEBUG
-    std::cout << "calling EventLoop destructor\n";
-    #endif
     if (listen_fd >= 0) ::close(listen_fd);
     if (epoll_fd >= 0) ::close(epoll_fd);
     if (event_fd >= 0) ::close(event_fd);
@@ -184,9 +181,6 @@ inline EventLoop::~EventLoop() {
     for (auto& [id, p] : peer_conns) {
         if (p.fd >= 0) ::close(p.fd);
     }
-    #ifdef DEBUG
-    std::cout << "completed EventLoop destructor\n";
-    #endif
 };
 
 inline void EventLoop::Stop() {
