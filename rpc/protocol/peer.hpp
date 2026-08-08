@@ -84,12 +84,24 @@ inline std::variant<NodeMessage, const char*> parse_rbuf(std::byte* rbuf, uint32
     switch (static_cast<RpcKind>(kind_byte)) {
         case RpcKind::AppendEntries:
             ::timerfd_settime(timer_fds.get_ae_timeout(), 0, &zero, nullptr);
+            if (timer_fds.get_ae_timeout() != -1) {
+                uint64_t dummy;
+                (void)::read(timer_fds.get_ae_timeout(), &dummy, sizeof(dummy));
+            }
             return parse_ae_reply(rbuf + sizeof(kind_byte));
         case RpcKind::RequestVote:
             ::timerfd_settime(timer_fds.get_rv_timeout(), 0, &zero, nullptr);
+            if (timer_fds.get_rv_timeout() != -1) {
+                uint64_t dummy;
+                (void)::read(timer_fds.get_rv_timeout(), &dummy, sizeof(dummy));
+            }
             return parse_rv_reply(rbuf + sizeof(kind_byte));
         case RpcKind::InstallSnapshot:
             ::timerfd_settime(timer_fds.get_is_timeout(), 0, &zero, nullptr);
+            if (timer_fds.get_is_timeout() != -1) {
+                uint64_t dummy;
+                (void)::read(timer_fds.get_is_timeout(), &dummy, sizeof(dummy));
+            }
             return parse_is_reply(rbuf + sizeof(kind_byte));
         default:
             return "invalid RPC kind";
