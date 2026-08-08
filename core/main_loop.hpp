@@ -338,6 +338,7 @@ inline void Node::MainLoop() {
 
                     // atomically replace the snapshot file with the temporary
                     ::fclose(snapshot_tmp_fp_);
+                    snapshot_tmp_fp_ = nullptr;
                     ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
 
                     if (payload.last_included_idx > last_applied_idx_) {

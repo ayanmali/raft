@@ -733,9 +733,9 @@ inline std::optional<std::string> Node::recover() {
                                     fileno(sm_tmp_fp), nullptr,
                                     st.st_size - offset, 0);
 
-        ::fclose(sm_tmp_fp);
         ::fflush(sm_tmp_fp);
         ::fsync(fileno(sm_tmp_fp));
+        ::fclose(sm_tmp_fp);
         ::rename(STATE_MACHINE_TMP_FILE_PATH, STATE_MACHINE_FILE_PATH);
 
         ::fclose(snapshot_fp_);
