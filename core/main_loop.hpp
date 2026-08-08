@@ -620,6 +620,13 @@ inline void Node::MainLoop() {
                 else if constexpr (std::is_same_v<T, ForwardLeaderMsg>) {
                     #ifdef DEBUG
                     std::cout << "found ForwardLeader message\n";
+                    for (int i = 0; i < payload.entries_len; ++i) {
+                        for (int j = 0; i < CMD_SIZE; ++j) {
+                            std::cout << static_cast<int>(payload.entries[i][j]) << ", ";
+                        }
+                        std::cout << "\n";
+
+                    }
                     #endif
                     if (payload.term != current_term_
                         || payload.sender_id < 0
@@ -707,9 +714,9 @@ if (err) std::cout << "inbox handler error: " << err.value() << "\n";
             flush_files();
         }
 
+        // only compact entries that have been applied
         if (log_.size() >= LOG_COMPACT_THRESHOLD
-            /* && last_applied_idx_ >= base_logical_idx_ */
-        ) {
+            && last_applied_idx_ >= base_logical_idx_) {
             #ifdef DEBUG
             std::cout << "log size reached compact threshold; compacting...\n";
             std::cout << "log_.size() = " << log_.size() << "\n";
@@ -729,6 +736,7 @@ if (err) std::cout << "inbox handler error: " << err.value() << "\n";
             base_logical_idx_ = last_applied_idx_ + 1;
             #ifdef DEBUG
             std::cout << "base_logical_idx_ = " << base_logical_idx_ << "\n";
+            std::cout << "log_.size() after compaction = " << log_.size() << "\n";
             #endif
 
             ::freopen(LOG_FILE_PATH, "w+", log_fp_); // clears the file and sets the file position to the beginning
