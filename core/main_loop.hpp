@@ -621,7 +621,7 @@ inline void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found ForwardLeader message\n";
                     for (int i = 0; i < payload.entries_len; ++i) {
-                        for (int j = 0; i < CMD_SIZE; ++j) {
+                        for (int j = 0; j < CMD_SIZE; ++j) {
                             std::cout << static_cast<int>(payload.entries[i][j]) << ", ";
                         }
                         std::cout << "\n";
