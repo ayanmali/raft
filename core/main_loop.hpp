@@ -522,6 +522,7 @@ inline void Node::MainLoop() {
                             .last_included_term = last_applied_term_ss_,
                             .offset = chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE,
                             .dest_id = payload.server_id,
+                            .term = current_term_,
                             .leader_id = MY_ID,
                             .done = (chunks_sent_[payload.server_id] + 1) * SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE,
                         };
