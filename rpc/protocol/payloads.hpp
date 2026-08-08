@@ -171,7 +171,7 @@ struct HeartbeatTimeout { NodeID source_id; };
 struct DropPeerMsg { NodeID source_id; };
 struct AddPeerMsg { FD fd; const char* port; NodeID dest_id; };
 struct ForwardLeaderMsg {
-    std::byte entries[CMD_SIZE][MAX_ENTRIES];
+    std::byte entries[MAX_ENTRIES][CMD_SIZE];
     size_t entries_len;
     FD fd; // populated by the event loop on client read; not serialized across network
     NodeID sender_id;

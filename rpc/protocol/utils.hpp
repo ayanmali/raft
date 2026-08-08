@@ -79,9 +79,9 @@ struct ByteReader {
 
     template <size_t COL_SIZE, size_t ROW_SIZE>
     bool read(std::byte (&out)[COL_SIZE][ROW_SIZE], size_t num_rows) {
-        if (remaining() < num_rows * COL_SIZE) return false;
-        std::memcpy(&out, ptr, num_rows * COL_SIZE);
-        ptr += num_rows * COL_SIZE;
+        if (remaining() < num_rows * ROW_SIZE) return false;
+        std::memcpy(&out, ptr, num_rows * ROW_SIZE);
+        ptr += num_rows * ROW_SIZE;
         return true;
     }
 

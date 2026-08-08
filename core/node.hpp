@@ -58,10 +58,10 @@ public:
     // void append_commands(std::vector<int16_t>&);
     // void append_commands(std::vector<int32_t>&);
     // void append_commands(std::vector<int64_t>&);
-    void append_commands(std::byte (&)[CMD_SIZE][MAX_ENTRIES], size_t num_entries);
+    void append_commands(std::byte (&)[MAX_ENTRIES][CMD_SIZE], size_t num_entries);
 
     void forward_request(std::vector<std::byte*>&);
-    void forward_request(std::byte (&)[CMD_SIZE][MAX_ENTRIES], size_t num_entries);
+    void forward_request(std::byte (&)[MAX_ENTRIES][CMD_SIZE], size_t num_entries);
 
     int get_leader();
 
@@ -355,7 +355,7 @@ inline void Node::append_commands(std::vector<std::byte*>& commands) {
         //}
 }
 
-inline void Node::append_commands(std::byte (&commands)[CMD_SIZE][MAX_ENTRIES], size_t num_entries) {
+inline void Node::append_commands(std::byte (&commands)[MAX_ENTRIES][CMD_SIZE], size_t num_entries) {
     //const uint32_t last_log_idx = log_.size() - 1;
     #ifdef DEBUG
     std::cout << "Found append request; state = " << static_cast<int>(state_) << "; leader_id = " << leader_id_ << "\n";
@@ -424,7 +424,7 @@ inline void Node::forward_request(std::vector<std::byte*>& commands) {
     return;
 }
 
-inline void Node::forward_request(std::byte (&commands)[CMD_SIZE][MAX_ENTRIES], size_t num_entries) {
+inline void Node::forward_request(std::byte (&commands)[MAX_ENTRIES][CMD_SIZE], size_t num_entries) {
     auto& el = loops_[leader_id_ & (EVENT_LOOP_THREADS - 1)];
     ForwardLeaderMsg msg{
         .entries_len = num_entries,
