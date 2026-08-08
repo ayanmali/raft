@@ -414,7 +414,9 @@ inline void Node::forward_request(std::vector<std::byte*>& commands) {
             .dest_id = static_cast<NodeID>(leader_id_),
             .term = current_term_
         };
-        std::memcpy(&msg.entries, commands.data() + sent, CMD_SIZE * num_entries);
+        for (size_t i = 0; i < num_entries; ++i) {
+            std::memcpy(msg.entries[i], commands[sent + i], CMD_SIZE);
+        }
         el.outbound_inbox.PushOne(EventLoopMessage(std::move(msg)));
         sent += num_entries;
     }
