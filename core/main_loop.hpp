@@ -293,7 +293,7 @@ inline void Node::MainLoop() {
                     std::cout << "payload.last_included_term = " << payload.last_included_term << "\n";
                     std::cout << "payload.offset = " << payload.offset << "\n";
                     std::cout << "payload.leader_id = " << payload.leader_id << "\n";
-                    std::cout << "payload.done = " << payload.done << "\n";
+                    std::cout << "payload.done = " << static_cast<int>(payload.done) << "\n";
                     #endif
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
                     add_peer_if_not_exists(payload.leader_id, payload.fd, el);
@@ -316,6 +316,9 @@ inline void Node::MainLoop() {
                         return {};
                     }
 
+                    #ifdef DEBUG
+                    std::cout << "accepting snapshot chunk\n";
+                    #endif
                     send(InstallSnapshotRespPayload{
                         .client_fd = payload.fd,
                         .server_id = MY_ID,
