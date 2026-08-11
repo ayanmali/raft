@@ -861,6 +861,15 @@ inline std::optional<std::string> Node::send_append_entries(int32_t next_idx, Ev
     // Only send entries when the log actually has some at/after
     // next_idx. log_.size()-1 >= next_idx is restated as
     // next_idx < log_.size() to avoid uint underflow on size 0.
+    // A follower whose next_idx is below the compaction boundary is behind
+    // the snapshot; prev_log_idx - base_logical_idx_ would underflow, so
+    // callers must route such followers through InstallSnapshot instead.
+    if (next_idx < base_logical_idx_) {
+        return std::format(
+            "send_append_entries called with next_index {} below snapshot boundary {} for node id {}; InstallSnapshot required",
+            next_idx, base_logical_idx_, dest_id
+        );
+    }
     const uint32_t prev_log_idx = next_idx - 1;
     #ifdef DEBUG
     std::cout << "prev_log_idx = " << prev_log_idx << "\n";

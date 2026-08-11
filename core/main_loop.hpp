@@ -454,6 +454,21 @@ inline void Node::MainLoop() {
                             ));
                         }
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
+                        // A follower whose next_index has fallen below base_logical_idx_ is
+                        // behind the compaction boundary; its log cannot be reconciled with
+                        // AppendEntries (prev_log_idx - base_logical_idx_ would underflow),
+                        // so catch it up with an InstallSnapshot instead.
+                        if (next_indexes_[payload.server_id] < base_logical_idx_) {
+                            installing_snapshot_id_ = payload.server_id;
+                            std::optional<std::string> send_is_err = send_install_snapshot(el, payload.server_id);
+                            if (send_is_err) {
+                                return (std::format(
+                                    "error retrying IS RPC:\n{}\n",
+                                    send_is_err.value()
+                                ));
+                            }
+                            return {};
+                        }
                         return send_append_entries(next_indexes_[payload.server_id], el, payload.server_id);
                     }
 
@@ -684,6 +699,20 @@ inline void Node::MainLoop() {
                             "Failed to process HeartbeatTimeout: next_index 0 for node id {} cannot derive prev_log_idx",
                             payload.source_id
                         ));
+                    }
+
+                    // A follower behind the compaction boundary must be caught up
+                    // via InstallSnapshot, not AppendEntries.
+                    if (next_idx < base_logical_idx_) {
+                        installing_snapshot_id_ = payload.source_id;
+                        std::optional<std::string> send_is_err = send_install_snapshot(el, payload.source_id);
+                        if (send_is_err) {
+                            return (std::format(
+                                "error retrying IS RPC:\n{}\n",
+                                send_is_err.value()
+                            ));
+                        }
+                        return {};
                     }
 
                     std::optional<std::string> send_ae_err = send_append_entries(next_idx, el, payload.source_id);
