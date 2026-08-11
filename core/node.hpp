@@ -122,8 +122,6 @@ public:
     uint32_t                                                        base_term_               = 0;
     uint32_t                                                        last_applied_idx_        = 0;
     uint32_t                                                        last_applied_term_       = 0;
-    uint32_t                                                        last_applied_idx_ss_     = 0;
-    uint32_t                                                        last_applied_term_ss_    = 0;
     uint32_t                                                        current_term_            = 0;
     uint32_t                                                        commit_index_            = 0;     // index of highest log entry known to be committed
     enum class                                                      NodeState { Follower, Candidate, Leader };
@@ -907,8 +905,6 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
     std::cout << "Sending InstallSnapshot RPC:\n";
     std::cout << "cluster raw size = " << node_ids_.total_size() << "\n";
     std::cout << "term = " << current_term_ << "\n";
-    std::cout << "last_included_idx = " << last_applied_idx_ss_ << "\n";
-    std::cout << "last_included_term = " << last_applied_term_ss_ << "\n";
     std::cout << "offset = " << chunks_sent_[dest_id] * SNAPSHOT_CHUNK_SIZE << "\n";
     std::cout << "dest id = " << dest_id << "\n";
     std::cout << "leader_id = " << MY_ID << "\n";
@@ -916,8 +912,8 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
     #endif
     auto p = InstallSnapshotReqPayload{
         .cluster_raw_size = node_ids_.total_size(),
-        .last_included_idx = last_applied_idx_ss_,
-        .last_included_term = last_applied_term_ss_,
+        .last_included_idx = base_logical_idx_ - 1,
+        .last_included_term = base_term_,
         .offset = chunks_sent_[dest_id] * SNAPSHOT_CHUNK_SIZE,
         .dest_id = dest_id,
         .term = current_term_,

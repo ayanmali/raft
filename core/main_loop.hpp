@@ -530,8 +530,8 @@ inline void Node::MainLoop() {
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
                         auto p = InstallSnapshotReqPayload{
                             .cluster_raw_size = node_ids_.total_size(),
-                            .last_included_idx = last_applied_idx_ss_,
-                            .last_included_term = last_applied_term_ss_,
+                            .last_included_idx = base_logical_idx_ - 1,
+                            .last_included_term = base_term_,
                             .offset = chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE,
                             .dest_id = payload.server_id,
                             .term = current_term_,
@@ -558,8 +558,8 @@ inline void Node::MainLoop() {
                     };
 
                     chunks_sent_[payload.server_id] = 0;
-                    next_indexes_[payload.server_id] = last_applied_idx_ss_ + 1; // should this be last_applied_idx_ss_?
-                    match_indexes_[payload.server_id] = last_applied_idx_ss_; // should this be last_applied_idx_ss_?
+                    next_indexes_[payload.server_id] = base_logical_idx_;
+                    match_indexes_[payload.server_id] = base_logical_idx_ - 1;
                     installing_snapshot_id_ = -1;
                 }
 
@@ -585,8 +585,6 @@ inline void Node::MainLoop() {
 
                     if (next_idx < base_logical_idx_) {
                         installing_snapshot_id_ = payload.source_id;
-                        last_applied_idx_ss_ = last_applied_idx_;
-                        last_applied_term_ss_ = last_applied_term_;
 
                         std::optional<std::string> send_is_err = send_install_snapshot(el, payload.source_id);
                         if (send_is_err) {
