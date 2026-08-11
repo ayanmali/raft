@@ -389,6 +389,51 @@ inline void Node::MainLoop() {
                         ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
                     }
                     node_ids_.reset(payload.cluster, payload.cluster_raw_size);
+
+
+                    // add the installed snapshot to the state machine file
+                    struct stat st;
+                    if (stat(SNAPSHOT_FILE_PATH, &st) != 0
+                        || st.st_size < static_cast<off_t>(
+                            sizeof(size_t) + node_ids_.total_size()
+                            + sizeof(last_applied_idx_) + sizeof(last_applied_term_))) {
+                        return (std::format(
+                            "error in InstallSnapshotRPC handler; couldn't restore state machine from snapshot {}: bad snapshot size\n",
+                            SNAPSHOT_FILE_PATH
+                        ));
+                    }
+                    FILE* sm_tmp_fp = ::fopen(STATE_MACHINE_TMP_FILE_PATH, "w+");
+                    if (sm_tmp_fp == NULL) {
+                        return (std::format(
+                            "error in InstallSnapshotRPC handler; failed to open state machine tmp file {}\n",
+                            STATE_MACHINE_TMP_FILE_PATH
+                        ));
+                    }
+
+                    __off64_t header = static_cast<__off64_t>(
+                        sizeof(size_t) + node_ids_.total_size()
+                        + sizeof(last_applied_idx_) + sizeof(last_applied_term_));
+                    ssize_t n = copy_file_range(fileno(snapshot_fp_), &header,
+                                                fileno(sm_tmp_fp), nullptr,
+                                                st.st_size - header, 0);
+                    if (n < 0) {
+                        ::fclose(sm_tmp_fp);
+                        return "error in InstallSnapshotRPC handler; failed to copy snapshot state into the state machine\n";
+                    }
+
+                    ::fflush(sm_tmp_fp);
+                    ::fsync(fileno(sm_tmp_fp));
+                    ::fclose(sm_tmp_fp);
+                    ::rename(STATE_MACHINE_TMP_FILE_PATH, STATE_MACHINE_FILE_PATH);
+                    ::fclose(sm_fp_);
+                    sm_fp_ = ::fopen(STATE_MACHINE_FILE_PATH, "r+");
+                    if (sm_fp_ == NULL) {
+                        return (std::format(
+                            "error in InstallSnapshotRPC handler; failed to open state machine file {}\n",
+                            STATE_MACHINE_FILE_PATH
+                        ));
+                    }
+
                     commit_index_ = payload.last_included_idx;
                     last_applied_idx_ = payload.last_included_idx;
                     last_applied_term_ = payload.last_included_term;
