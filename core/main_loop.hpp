@@ -166,19 +166,32 @@ inline void Node::MainLoop() {
                     const size_t existing_after_prev = log_.size() - after_prev_offset;
                     const size_t scan_limit = std::min(existing_after_prev, payload.entries_len);
                     size_t i = 0;
+                    bool log_truncated = false;
                     for (; i < scan_limit; ++i) {
                         const size_t log_idx = after_prev_offset + i;
                         if (log_[log_idx].term != payload.entries[i].term) {
                             // conflict: truncate the local log from this index on.
                             log_.erase(log_.begin() + log_idx, log_.end());
+                            log_truncated = true;
                             break;
                         }
                     }
 
                     // append any entries not already in the log
                     size_t start = log_.size();
-                    log_.resize(log_.size() + payload.entries_len);
-                    std::memcpy(&log_[start], payload.entries, payload.entries_len * sizeof(LogEntry));
+                    log_.resize(log_.size() + payload.entries_len - i);
+                    std::memcpy(&log_[start], payload.entries + i, (payload.entries_len - i) * sizeof(LogEntry));
+
+                    if (log_truncated) {
+                        ::freopen(LOG_FILE_PATH, "w+", log_fp_);
+                        ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
+                        ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
+                        ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
+                    }
+                    else {
+                        ::fseek(log_fp_, 0, SEEK_END);
+                        ::fwrite(&log_[start], sizeof(LogEntry), payload.entries_len - i, log_fp_);
+                    }
 
                     if (payload.leader_commit > commit_index_) {
                         commit_index_ = std::min(payload.leader_commit, static_cast<uint32_t>(payload.prev_log_idx + payload.entries_len));
