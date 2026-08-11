@@ -928,8 +928,6 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
     node_ids_.set(MY_ID);
     node_ids_.unset(dest_id);
     std::memcpy(p.cluster, node_ids_.data(), node_ids_.total_size());
-    node_ids_.unset(MY_ID);
-    node_ids_.set(dest_id);
     #ifdef DEBUG
     std::cout << "payload cluster as uint8_ts: ";
     for (auto n : p.cluster) {
@@ -937,6 +935,8 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
     }
     std::cout << "\n";
     #endif
+    node_ids_.unset(MY_ID);
+    node_ids_.set(dest_id);
 
     // Write the first snapshot chunk to the payload
     ::fseek(snapshot_fp_, node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);
