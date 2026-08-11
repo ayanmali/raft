@@ -348,9 +348,10 @@ inline void Node::MainLoop() {
                             "error in InstallSnapshotRPC handler; failed to open snapshot tmp file\n"
                         );
                         //::fseek(snapshot_tmp_fp_, payload.cluster_raw_size + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);
+                        ::fwrite(&payload.cluster_raw_size, sizeof(payload.cluster_raw_size), 1, snapshot_tmp_fp_);
                         ::fwrite(&payload.cluster, payload.cluster_raw_size, 1, snapshot_tmp_fp_);
-                        ::fwrite(&payload.last_included_idx, sizeof(uint32_t), 1, snapshot_tmp_fp_);
-                        ::fwrite(&payload.last_included_term, sizeof(uint32_t), 1, snapshot_tmp_fp_);
+                        ::fwrite(&payload.last_included_idx, sizeof(payload.last_included_idx), 1, snapshot_tmp_fp_);
+                        ::fwrite(&payload.last_included_term, sizeof(payload.last_included_term), 1, snapshot_tmp_fp_);
 
                     }
 
@@ -367,6 +368,7 @@ inline void Node::MainLoop() {
                     ::fclose(snapshot_tmp_fp_);
                     snapshot_tmp_fp_ = nullptr;
                     ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
+                    snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "r+");
 
                     if (payload.last_included_idx > last_applied_idx_) {
                         const size_t offset = payload.last_included_idx - base_logical_idx_;
@@ -543,7 +545,12 @@ inline void Node::MainLoop() {
                         advance_to_term(payload.term);
                     }
 
-                    if (++chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE < SM_STATE_SIZE) {
+                    struct stat st;
+                    if (stat(STATE_MACHINE_FILE_PATH, &st) != 0) {
+                        return "failed to send snapshot chunk; couldn't get state machine file size\n";
+                    }
+
+                    if (++chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE < st.st_size) {
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
                         auto p = InstallSnapshotReqPayload{
                             .cluster_raw_size = node_ids_.total_size(),
@@ -553,7 +560,7 @@ inline void Node::MainLoop() {
                             .dest_id = payload.server_id,
                             .term = current_term_,
                             .leader_id = MY_ID,
-                            .done = (chunks_sent_[payload.server_id] + 1) * SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE,
+                            .done = (chunks_sent_[payload.server_id] + 1) * SNAPSHOT_CHUNK_SIZE >= st.st_size,
                         };
                         // adjust the cluster config for the receiving node
                         node_ids_.set(MY_ID);
@@ -563,7 +570,7 @@ inline void Node::MainLoop() {
                         node_ids_.set(payload.server_id);
 
                         // write the snapshot chunk to the payload
-                        ::fseek(snapshot_fp_, node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_) + chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE, SEEK_SET);
+                        ::fseek(snapshot_fp_, sizeof(size_t) + node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_) + chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE, SEEK_SET);
                         if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
                             return (std::format(
                                 "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset {}",
@@ -587,6 +594,7 @@ inline void Node::MainLoop() {
                     std::cout << "found heartbeat timeout for node " << payload.source_id << "; sending heartbeat...\n";
                     std::cout << "next index = " << next_indexes_[payload.source_id] << "\n";
                     std::cout << "last_applied_idx_ = " << last_applied_idx_ << "\n";
+                    std::cout << "base_logical_idx_ = " << base_logical_idx_ << "\n";
                     #endif
                     auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
                     const int32_t next_idx = next_indexes_[payload.source_id];
@@ -789,6 +797,7 @@ if (err) std::cout << "inbox handler error: " << err.value() << "\n";
             ::fclose(snapshot_tmp_fp_);
             snapshot_tmp_fp_ = nullptr;
             ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
+            snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "r+");
         }
 
         if (state_ == NodeState::Leader) continue;

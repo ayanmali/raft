@@ -908,7 +908,14 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
     std::cout << "offset = " << chunks_sent_[dest_id] * SNAPSHOT_CHUNK_SIZE << "\n";
     std::cout << "dest id = " << dest_id << "\n";
     std::cout << "leader_id = " << MY_ID << "\n";
-    std::cout << "done = " << ((chunks_sent_[dest_id] + 1) * SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE) << "\n";
+    #endif
+    struct stat st;
+    if (stat(STATE_MACHINE_FILE_PATH, &st) != 0) {
+        return "Failed to send InstallSnapshot RPC: couldn't get state machine file size\n";
+    }
+
+    #ifdef DEBUG
+    std::cout << "done = " << ((chunks_sent_[dest_id] + 1) * SNAPSHOT_CHUNK_SIZE >= st.st_size) << "\n";
     #endif
     auto p = InstallSnapshotReqPayload{
         .cluster_raw_size = node_ids_.total_size(),
@@ -918,7 +925,7 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
         .dest_id = dest_id,
         .term = current_term_,
         .leader_id = MY_ID,
-        .done = (chunks_sent_[dest_id] + 1) * SNAPSHOT_CHUNK_SIZE >= SM_STATE_SIZE,
+        .done = (chunks_sent_[dest_id] + 1) * SNAPSHOT_CHUNK_SIZE >= st.st_size,
     };
     // adjust the cluster config for the receiving node
     node_ids_.set(MY_ID);
@@ -935,7 +942,7 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
     node_ids_.set(dest_id);
 
     // Write the first snapshot chunk to the payload
-    ::fseek(snapshot_fp_, node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);
+    ::fseek(snapshot_fp_, sizeof(size_t) + node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);
     if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
         return (std::format(
             "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset 0",

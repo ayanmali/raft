@@ -18,7 +18,7 @@ constexpr int EPOLL_BATCH = 64; // max # of fds processed per loop iteration
 static constexpr int MIN_ELECTION_TIMEOUT_MS = 150;
 static constexpr int MAX_ELECTION_TIMEOUT_MS = 300;
 
-static constexpr int BASE_CLUSTER_SIZE = 3;
+static constexpr int BASE_CLUSTER_SIZE = 1;
 static constexpr size_t MAX_NODES = BASE_CLUSTER_SIZE * 2;
 
 static constexpr int MY_ID = 0;
@@ -30,8 +30,7 @@ static constexpr uint64_t HEARTBEAT_INTERVAL_MS{MIN_ELECTION_TIMEOUT_MS / 3};
 static constexpr uint64_t RPC_TIMEOUT_MS{MAX_ELECTION_TIMEOUT_MS * 3};
 
 static constexpr int CMD_SIZE = 4; // # of bytes that each command in the log occupies
-static constexpr int SM_STATE_SIZE = 8; // # of bytes to represent the state of the state machine. Contained in each snapshot's record of state
-static constexpr int SNAPSHOT_CHUNK_SIZE = SM_STATE_SIZE / 4;
+static constexpr int SNAPSHOT_CHUNK_SIZE = 2;
 
 static constexpr const char* SERVER_PORT = "6969";
 //static constexpr uint SERVER_SNAPSHOT_PORT = 6970;
@@ -57,7 +56,7 @@ static constexpr size_t MAX_SERVER_CONNS = 16;
 
 static constexpr size_t MAX_ENTRIES = 12; // maximum number of entries to append with any given AE RPC
 
-static constexpr size_t LOG_COMPACT_THRESHOLD = 5;
+static constexpr size_t LOG_COMPACT_THRESHOLD = 5; // must be >= 1
 
 static constexpr std::chrono::milliseconds FLUSH_INTERVAL{1500};
 
@@ -77,6 +76,6 @@ static constexpr const char* STATE_MACHINE_TMP_FILE_PATH = "/root/raft/persisten
 // The node with MY_ID == k must have "" at index k and real IPs elsewhere.
 constexpr void setup_peers(const char** a) {
     a[0] = "172.26.0.10";
-    a[1] = "172.26.0.11";
-    a[2] = "172.26.0.12";
+    // a[1] = "172.26.0.11";
+    // a[2] = "172.26.0.12";
 }
