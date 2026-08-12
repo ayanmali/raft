@@ -478,7 +478,7 @@ inline void Node::MainLoop() {
                     }
                     const uint32_t prev_log_idx = stored_next - 1;
                     const size_t prev_log_idx_offset = prev_log_idx < base_logical_idx_ ? 0 : prev_log_idx - base_logical_idx_;
-                    if (prev_log_idx_offset >= log_.size()) {
+                    if (prev_log_idx != base_logical_idx_ - 1 && prev_log_idx_offset >= log_.size()) {
                         return (std::format(
                             "Failed to process AE reply: prev_log_idx offset {} out of bounds (log size = {})",
                             prev_log_idx_offset, log_.size()
