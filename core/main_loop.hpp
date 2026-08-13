@@ -46,6 +46,7 @@ inline void Node::MainLoop() {
                 if constexpr (std::is_same_v<T, AppendEntriesReqPayload>) {
                     #ifdef DEBUG
                     std::cout << "found AE RPC from node " << payload.leader_id << "\n";
+                    std::cout << "state_ = " << state_ << "\n";
                     std::cout << "payload term = " << payload.term << "\n";
                     std::cout << "current term = " << current_term_ << "\n";
                     std::cout << "entries_len = " << payload.entries_len << "\n";
