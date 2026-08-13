@@ -872,22 +872,18 @@ if (err) std::cout << "inbox handler error: " << err.value() << "\n";
 
         if (state_ == NodeState::Leader) continue;
 
-        last_leader_contact_ = leader_contact
-            ? std::chrono::steady_clock::now() // reset only if a leader message came in
-            : last_leader_contact_;
+        if (leader_contact) {
+            last_leader_contact_ = std::chrono::steady_clock::now();
+            demote();
+        }
 
         // poll the election timer
         auto now = std::chrono::steady_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_leader_contact_);
 
-        // #ifdef DEBUG
-        // std::cout << "duration = " << duration << "\n";
-        // #endif
-
         if (duration < election_timeout_) continue;
 
         // start election
-        if (state_ == NodeState::Candidate) continue;
         #ifdef DEBUG
         std::cout << "election timeout; starting election...\n";
         #endif
@@ -903,6 +899,7 @@ if (err) std::cout << "inbox handler error: " << err.value() << "\n";
         voted_for_ = MY_ID;
         write_current_term();
         write_voted_for();
+        voters_.clear();
         voters_.insert(MY_ID);
         last_leader_contact_ = std::chrono::steady_clock::now();
 
