@@ -12,7 +12,7 @@ Format (from core/main_loop.cpp log-compaction path):
 import struct
 import sys
 
-SNAPSHOT_PATH = "/root/raft/persistence/snapshot"
+SNAPSHOT_PATH = "/raft/persistence/snapshot"
 
 def parse_snapshot(path: str):
     with open(path, "rb") as f:

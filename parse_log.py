@@ -2,7 +2,7 @@
 import os
 import struct
 
-LOG_FILE = "/root/raft/persistence/log"
+LOG_FILE = "/raft/persistence/log"
 CMD_SIZE = 4
 LOG_ENTRY_SIZE = CMD_SIZE + 4  # data_[CMD_SIZE] + uint32_t term
 

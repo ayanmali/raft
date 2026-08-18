@@ -110,7 +110,7 @@ struct RequestVoteRespPayload {
 struct InstallSnapshotReqPayload {
     std::byte partial_state[SNAPSHOT_CHUNK_SIZE]; // IS RPCs send smaller chunks of the state at a time
     size_t cluster_raw_size;
-    uint8_t cluster[(MAX_NODES + BITS_PER_BYTE - 1) / BITS_PER_BYTE];
+    uint64_t cluster[(MAX_NODES + BITS_PER_UINT64_T - 1) / BITS_PER_UINT64_T];
     uint32_t last_included_idx;
     uint32_t last_included_term;
     uint64_t offset;

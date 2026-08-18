@@ -29,7 +29,6 @@ struct ByteReader {
     explicit ByteReader(std::span<const std::byte> bytes)
         : ptr(bytes.data()), end(bytes.data() + bytes.size_bytes()) {};
 
-
     bool read(uint8_t& out) {
         if (remaining() < sizeof(out)) return false;
 
@@ -92,6 +91,16 @@ struct ByteReader {
         return true;
     }
 
+    bool read(uint64_t* out, size_t size) { // size of entire array given in bytes
+        if (remaining() < size) return false;
+        std::memcpy(out, ptr, size);
+        for (int i = 0; i < size / sizeof(uint64_t); ++i) {
+            out[i] = ntohll(out[i]);
+        }
+        ptr += size;
+        return true;
+    }
+
     bool read (LogEntry* out, size_t n) {
         if (remaining() < n * sizeof(LogEntry)) return false;
         std::memcpy(out, ptr, n * sizeof(LogEntry));
@@ -118,7 +127,7 @@ struct BufByteWriter {
     BufByteWriter(std::byte* buf_) : buf{buf_} {}
     void serialize(AppendEntriesReqPayload& payload);
     void serialize(const RequestVoteReqPayload& payload);
-    void serialize(const InstallSnapshotReqPayload& payload);
+    void serialize(InstallSnapshotReqPayload& payload);
     void serialize(const AppendEntriesRespPayload& payload);
     void serialize(const RequestVoteRespPayload& payload);
     void serialize(const InstallSnapshotRespPayload& payload);

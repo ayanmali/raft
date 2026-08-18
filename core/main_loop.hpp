@@ -225,12 +225,7 @@ inline void Node::MainLoop() {
                     add_peer_if_not_exists(payload.candidate_id, payload.fd, el);
 
                     #ifdef DEBUG
-                    std:: cout << "current cluster: " << MY_ID << ", ";
-                    for (NodeID id = 0; id < node_ids_.total_bits(); ++id) {
-                        if (!node_ids_[id]) continue;
-                        std::cout << id << ", ";
-                    }
-                    std::cout << "\n";
+                    print_cluster();
 
                     std::cout << "Current state = " << static_cast<int>(state_) << "\n";
 
@@ -389,15 +384,15 @@ inline void Node::MainLoop() {
                         #endif
                         ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
                     }
-                    node_ids_.reset(payload.cluster, payload.cluster_raw_size);
+                    node_ids_.reset_cluster(payload.cluster, payload.cluster_raw_size);
+                    snapshot_cluster_size_bytes_ = payload.cluster_raw_size;
 
+                    __off64_t header = static_cast<__off64_t>(snapshot_header_bytes());
 
                     // add the installed snapshot to the state machine file
                     struct stat st;
                     if (stat(SNAPSHOT_FILE_PATH, &st) != 0
-                        || st.st_size < static_cast<off_t>(
-                            sizeof(size_t) + node_ids_.total_size()
-                            + sizeof(last_applied_idx_) + sizeof(last_applied_term_))) {
+                        || st.st_size < header) {
                         return (std::format(
                             "error in InstallSnapshotRPC handler; couldn't restore state machine from snapshot {}: bad snapshot size\n",
                             SNAPSHOT_FILE_PATH
@@ -411,9 +406,6 @@ inline void Node::MainLoop() {
                         ));
                     }
 
-                    __off64_t header = static_cast<__off64_t>(
-                        sizeof(size_t) + node_ids_.total_size()
-                        + sizeof(last_applied_idx_) + sizeof(last_applied_term_));
                     ssize_t n = copy_file_range(fileno(snapshot_fp_), &header,
                                                 fileno(sm_tmp_fp), nullptr,
                                                 st.st_size - header, 0);
@@ -550,12 +542,7 @@ inline void Node::MainLoop() {
                 else if constexpr (std::is_same_v<T, RequestVoteRespPayload>) {
                     #ifdef DEBUG
                     std::cout << "found RV reply from node " << payload.server_id << "\n";
-                    std:: cout << "current cluster: " << MY_ID << ", ";
-                    for (NodeID id = 0; id < node_ids_.total_bits(); ++id) {
-                        if (!node_ids_[id]) continue;
-                        std::cout << id << ", ";
-                    }
-                    std::cout << "\n";
+                    print_cluster();
 
                     std::cout << "Current state = " << static_cast<int>(state_) << "\n";
 
@@ -587,7 +574,7 @@ inline void Node::MainLoop() {
                     }
 
                     // become leader if quorum of votes achieved
-                    if (voters_.size() > (node_ids_.size() + 1) / 2) {
+                    if (voters_.size() > node_ids_.num_in_cluster / 2) {
                         become_leader();
                     }
                     return {};
@@ -611,7 +598,7 @@ inline void Node::MainLoop() {
                     if (++chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE < st.st_size) {
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
                         auto p = InstallSnapshotReqPayload{
-                            .cluster_raw_size = node_ids_.total_size(),
+                            .cluster_raw_size = snapshot_cluster_bytes(),
                             .last_included_idx = base_logical_idx_ - 1,
                             .last_included_term = base_term_,
                             .offset = chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE,
@@ -620,15 +607,11 @@ inline void Node::MainLoop() {
                             .leader_id = MY_ID,
                             .done = (chunks_sent_[payload.server_id] + 1) * SNAPSHOT_CHUNK_SIZE >= st.st_size,
                         };
-                        // adjust the cluster config for the receiving node
-                        node_ids_.set(MY_ID);
-                        node_ids_.unset(payload.server_id);
-                        std::memcpy(p.cluster, node_ids_.data(), node_ids_.total_size());
-                        node_ids_.unset(MY_ID);
-                        node_ids_.set(payload.server_id);
+
+                        std::memcpy(p.cluster, node_ids_.cluster.data(), p.cluster_raw_size);
 
                         // write the snapshot chunk to the payload
-                        ::fseek(snapshot_fp_, sizeof(size_t) + node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_) + chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE, SEEK_SET);
+                        ::fseek(snapshot_fp_, snapshot_header_bytes() + chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE, SEEK_SET);
                         if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
                             return (std::format(
                                 "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset {}",
@@ -691,11 +674,11 @@ inline void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "Received drop peer message - dropping peer " << payload.source_id << "\n";
                     #endif
-                    if (payload.source_id < node_ids_.total_bits()) {
-                        node_ids_.unset(payload.source_id);
+                    if (payload.source_id < node_ids_.bits()) {
+                        node_ids_.set_unavailable_node(payload.source_id);
                     }
                     next_indexes_[payload.source_id] = -1;
-                    match_indexes_[payload.source_id] = -1;
+                    //match_indexes_[payload.source_id] = -1;
                     chunks_sent_[payload.source_id] = -1;
 
                     voters_.erase(payload.source_id);
@@ -720,21 +703,21 @@ inline void Node::MainLoop() {
 
                     }
                     #endif
-                    if (payload.term != current_term_
-                        || payload.sender_id < 0
-                        || payload.sender_id > node_ids_.total_bits()
-                        || !node_ids_[payload.sender_id]) {
-                            #ifdef DEBUG
-                            std::cout << "forwarded request has a stale term = " << payload.term << " or invalid sender id = " << payload.sender_id << "\n";
-                            #endif
-                            return {};
-                        }
+
+                    if (payload.term != current_term_) {
+                        #ifdef DEBUG
+                        std::cout << "forwarded request has a stale term = " << payload.term << "\n";
+                        #endif
+                        return {};
+                    }
+                    auto& el = loops_[payload.sender_id & (EVENT_LOOP_THREADS - 1)];
+                    add_peer_if_not_exists(payload.sender_id, payload.fd, el);
                     append_commands(payload.entries, payload.entries_len);
                 }
 
                 else if constexpr (std::is_same_v<T, AETimeout>) {
                     // Stale AE retry timer after demotion; only a leader retries AEs.
-                    if (state_ != NodeState::Leader) return {};
+                    if (state_ != NodeState::Leader || !node_ids_.is_available(payload.source_id)) return {};
                     auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
                     const int32_t next_idx = next_indexes_[payload.source_id];
                     if (next_idx == 0) {
@@ -768,7 +751,7 @@ inline void Node::MainLoop() {
                 else if constexpr (std::is_same_v<T, RVTimeout>) {
                     // Only a candidate still seeking votes retries; guards
                     // against a stale RV timer firing after winning/demotion.
-                    if (state_ != NodeState::Candidate) return {};
+                    if (state_ != NodeState::Candidate || !node_ids_.is_available(payload.source_id)) return {};
                     auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
                     // retry
                     auto p = RequestVoteReqPayload{
@@ -783,8 +766,7 @@ inline void Node::MainLoop() {
 
                 else if constexpr (std::is_same_v<T, ISTimeout>) {
                     // retry; only a leader (still installing this snapshot) retries
-                    if (state_ != NodeState::Leader) return {};
-                    if (installing_snapshot_id_ != payload.source_id) return {};
+                    if (state_ != NodeState::Leader || installing_snapshot_id_ != payload.source_id) return {};
 
                     auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
                     std::optional<std::string> send_is_err = send_install_snapshot(el, payload.source_id);
@@ -806,7 +788,7 @@ inline void Node::MainLoop() {
                 return {};
             }, message);
             #ifdef DEBUG
-if (err) std::cout << "inbox handler error: " << err.value() << "\n";
+            if (err) std::cout << "inbox handler error: " << err.value() << "\n";
             #else
             (void)err;
             #endif
@@ -853,9 +835,10 @@ if (err) std::cout << "inbox handler error: " << err.value() << "\n";
 
             // create the snapshot and write to disk
             snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
-            size_t cluster_size_bytes = node_ids_.total_size();
+            size_t cluster_size_bytes = node_ids_.bytes();
+            snapshot_cluster_size_bytes_ = cluster_size_bytes;
             ::fwrite(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, snapshot_tmp_fp_);
-            ::fwrite(node_ids_.data(), cluster_size_bytes, 1, snapshot_tmp_fp_);
+            ::fwrite(node_ids_.cluster.data(), cluster_size_bytes, 1, snapshot_tmp_fp_);
             ::fwrite(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_tmp_fp_);
             ::fwrite(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_tmp_fp_);
             create_snapshot(snapshot_tmp_fp_, sm_fp_); // caller-defined
@@ -907,7 +890,7 @@ if (err) std::cout << "inbox handler error: " << err.value() << "\n";
         // majority (e.g. a single-node cluster with no peers), win the
         // election immediately rather than waiting for RequestVote replies
         // that will never come.
-        if (voters_.size() > (node_ids_.size() + 1) / 2) {
+        if (voters_.size() > (node_ids_.num_in_cluster / 2)) {
             become_leader();
             continue;
         }

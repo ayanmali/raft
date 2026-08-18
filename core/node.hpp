@@ -86,12 +86,18 @@ public:
     uint32_t compute_new_commit_idx();
     void commit_entries_if_available();
 
+    size_t snapshot_cluster_bytes() const;
+    size_t snapshot_header_bytes() const;
+
     /* log compaction/snapshotting/recovery */
     std::optional<std::string> recover();
 
     void write_current_term();
     void write_voted_for();
     void flush_files();
+
+    void iterate_node_ids(auto&& callback);
+    void print_cluster();
 
     std::mt19937                                                    rand_gen_                = std::mt19937(std::random_device{}());
     std::unordered_set<NodeID>                                      voters_;
@@ -117,6 +123,7 @@ public:
     void(*create_snapshot)(FILE*, FILE*);
     int                                                             leader_id_               = -1;
     int                                                             installing_snapshot_id_  = -1;
+    size_t                                                          snapshot_cluster_size_bytes_ = 0;
     int                                                             voted_for_               = -1;
     uint32_t                                                        base_logical_idx_        = 1; // logical indexes are 1-based
     uint32_t                                                        base_term_               = 0;
@@ -219,6 +226,7 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
     //static_assert(static_cast<size_t>(MY_ID) < BASE_CLUSTER_SIZE, "This node's ID exceeds the cluster size");
 
     for (int i = 0; i < BASE_CLUSTER_SIZE; ++i) {
+        n->node_ids_.set_cluster_node(i);
         if (i == MY_ID) continue;
         std::optional<std::string> add_peer_err = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
             .AddPeer(i, init_cluster[i], SERVER_PORT);
@@ -227,7 +235,7 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
                 std::format("error creating node:\n{}\n", add_peer_err.value())
             );
         }
-        n->node_ids_.set(i);
+        n->node_ids_.set_online_node(i);
     }
 
     n->next_indexes_[MY_ID] = -1;
@@ -258,13 +266,11 @@ inline void Node::Stop() {
 // ---- outbound --------------------------------------------------------
 
 inline void Node::request_votes() {
-    for (NodeID id = 0; id < node_ids_.total_bits(); ++id) {
-        if (!node_ids_[id]) continue;
+    iterate_node_ids([&](size_t id){
         #ifdef DEBUG
         std::cout << "sending RV to peer " << id << " on event loop " << static_cast<int>(id & (EVENT_LOOP_THREADS - 1)) << "\n";
         #endif
-
-        auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
+        auto& el = this->loops_[id & (EVENT_LOOP_THREADS - 1)];
         el.outbound_inbox.PushOne(
             EventLoopMessage(RequestVoteReqPayload{
                 .dest_id = id,
@@ -274,7 +280,8 @@ inline void Node::request_votes() {
                 .last_log_term = log_.empty() ? base_term_ : log_.back().term
             })
         );
-    }
+    });
+
     for (auto& loop : loops_) { loop.Wake(); }
 }
 
@@ -470,16 +477,16 @@ inline void Node::demote() {
     #ifdef DEBUG
     std::cout << "disarming peer timers\n";
     #endif
-    for (NodeID id = 0; id < node_ids_.total_bits(); ++id) {
-        if (!node_ids_[id]) continue;
 
-        auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
+    iterate_node_ids([&](size_t id){
+        auto& el = this->loops_[id & (EVENT_LOOP_THREADS - 1)];
         el.outbound_inbox.PushOne(
             EventLoopMessage(
                 DisarmTimer{ .dest_id = id }
             )
         );
-    }
+    });
+
     for (auto& loop : loops_) { loop.Wake(); }
 }
 
@@ -519,36 +526,41 @@ inline void Node::become_leader() {
     #ifdef DEBUG
     std::cout << "Arming peer timers\n";
     #endif
-    for (NodeID id = 0; id < node_ids_.total_bits(); ++id) {
-        if (!node_ids_[id]) continue;
 
-        auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
+    iterate_node_ids([&](size_t id){
+        auto& el = this->loops_[id & (EVENT_LOOP_THREADS - 1)];
         // arm this peer's heartbeat timer so we know when to send the next heartbeat.
         el.outbound_inbox.PushOne(
             EventLoopMessage(
                 ArmTimer{ .dest_id = id }
             )
         );
+
         #ifdef DEBUG
         std::cout << "posted arm timer message to peer " << id << "\n";
         #endif
-    }
+    });
 
     for (auto& loop : loops_) { loop.Wake(); }
 }
 
 inline void Node::add_peer_if_not_exists(NodeID node_id, FD fd, EventLoop& el) {
-    if ((node_id < node_ids_.total_bits() && node_ids_[node_id]) || installing_snapshot_id_ != -1) return;
-    node_ids_.add(node_id);
+    if (node_ids_.is_available(node_id) || installing_snapshot_id_ != -1) return;
 
+    // The peer is unknown or was dropped earlier. (Re)establish it as a live peer.
     if (next_indexes_.size() <= node_id) {
         next_indexes_.resize(node_id + 1);
         match_indexes_.resize(node_id + 1);
         chunks_sent_.resize(node_id + 1);
     }
     next_indexes_[node_id] = static_cast<uint32_t>(log_.size()) + base_logical_idx_;
-    match_indexes_[node_id] = 0;
     chunks_sent_[node_id] = 0;
+
+    if (!node_ids_.is_in_cluster(node_id)) {
+        match_indexes_[node_id] = 0;
+        node_ids_.set_cluster_node(node_id);
+    }
+    node_ids_.set_online_node(node_id);
 
     el.outbound_inbox.PushOne(
         EventLoopMessage(
@@ -571,60 +583,29 @@ inline void Node::add_peer_if_not_exists(NodeID node_id, FD fd, EventLoop& el) {
 }
 
 inline uint32_t Node::compute_new_commit_idx() {
-    // No peers => no quorum to compute. Guards std::max_element below from
-    // dereferencing end() on an empty map.
-    // if (node_ids_.empty()) return commit_index_;
-    if (node_ids_.empty()) return (log_.size() - 1) + base_logical_idx_;
+    if (log_.empty()) return commit_index_;
 
-    std::unordered_map<int32_t, uint32_t> freqs(match_indexes_.size());
-    for (auto match_idx : match_indexes_) {
-        if (match_idx < 0) continue;
-        ++freqs[match_idx];
-    }
-    if (!log_.empty()) {
-        ++freqs[(log_.size() - 1) + base_logical_idx_];
-    }
-    else {
-        ++freqs[base_logical_idx_ - 1];
-    }
+    const uint32_t last_log_idx = (log_.size() - 1) + base_logical_idx_;
 
-    #ifdef DEBUG
-    std::cout << "Frequencies map:\n";
-    for (const auto& [k,v] : freqs) {
-        std::cout << k << ", " << v << "\n";
-    }
-    #endif
+    const size_t majority = (node_ids_.num_in_cluster - 1) / 2;
 
-    // fast path
-    auto kv_max_freq = std::max_element(freqs.begin(), freqs.end(), [](const std::pair<uint32_t, uint32_t>& a, const std::pair<uint32_t, uint32_t>& b){
-       return a.second < b.second;
-    });
-    if (kv_max_freq == freqs.end()) return commit_index_;
-    if (kv_max_freq->second <= node_ids_.size() / 2) return commit_index_;
-    if (kv_max_freq->first > commit_index_
-        && kv_max_freq->first - base_logical_idx_ < log_.size()
-        && log_[kv_max_freq->first - base_logical_idx_].term == current_term_) {
-        return kv_max_freq->first;
+    // every member's last-known match index; self is always last_log_idx
+    std::vector<int> matches{};
+    matches.reserve(match_indexes_.size() + 1);
+    for (int m : match_indexes_) {
+        if (m < 0) continue;
+        matches.push_back(m);
     }
+    matches.push_back(last_log_idx);
+    if (majority >= matches.size()) return commit_index_;
+    std::nth_element(matches.begin(), matches.begin() + majority, matches.end());
 
-    // slow path
-    freqs.erase(kv_max_freq);
-    std::vector<std::pair<int32_t, uint32_t>> freqs_vec;
-    freqs_vec.reserve(freqs.size());
-    for (auto [idx, count] : freqs) {
-        freqs_vec.emplace_back(idx, count);
-    }
-    std::sort(freqs_vec.begin(), freqs_vec.end(), [](auto& a, auto& b){ return a.second > b.second; });
+    const uint32_t N = matches[majority];
+    if (N <= commit_index_) return commit_index_;
 
-    for (auto& [match_idx, count] : freqs_vec) {
-        if (count <= node_ids_.size() / 2) break;
-        if (match_idx > commit_index_
-            && match_idx - base_logical_idx_ < log_.size()
-            && log_[match_idx - base_logical_idx_].term == current_term_) {
-            return match_idx;
-        }
-    }
-    return commit_index_;
+    const size_t offset = N - base_logical_idx_;
+    if (offset >= log_.size() || log_[offset].term != current_term_) return commit_index_;
+    return N;
 }
 
 inline void Node::commit_entries_if_available() {
@@ -686,7 +667,7 @@ inline std::optional<std::string> Node::recover() {
 
     if (stat(SNAPSHOT_FILE_PATH, &st) == 0
         && st.st_size >= static_cast<off_t>(
-            sizeof(size_t) + node_ids_.total_size()
+            sizeof(size_t) + node_ids_.bytes()
             + sizeof(last_applied_idx_) + sizeof(last_applied_term_))) {
         snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "r+");
         if (snapshot_fp_ == nullptr) {
@@ -696,19 +677,10 @@ inline std::optional<std::string> Node::recover() {
             ));
         }
 
-        size_t cluster_size_bytes;
-
-        ::fread(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, snapshot_fp_);
-        node_ids_.resize_bytes(cluster_size_bytes);
-        ::fread(node_ids_.data(), cluster_size_bytes, 1, snapshot_fp_);
+        ::fread(&snapshot_cluster_size_bytes_, sizeof(snapshot_cluster_size_bytes_), 1, snapshot_fp_);
+        node_ids_.reset_cluster(snapshot_fp_, snapshot_cluster_size_bytes_);
         ::fread(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_fp_);
         ::fread(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_fp_);
-
-        // Recompute num_set from the restored bitmap
-        node_ids_.num_set = 0;
-        for (size_t i = 0; i < node_ids_.total_size(); ++i) {
-            node_ids_.num_set += std::popcount(node_ids_.v[i]);
-        }
 
         FILE* sm_tmp_fp = ::fopen(STATE_MACHINE_TMP_FILE_PATH, "w+");
         if (sm_tmp_fp == nullptr) {
@@ -717,11 +689,7 @@ inline std::optional<std::string> Node::recover() {
                 STATE_MACHINE_FILE_PATH
             ));
         }
-        __off64_t offset = static_cast<__off64_t>(
-            sizeof(size_t) // cluster size prefix
-            + cluster_size_bytes
-            + sizeof(last_applied_idx_)
-            + sizeof(last_applied_term_));
+        __off64_t offset = static_cast<__off64_t>(snapshot_header_bytes());
         ssize_t n = copy_file_range(fileno(snapshot_fp_), &offset,
                                     fileno(sm_tmp_fp), nullptr,
                                     st.st_size - offset, 0);
@@ -781,9 +749,10 @@ inline std::optional<std::string> Node::recover() {
 
     // Create a new snapshot reflecting the fully replayed state
     FILE* tmp_snap = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
-    size_t cluster_size = node_ids_.total_size();
+    size_t cluster_size = node_ids_.bytes();
+    snapshot_cluster_size_bytes_ = cluster_size;
     ::fwrite(&cluster_size, sizeof(cluster_size), 1, tmp_snap);
-    ::fwrite(node_ids_.data(), cluster_size, 1, tmp_snap);
+    ::fwrite(node_ids_.cluster.data(), cluster_size, 1, tmp_snap);
     ::fwrite(&last_applied_idx_, sizeof(last_applied_idx_), 1, tmp_snap);
     ::fwrite(&last_applied_term_, sizeof(last_applied_term_), 1, tmp_snap);
     create_snapshot(tmp_snap, sm_fp_);
@@ -909,10 +878,20 @@ inline std::optional<std::string> Node::send_append_entries(int32_t next_idx, Ev
     return {};
 }
 
+inline size_t Node::snapshot_cluster_bytes() const {
+    constexpr size_t MAX_CLUSTER_BYTES = (MAX_NODES + BITS_PER_UINT64_T - 1) / BITS_PER_UINT64_T * sizeof(uint64_t);
+    return std::min(snapshot_cluster_size_bytes_, MAX_CLUSTER_BYTES);
+}
+
+inline size_t Node::snapshot_header_bytes() const {
+    return sizeof(size_t) + snapshot_cluster_bytes()
+        + sizeof(last_applied_idx_) + sizeof(last_applied_term_);
+}
+
 inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, NodeID dest_id) {
     #ifdef DEBUG
     std::cout << "Sending InstallSnapshot RPC:\n";
-    std::cout << "cluster raw size = " << node_ids_.total_size() << "\n";
+    std::cout << "cluster raw size = " << snapshot_cluster_bytes() << "\n";
     std::cout << "term = " << current_term_ << "\n";
     std::cout << "offset = " << chunks_sent_[dest_id] * SNAPSHOT_CHUNK_SIZE << "\n";
     std::cout << "dest id = " << dest_id << "\n";
@@ -927,7 +906,7 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
     std::cout << "done = " << ((chunks_sent_[dest_id] + 1) * SNAPSHOT_CHUNK_SIZE >= st.st_size) << "\n";
     #endif
     auto p = InstallSnapshotReqPayload{
-        .cluster_raw_size = node_ids_.total_size(),
+        .cluster_raw_size = snapshot_cluster_bytes(),
         .last_included_idx = base_logical_idx_ - 1,
         .last_included_term = base_term_,
         .offset = chunks_sent_[dest_id] * SNAPSHOT_CHUNK_SIZE,
@@ -936,22 +915,18 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
         .leader_id = MY_ID,
         .done = (chunks_sent_[dest_id] + 1) * SNAPSHOT_CHUNK_SIZE >= st.st_size,
     };
-    // adjust the cluster config for the receiving node
-    node_ids_.set(MY_ID);
-    node_ids_.unset(dest_id);
-    std::memcpy(p.cluster, node_ids_.data(), node_ids_.total_size());
+
+    std::memcpy(p.cluster, node_ids_.cluster.data(), p.cluster_raw_size);
     #ifdef DEBUG
-    std::cout << "payload cluster as uint8_ts: ";
+    std::cout << "payload cluster as uint64_ts: ";
     for (auto n : p.cluster) {
-        std::cout << static_cast<int>(n) << ", ";
+        std::cout << static_cast<uint64_t>(n) << ", ";
     }
     std::cout << "\n";
     #endif
-    node_ids_.unset(MY_ID);
-    node_ids_.set(dest_id);
 
     // Write the first snapshot chunk to the payload
-    ::fseek(snapshot_fp_, sizeof(size_t) + node_ids_.total_size() + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);
+    ::fseek(snapshot_fp_, snapshot_header_bytes(), SEEK_SET);
     if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
         return (std::format(
             "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset 0",
@@ -960,6 +935,28 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
     }
     send(std::move(p), el);
     return {};
+}
+
+inline void Node::iterate_node_ids(auto&& callback) {
+    uint64_t bitset;
+    for (size_t k = 0; k < node_ids_.online.size(); ++k) {
+        bitset = node_ids_.online[k];
+        while (bitset != 0) {
+          uint64_t t = bitset & -bitset;
+          int r = __builtin_ctzl(bitset);
+          callback(k * 64 + r);
+          bitset ^= t;
+        }
+    }
+}
+
+inline void Node::print_cluster() {
+    std:: cout << "current cluster: " << MY_ID << ", ";
+    iterate_node_ids([](size_t id){
+        std::cout << id << ", ";
+    });
+
+    std::cout << "\n";
 }
 
 #include "./main_loop.hpp"

@@ -44,74 +44,94 @@ inline int64_t bytes_to_int64(const std::byte* bytes) {
 }
 
 struct DynamicBitset {
-    std::vector<uint8_t> v; // Each node has its own ID set to false
-    size_t num_set = 0;
-    DynamicBitset(size_t sz) : v(((sz-1) / BITS_PER_BYTE) + 1) {};
+    std::vector<uint64_t> cluster; // tracking cluster membership
+    std::vector<uint64_t> online; // tracks which nodes are available (i.e. nodes to send messages to)
+    size_t num_in_cluster = 0;
+    size_t num_available = 0;
+    DynamicBitset(size_t bits) :
+        cluster(((bits-1) / BITS_PER_UINT64_T) + 1),
+        online(((bits-1) / BITS_PER_UINT64_T) + 1) {};
 
-    void reset(uint8_t* ptr, size_t size) {
-        v.resize(size);
-        std::memcpy(v.data(), ptr, size);
-        num_set = 0;
-        for (uint8_t i : v) {
-            num_set += std::popcount(i);
+    void reset_cluster(uint64_t* ptr, size_t size) {
+        cluster.resize(((size-1) / sizeof(uint64_t)) + 1);
+        online.resize(((size-1) / sizeof(uint64_t)) + 1);
+        std::memcpy(cluster.data(), ptr, size);
+        std::memcpy(online.data(), ptr, size);
+        num_in_cluster = 0;
+        for (uint64_t i : cluster) {
+            num_in_cluster += std::popcount(i);
         }
+        num_available = num_in_cluster;
     }
 
-    bool operator[](size_t pos) {
-        size_t idx = pos / BITS_PER_BYTE;
-        return static_cast<bool>((v[idx] >> (pos % BITS_PER_BYTE)) & 1);
+    void reset_cluster(FILE* fp, size_t size) {
+        cluster.resize(((size-1) / sizeof(uint64_t)) + 1);
+        online.resize(((size-1) / sizeof(uint64_t)) + 1);
+        ::fread(cluster.data(), size, 1, fp);
+        std::memcpy(online.data(), cluster.data(), size);
+
+        num_in_cluster = 0;
+        for (uint64_t i : cluster) {
+            num_in_cluster += std::popcount(i);
+        }
+        num_available = num_in_cluster;
+    }
+
+    bool is_in_cluster(size_t pos) {
+        size_t idx = pos / BITS_PER_UINT64_T;
+        if (idx >= cluster.size()) return false;
+        return static_cast<bool>((cluster[idx] >> (pos % BITS_PER_UINT64_T)) & 1);
     };
 
-    void set(size_t pos) {
-        size_t idx = pos / BITS_PER_BYTE;
-        int prev = (v[idx] >> (pos % BITS_PER_BYTE)) & 1;
-        v[idx] |= (1 << (pos % BITS_PER_BYTE));
-        if (!prev) ++num_set;
+    bool is_available(size_t pos) {
+        size_t idx = pos / BITS_PER_UINT64_T;
+        if (idx >= online.size()) return false;
+        return static_cast<bool>((online[idx] >> (pos % BITS_PER_UINT64_T)) & 1);
     }
 
-    void unset(size_t pos) {
-        size_t idx = pos / BITS_PER_BYTE;
-        int prev = (v[idx] >> (pos % BITS_PER_BYTE)) & 1;
-        v[idx] &= ~(1 << (pos % BITS_PER_BYTE)); // unset the bit
-        if (prev) --num_set;
+    void set_cluster_node(size_t pos) {
+        size_t idx = pos / BITS_PER_UINT64_T;
+        if (idx >= cluster.size()) return;
+        if (!((cluster[idx] >> (pos % BITS_PER_UINT64_T)) & 1)) {
+            ++num_in_cluster;
+        }
+        cluster[idx] |= (1 << (pos % BITS_PER_UINT64_T));
     }
 
-    // void flip(size_t pos) {
-    //     size_t idx = pos / 8;
-    //     v[idx] ^= (1 << pos);
-    // }
-
-    void add(size_t id) {
-        size_t idx = id / BITS_PER_BYTE;
-        //if (idx < v.size()) return;
-        if (idx >= v.size()) v.resize(idx + 1);
-
-        int prev = (v[idx] >> (id % BITS_PER_BYTE)) & 1;
-        v[idx] |= (1 << (id % BITS_PER_BYTE));
-        if (!prev) ++num_set;
+    void set_online_node(size_t pos) {
+        size_t idx = pos / BITS_PER_UINT64_T;
+        if (idx >= online.size()) return;
+        //int prev = (online[idx] >> (pos % BITS_PER_BYTE)) & 1;
+        //if (!prev) ++num_set;
+        if (!((online[idx] >> (pos % BITS_PER_UINT64_T)) & 1)) {
+            ++num_available;
+        }
+        online[idx] |= (1 << (pos % BITS_PER_UINT64_T));
     }
 
-    void resize_bytes(size_t bytes) {
-        v.resize(bytes);
+    void set_unavailable_node(size_t pos) {
+        size_t idx = pos / BITS_PER_UINT64_T;
+        if (idx >= online.size()) return;
+        //int prev = (online[idx] >> (pos % BITS_PER_BYTE)) & 1;
+        //if (prev) --num_set;
+        if (((online[idx] >> (pos % BITS_PER_UINT64_T)) & 1)) {
+            --num_available;
+        }
+        online[idx] &= ~(1 << (pos % BITS_PER_UINT64_T)); // unset the bit
     }
 
+    // total number of bits stored in each vector
+    size_t bits() {
+        return BITS_PER_UINT64_T * cluster.size();
+    }
+
+    size_t bytes() {
+        return sizeof(uint64_t) * cluster.size();
+    }
+
+    // number of uint64_t's stored in each vector
     size_t size() {
-        return num_set;
+        return cluster.size();
     }
 
-    size_t total_size() {
-        return v.size();
-    }
-
-    size_t total_bits() {
-        return v.size() * BITS_PER_BYTE;
-    }
-
-    bool empty() {
-        return num_set == 0;
-    }
-
-    uint8_t* data() {
-        return v.data();
-    }
 };
