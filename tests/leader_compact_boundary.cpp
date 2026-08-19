@@ -86,7 +86,7 @@ int main() {
     node.next_indexes_.resize(3, 1);
     node.match_indexes_.resize(3, 0);
     node.chunks_sent_.resize(3, 0);
-    node.installing_snapshot_id_ = -1;
+    node.installing_snapshot_ = false;
 
     // add_peer_if_not_exists initializes a new follower's next_index to
     // log_.size() + base_logical_idx_ == 8, i.e. exactly the snapshot boundary.
@@ -113,9 +113,9 @@ int main() {
     node.MainLoop();
 
     std::cout << "after reply: next_indexes_[2] = " << node.next_indexes_[2] << "\n";
-    std::cout << "after reply: installing_snapshot_id_ = " << node.installing_snapshot_id_ << "\n";
+    std::cout << "after reply: installing_snapshot_id_ = " << node.installing_snapshot_ << "\n";
 
-    if (node.next_indexes_[2] == 7 && node.installing_snapshot_id_ == 2) {
+    if (node.next_indexes_[2] == 7 && node.installing_snapshot_ == 2) {
         std::cout << "Test Passed\n";
         return 0;
     }

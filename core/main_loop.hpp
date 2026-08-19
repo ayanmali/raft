@@ -301,7 +301,6 @@ inline void Node::MainLoop() {
                     #ifdef DEBUG
                     std::cout << "found IS RPC from node " << payload.leader_id << "\n";
                     std::cout << "payload.term = " << payload.term << "\n";
-                    std::cout << "payload.cluster_raw_size = " << payload.cluster_raw_size << "\n";
                     std::cout << "payload.last_included_idx = " << payload.last_included_idx << "\n";
                     std::cout << "payload.last_included_term = " << payload.last_included_term << "\n";
                     std::cout << "payload.offset = " << payload.offset << "\n";
@@ -338,20 +337,25 @@ inline void Node::MainLoop() {
                         .term = current_term_}, el);
 
                     // write data into snapshot file at given offset
+                    std::byte* partial_state = payload.partial_state;
                     if (payload.offset == 0) {
                         snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
                         if (snapshot_tmp_fp_ == NULL) return (
                             "error in InstallSnapshotRPC handler; failed to open snapshot tmp file\n"
                         );
-                        //::fseek(snapshot_tmp_fp_, payload.cluster_raw_size + sizeof(last_applied_idx_) + sizeof(last_applied_term_), SEEK_SET);
-                        ::fwrite(&payload.cluster_raw_size, sizeof(payload.cluster_raw_size), 1, snapshot_tmp_fp_);
-                        ::fwrite(&payload.cluster, payload.cluster_raw_size, 1, snapshot_tmp_fp_);
+                        size_t cluster_size;
+                        std::memcpy(&cluster_size, payload.partial_state, sizeof(cluster_size));
+                        node_ids_.reset_cluster(payload.partial_state + sizeof(cluster_size), cluster_size);
+                        partial_state += sm_header_bytes();
+
+                        ::fwrite(&cluster_size, sizeof(cluster_size), 1, snapshot_tmp_fp_);
+                        ::fwrite(node_ids_.cluster.data(), cluster_size, 1, snapshot_tmp_fp_);
                         ::fwrite(&payload.last_included_idx, sizeof(payload.last_included_idx), 1, snapshot_tmp_fp_);
                         ::fwrite(&payload.last_included_term, sizeof(payload.last_included_term), 1, snapshot_tmp_fp_);
 
                     }
 
-                    ::fwrite(&payload.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_tmp_fp_);
+                    ::fwrite(partial_state, SNAPSHOT_CHUNK_SIZE - (partial_state - payload.partial_state), 1, snapshot_tmp_fp_);
 
                     if (payload.done == 0) return {};
                     // leader sent the last chunk
@@ -359,11 +363,10 @@ inline void Node::MainLoop() {
                     // commit the temp file to disk
                     ::fflush(snapshot_tmp_fp_);
                     ::fsync(fileno(snapshot_tmp_fp_));
-
-                    // atomically replace the snapshot file with the temporary
                     ::fclose(snapshot_tmp_fp_);
                     snapshot_tmp_fp_ = nullptr;
                     ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
+
                     snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "r+");
 
                     if (payload.last_included_idx > last_applied_idx_) {
@@ -376,28 +379,28 @@ inline void Node::MainLoop() {
                             log_.clear();
                         }
 
-                        ::freopen(LOG_FILE_PATH, "w+", log_fp_);
-                        ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
-                        ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
                         #ifdef DEBUG
                         std::cout << "overwriting log file w/ current term, voted for, and log entries\n";
                         #endif
+                        ::freopen(LOG_FILE_PATH, "w+", log_fp_);
+                        ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
+                        ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
                         ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
                     }
-                    node_ids_.reset_cluster(payload.cluster, payload.cluster_raw_size);
-                    snapshot_cluster_size_bytes_ = payload.cluster_raw_size;
 
-                    __off64_t header = static_cast<__off64_t>(snapshot_header_bytes());
+                    __off64_t snapshot_header = static_cast<__off64_t>(snapshot_header_bytes());
+                    __off64_t sm_header = static_cast<__off64_t>(sm_header_bytes());
 
                     // add the installed snapshot to the state machine file
                     struct stat st;
                     if (stat(SNAPSHOT_FILE_PATH, &st) != 0
-                        || st.st_size < header) {
+                        || st.st_size < snapshot_header) {
                         return (std::format(
                             "error in InstallSnapshotRPC handler; couldn't restore state machine from snapshot {}: bad snapshot size\n",
                             SNAPSHOT_FILE_PATH
                         ));
                     }
+
                     FILE* sm_tmp_fp = ::fopen(STATE_MACHINE_TMP_FILE_PATH, "w+");
                     if (sm_tmp_fp == NULL) {
                         return (std::format(
@@ -406,9 +409,9 @@ inline void Node::MainLoop() {
                         ));
                     }
 
-                    ssize_t n = copy_file_range(fileno(snapshot_fp_), &header,
-                                                fileno(sm_tmp_fp), nullptr,
-                                                st.st_size - header, 0);
+                    ssize_t n = copy_file_range(fileno(snapshot_fp_), &snapshot_header,
+                                                fileno(sm_tmp_fp), &sm_header,
+                                                st.st_size - snapshot_header, 0);
                     if (n < 0) {
                         ::fclose(sm_tmp_fp);
                         return "error in InstallSnapshotRPC handler; failed to copy snapshot state into the state machine\n";
@@ -417,8 +420,9 @@ inline void Node::MainLoop() {
                     ::fflush(sm_tmp_fp);
                     ::fsync(fileno(sm_tmp_fp));
                     ::fclose(sm_tmp_fp);
+                    if (sm_fp_ != nullptr) ::fclose(sm_fp_);
                     ::rename(STATE_MACHINE_TMP_FILE_PATH, STATE_MACHINE_FILE_PATH);
-                    ::fclose(sm_fp_);
+
                     sm_fp_ = ::fopen(STATE_MACHINE_FILE_PATH, "r+");
                     if (sm_fp_ == NULL) {
                         return (std::format(
@@ -494,7 +498,7 @@ inline void Node::MainLoop() {
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
 
                         if (next_indexes_[payload.server_id] < base_logical_idx_) {
-                            installing_snapshot_id_ = payload.server_id;
+                            installing_snapshot_.set(payload.server_id);
                             std::optional<std::string> send_is_err = send_install_snapshot(el, payload.server_id);
                             if (send_is_err) {
                                 return (std::format(
@@ -597,35 +601,14 @@ inline void Node::MainLoop() {
 
                     if (++chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE < st.st_size) {
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
-                        auto p = InstallSnapshotReqPayload{
-                            .cluster_raw_size = snapshot_cluster_bytes(),
-                            .last_included_idx = base_logical_idx_ - 1,
-                            .last_included_term = base_term_,
-                            .offset = chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE,
-                            .dest_id = payload.server_id,
-                            .term = current_term_,
-                            .leader_id = MY_ID,
-                            .done = (chunks_sent_[payload.server_id] + 1) * SNAPSHOT_CHUNK_SIZE >= st.st_size,
-                        };
-
-                        std::memcpy(p.cluster, node_ids_.cluster.data(), p.cluster_raw_size);
-
-                        // write the snapshot chunk to the payload
-                        ::fseek(snapshot_fp_, snapshot_header_bytes() + chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE, SEEK_SET);
-                        if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
-                            return (std::format(
-                                "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset {}",
-                                payload.server_id, chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE
-                            ));
-                        }
-                        send(std::move(p), el);
+                        send_install_snapshot(el, payload.server_id);
                         return {};
                     };
 
                     chunks_sent_[payload.server_id] = 0;
                     next_indexes_[payload.server_id] = base_logical_idx_;
                     match_indexes_[payload.server_id] = base_logical_idx_ - 1;
-                    installing_snapshot_id_ = -1;
+                    installing_snapshot_.unset(payload.server_id);
                 }
 
                 // heartbeats are sent per follower, not all at once.
@@ -650,7 +633,7 @@ inline void Node::MainLoop() {
                     // then send AE RPC w/ log entries starting at nextIndex. Otherwise, send term w/ no entries
 
                     if (next_idx < base_logical_idx_) {
-                        installing_snapshot_id_ = payload.source_id;
+                        installing_snapshot_.set(payload.source_id);
 
                         std::optional<std::string> send_is_err = send_install_snapshot(el, payload.source_id);
                         if (send_is_err) {
@@ -728,7 +711,7 @@ inline void Node::MainLoop() {
                     }
 
                     if (next_idx < base_logical_idx_) {
-                        installing_snapshot_id_ = payload.source_id;
+                        installing_snapshot_.set(payload.source_id);
                         std::optional<std::string> send_is_err = send_install_snapshot(el, payload.source_id);
                         if (send_is_err) {
                             return (std::format(
@@ -766,7 +749,7 @@ inline void Node::MainLoop() {
 
                 else if constexpr (std::is_same_v<T, ISTimeout>) {
                     // retry; only a leader (still installing this snapshot) retries
-                    if (state_ != NodeState::Leader || installing_snapshot_id_ != payload.source_id) return {};
+                    if (state_ != NodeState::Leader || !installing_snapshot_.is_set(payload.source_id)) return {};
 
                     auto& el = loops_[payload.source_id & (EVENT_LOOP_THREADS - 1)];
                     std::optional<std::string> send_is_err = send_install_snapshot(el, payload.source_id);
@@ -836,7 +819,6 @@ inline void Node::MainLoop() {
             // create the snapshot and write to disk
             snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
             size_t cluster_size_bytes = node_ids_.bytes();
-            snapshot_cluster_size_bytes_ = cluster_size_bytes;
             ::fwrite(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, snapshot_tmp_fp_);
             ::fwrite(node_ids_.cluster.data(), cluster_size_bytes, 1, snapshot_tmp_fp_);
             ::fwrite(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_tmp_fp_);

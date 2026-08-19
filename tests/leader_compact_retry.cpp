@@ -86,7 +86,7 @@ int main() {
     node.next_indexes_.resize(3, 1);
     node.match_indexes_.resize(3, 0);
     node.chunks_sent_.resize(3, 0);
-    node.installing_snapshot_id_ = -1;
+    node.installing_snapshot_ = -1;
 
     // follower 2's next_index sits at logical index 2: it is behind the
     // snapshot (needs data at/under index 4-like behaviour).
@@ -114,9 +114,9 @@ int main() {
     (void)done;
 
     std::cout << "after reply: next_indexes_[2] = " << node.next_indexes_[2] << "\n";
-    std::cout << "after reply: installing_snapshot_id_ = " << node.installing_snapshot_id_ << "\n";
+    std::cout << "after reply: installing_snapshot_id_ = " << node.installing_snapshot_ << "\n";
 
-    if (node.next_indexes_[2] == 1 && node.installing_snapshot_id_ == 2) {
+    if (node.next_indexes_[2] == 1 && node.installing_snapshot_ == 2) {
         std::cout << "Test Passed\n";
         return 0;
     }

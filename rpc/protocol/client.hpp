@@ -40,17 +40,6 @@ inline std::variant<NodeMessage, const char*> parse_is_req(ByteReader& byte_read
 
     message.fd = fd;
     if (!byte_reader.read(message.partial_state, sizeof(message.partial_state))) return ("failed to parse InstallSnapshot snapshot field");
-    if (!byte_reader.read(message.cluster_raw_size)) return ("failed to parse InstallSnapshot cluster_raw_size field");
-    #ifdef DEBUG
-    std::cout << "partial state = ";
-    for (const auto x : message.partial_state) {
-        std::cout << static_cast<int>(x) << ", ";
-    }
-    std::cout << "\n";
-
-    std::cout << "cluster raw size = " << message.cluster_raw_size << "\n";
-    #endif
-    if (!byte_reader.read(message.cluster, message.cluster_raw_size)) return ("failed to parse InstallSnapshot cluster field");
     if (!byte_reader.read(message.last_included_idx)) return ("failed to parse InstallSnapshot last_included_idx field");
     if (!byte_reader.read(message.last_included_term)) return ("failed to parse InstallSnapshot last_included_term field");
     if (!byte_reader.read(message.offset)) return ("failed to parse InstallSnapshot offset field");
@@ -72,18 +61,6 @@ inline std::variant<NodeMessage, const char*> parse_fl_req(ByteReader& byte_read
 
     return message;
 }
-
-// constexpr std::array<ReqParserFunc, 4> make_parser_table() {
-//     std::array<ReqParserFunc, 4> table{};
-//     table[RpcKind::AppendEntries] = parse_ae_req;
-//     table[RpcKind::RequestVote] = parse_rv_req;
-//     table[RpcKind::InstallSnapshot] = parse_is_req;
-//     table[RpcKind::ForwardLeader] = parse_fl_req;
-
-//     return table;
-// }
-
-    // constexpr auto PARSER_TABLE = make_parser_table();
 
     inline std::variant<NodeMessage, const char*> parse_rbuf(ClientConn* c, uint32_t message_size, size_t parsed) {
         // if (sizeof(c->rbuf_) < sizeof(uint32_t)) { return ("not enough data to read"); } // need to see message size first

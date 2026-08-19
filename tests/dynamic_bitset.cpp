@@ -5,7 +5,7 @@
 #include <cstring>
 
 int main() {
-    DynamicBitset d{16};
+    NodeBitset d{16};
     d.set(0);
     d.add(1);
     d.set(5);

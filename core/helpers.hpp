@@ -43,16 +43,28 @@ inline int64_t bytes_to_int64(const std::byte* bytes) {
     return static_cast<int64_t>(u);
 }
 
-struct DynamicBitset {
+struct NodeBitset {
     std::vector<uint64_t> cluster; // tracking cluster membership
     std::vector<uint64_t> online; // tracks which nodes are available (i.e. nodes to send messages to)
     size_t num_in_cluster = 0;
     size_t num_available = 0;
-    DynamicBitset(size_t bits) :
+    NodeBitset(size_t bits) :
         cluster(((bits-1) / BITS_PER_UINT64_T) + 1),
         online(((bits-1) / BITS_PER_UINT64_T) + 1) {};
 
     void reset_cluster(uint64_t* ptr, size_t size) {
+        cluster.resize(((size-1) / sizeof(uint64_t)) + 1);
+        online.resize(((size-1) / sizeof(uint64_t)) + 1);
+        std::memcpy(cluster.data(), ptr, size);
+        std::memcpy(online.data(), ptr, size);
+        num_in_cluster = 0;
+        for (uint64_t i : cluster) {
+            num_in_cluster += std::popcount(i);
+        }
+        num_available = num_in_cluster;
+    }
+
+    void reset_cluster(std::byte* ptr, size_t size) { // size given in bytes
         cluster.resize(((size-1) / sizeof(uint64_t)) + 1);
         online.resize(((size-1) / sizeof(uint64_t)) + 1);
         std::memcpy(cluster.data(), ptr, size);
@@ -77,13 +89,13 @@ struct DynamicBitset {
         num_available = num_in_cluster;
     }
 
-    bool is_in_cluster(size_t pos) {
+    bool is_in_cluster(size_t pos) const {
         size_t idx = pos / BITS_PER_UINT64_T;
         if (idx >= cluster.size()) return false;
         return static_cast<bool>((cluster[idx] >> (pos % BITS_PER_UINT64_T)) & 1);
     };
 
-    bool is_available(size_t pos) {
+    bool is_available(size_t pos) const {
         size_t idx = pos / BITS_PER_UINT64_T;
         if (idx >= online.size()) return false;
         return static_cast<bool>((online[idx] >> (pos % BITS_PER_UINT64_T)) & 1);
@@ -101,37 +113,61 @@ struct DynamicBitset {
     void set_online_node(size_t pos) {
         size_t idx = pos / BITS_PER_UINT64_T;
         if (idx >= online.size()) return;
-        //int prev = (online[idx] >> (pos % BITS_PER_BYTE)) & 1;
-        //if (!prev) ++num_set;
-        if (!((online[idx] >> (pos % BITS_PER_UINT64_T)) & 1)) {
-            ++num_available;
-        }
+        int prev = !((online[idx] >> (pos % BITS_PER_UINT64_T)) & 1);
+        num_available += prev;
         online[idx] |= (1 << (pos % BITS_PER_UINT64_T));
     }
 
     void set_unavailable_node(size_t pos) {
         size_t idx = pos / BITS_PER_UINT64_T;
         if (idx >= online.size()) return;
-        //int prev = (online[idx] >> (pos % BITS_PER_BYTE)) & 1;
-        //if (prev) --num_set;
-        if (((online[idx] >> (pos % BITS_PER_UINT64_T)) & 1)) {
-            --num_available;
-        }
+        int prev = ((online[idx] >> (pos % BITS_PER_UINT64_T)) & 1);
+        num_available -= prev;
         online[idx] &= ~(1 << (pos % BITS_PER_UINT64_T)); // unset the bit
     }
 
     // total number of bits stored in each vector
-    size_t bits() {
+    size_t bits() const {
         return BITS_PER_UINT64_T * cluster.size();
     }
 
-    size_t bytes() {
+    size_t bytes() const {
         return sizeof(uint64_t) * cluster.size();
     }
 
     // number of uint64_t's stored in each vector
-    size_t size() {
+    size_t size() const {
         return cluster.size();
+    }
+
+};
+
+struct GenericBitset {
+    std::vector<uint64_t> v;
+    GenericBitset(size_t bits) : v(((bits-1) / BITS_PER_UINT64_T) + 1) {};
+
+    bool is_set(size_t pos) const {
+        size_t idx = pos / BITS_PER_UINT64_T;
+        if (idx >= v.size()) return false;
+        return static_cast<bool>((v[idx] >> (pos % BITS_PER_UINT64_T)) & 1);
+    }
+
+    void set(size_t pos) {
+        size_t idx = pos / BITS_PER_UINT64_T;
+        if (idx >= v.size()) return;
+        v[idx] |= (1 << (pos % BITS_PER_UINT64_T));
+    }
+
+    void unset(size_t pos) {
+        size_t idx = pos / BITS_PER_UINT64_T;
+        if (idx >= v.size()) return;
+        v[idx] &= ~(1 << (pos % BITS_PER_UINT64_T)); // unset the bit
+    }
+
+    void reset() {
+        for (uint64_t& n : v) {
+            n = 0;
+        }
     }
 
 };

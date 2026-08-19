@@ -86,8 +86,8 @@ public:
     uint32_t compute_new_commit_idx();
     void commit_entries_if_available();
 
-    size_t snapshot_cluster_bytes() const;
     size_t snapshot_header_bytes() const;
+    size_t sm_header_bytes() const;
 
     /* log compaction/snapshotting/recovery */
     std::optional<std::string> recover();
@@ -101,11 +101,12 @@ public:
 
     std::mt19937                                                    rand_gen_                = std::mt19937(std::random_device{}());
     std::unordered_set<NodeID>                                      voters_;
+    GenericBitset                                                   installing_snapshot_     = GenericBitset(BASE_CLUSTER_SIZE);
     std::vector<LogEntry>                                           log_;
-    std::vector<size_t>                                             chunks_sent_             = std::vector<size_t>(BASE_CLUSTER_SIZE, 0); // after every IS RPC send, increment by 1
+    std::vector<uint64_t>                                           chunks_sent_             = std::vector<uint64_t>(BASE_CLUSTER_SIZE, 0); // after every IS RPC send, increment by 1
     std::vector<int32_t>                                            next_indexes_            = std::vector<int32_t>(BASE_CLUSTER_SIZE, 1);         // leader-only, one per peer
     std::vector<int32_t>                                            match_indexes_           = std::vector<int32_t>(BASE_CLUSTER_SIZE, 0);         // leader-only, one per peer
-    DynamicBitset                                                   node_ids_                = DynamicBitset(BASE_CLUSTER_SIZE);
+    NodeBitset                                                      node_ids_                = NodeBitset(BASE_CLUSTER_SIZE);
 
     std::array<EventLoop, EVENT_LOOP_THREADS>                       loops_{};
     std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
@@ -122,8 +123,6 @@ public:
     void(*apply_entry)(FILE*, const LogEntry&);
     void(*create_snapshot)(FILE*, FILE*);
     int                                                             leader_id_               = -1;
-    int                                                             installing_snapshot_id_  = -1;
-    size_t                                                          snapshot_cluster_size_bytes_ = 0;
     int                                                             voted_for_               = -1;
     uint32_t                                                        base_logical_idx_        = 1; // logical indexes are 1-based
     uint32_t                                                        base_term_               = 0;
@@ -144,6 +143,8 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
     void(*create_snapshot)(FILE*, FILE*)) {
     static_assert(EVENT_LOOP_THREADS > 0 && (EVENT_LOOP_THREADS & (EVENT_LOOP_THREADS - 1)) == 0,
         "Node: EVENT_LOOP_THREADS must be a power of 2 (MPSC inbox requires it)");
+    static_assert(SNAPSHOT_CHUNK_SIZE >= MAX_CLUSTER_HEADER_SIZE,
+        "Node: SNAPSHOT_CHUNK_SIZE must be at least as large as MAX_CLUSTER_HEADER_SIZE (determined by MAX_NODES)");
 
     n->inbox_ = inbox;
     n->apply_entry = apply_entry_to_sm;
@@ -472,6 +473,7 @@ inline void Node::demote() {
         match_indexes_[i] = 0;
         chunks_sent_[i] = 0;
     }
+    installing_snapshot_.reset();
 
     if (old != NodeState::Leader) return;
     #ifdef DEBUG
@@ -545,7 +547,7 @@ inline void Node::become_leader() {
 }
 
 inline void Node::add_peer_if_not_exists(NodeID node_id, FD fd, EventLoop& el) {
-    if (node_ids_.is_available(node_id) || installing_snapshot_id_ != -1) return;
+    if (node_ids_.is_available(node_id)) return;
 
     // The peer is unknown or was dropped earlier. (Re)establish it as a live peer.
     if (next_indexes_.size() <= node_id) {
@@ -667,7 +669,7 @@ inline std::optional<std::string> Node::recover() {
 
     if (stat(SNAPSHOT_FILE_PATH, &st) == 0
         && st.st_size >= static_cast<off_t>(
-            sizeof(size_t) + node_ids_.bytes()
+            sizeof(size_t)
             + sizeof(last_applied_idx_) + sizeof(last_applied_term_))) {
         snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "r+");
         if (snapshot_fp_ == nullptr) {
@@ -677,8 +679,9 @@ inline std::optional<std::string> Node::recover() {
             ));
         }
 
-        ::fread(&snapshot_cluster_size_bytes_, sizeof(snapshot_cluster_size_bytes_), 1, snapshot_fp_);
-        node_ids_.reset_cluster(snapshot_fp_, snapshot_cluster_size_bytes_);
+        size_t cluster_size_bytes;
+        ::fread(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, snapshot_fp_);
+        node_ids_.reset_cluster(snapshot_fp_, cluster_size_bytes);
         ::fread(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_fp_);
         ::fread(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_fp_);
 
@@ -689,10 +692,12 @@ inline std::optional<std::string> Node::recover() {
                 STATE_MACHINE_FILE_PATH
             ));
         }
-        __off64_t offset = static_cast<__off64_t>(snapshot_header_bytes());
-        ssize_t n = copy_file_range(fileno(snapshot_fp_), &offset,
-                                    fileno(sm_tmp_fp), nullptr,
-                                    st.st_size - offset, 0);
+
+        __off64_t snapshot_offset = static_cast<__off64_t>(snapshot_header_bytes());
+        __off64_t sm_offset = static_cast<__off64_t>(sm_header_bytes());
+        ssize_t n = copy_file_range(fileno(snapshot_fp_), &snapshot_offset,
+                                    fileno(sm_tmp_fp), &sm_offset,
+                                    st.st_size - snapshot_offset, 0);
 
         ::fflush(sm_tmp_fp);
         ::fsync(fileno(sm_tmp_fp));
@@ -750,7 +755,6 @@ inline std::optional<std::string> Node::recover() {
     // Create a new snapshot reflecting the fully replayed state
     FILE* tmp_snap = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
     size_t cluster_size = node_ids_.bytes();
-    snapshot_cluster_size_bytes_ = cluster_size;
     ::fwrite(&cluster_size, sizeof(cluster_size), 1, tmp_snap);
     ::fwrite(node_ids_.cluster.data(), cluster_size, 1, tmp_snap);
     ::fwrite(&last_applied_idx_, sizeof(last_applied_idx_), 1, tmp_snap);
@@ -878,20 +882,18 @@ inline std::optional<std::string> Node::send_append_entries(int32_t next_idx, Ev
     return {};
 }
 
-inline size_t Node::snapshot_cluster_bytes() const {
-    constexpr size_t MAX_CLUSTER_BYTES = (MAX_NODES + BITS_PER_UINT64_T - 1) / BITS_PER_UINT64_T * sizeof(uint64_t);
-    return std::min(snapshot_cluster_size_bytes_, MAX_CLUSTER_BYTES);
+inline size_t Node::snapshot_header_bytes() const {
+    return sizeof(node_ids_.bytes()) + node_ids_.bytes()
+        + sizeof(last_applied_idx_) + sizeof(last_applied_term_);
 }
 
-inline size_t Node::snapshot_header_bytes() const {
-    return sizeof(size_t) + snapshot_cluster_bytes()
-        + sizeof(last_applied_idx_) + sizeof(last_applied_term_);
+inline size_t Node::sm_header_bytes() const {
+    return sizeof(node_ids_.bytes()) + node_ids_.bytes();
 }
 
 inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, NodeID dest_id) {
     #ifdef DEBUG
     std::cout << "Sending InstallSnapshot RPC:\n";
-    std::cout << "cluster raw size = " << snapshot_cluster_bytes() << "\n";
     std::cout << "term = " << current_term_ << "\n";
     std::cout << "offset = " << chunks_sent_[dest_id] * SNAPSHOT_CHUNK_SIZE << "\n";
     std::cout << "dest id = " << dest_id << "\n";
@@ -906,7 +908,6 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
     std::cout << "done = " << ((chunks_sent_[dest_id] + 1) * SNAPSHOT_CHUNK_SIZE >= st.st_size) << "\n";
     #endif
     auto p = InstallSnapshotReqPayload{
-        .cluster_raw_size = snapshot_cluster_bytes(),
         .last_included_idx = base_logical_idx_ - 1,
         .last_included_term = base_term_,
         .offset = chunks_sent_[dest_id] * SNAPSHOT_CHUNK_SIZE,
@@ -916,23 +917,24 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
         .done = (chunks_sent_[dest_id] + 1) * SNAPSHOT_CHUNK_SIZE >= st.st_size,
     };
 
-    std::memcpy(p.cluster, node_ids_.cluster.data(), p.cluster_raw_size);
-    #ifdef DEBUG
-    std::cout << "payload cluster as uint64_ts: ";
-    for (auto n : p.cluster) {
-        std::cout << static_cast<uint64_t>(n) << ", ";
+    // Write the snapshot chunk to the payload
+    std::byte* partial_state = p.partial_state;
+    if (p.offset == 0) {
+        // write the cluster config to the snapshot chunk
+        size_t cluster_size = node_ids_.bytes();
+        std::memcpy(partial_state, &cluster_size, sizeof(cluster_size));
+        std::memcpy(partial_state + sizeof(cluster_size), node_ids_.cluster.data(), cluster_size);
+        partial_state += sizeof(cluster_size) + cluster_size;
     }
-    std::cout << "\n";
-    #endif
 
-    // Write the first snapshot chunk to the payload
-    ::fseek(snapshot_fp_, snapshot_header_bytes(), SEEK_SET);
-    if (::fread(p.partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
+    ::fseek(snapshot_fp_, snapshot_header_bytes() + chunks_sent_[dest_id] * SNAPSHOT_CHUNK_SIZE, SEEK_SET);
+    if (::fread(partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
         return (std::format(
-            "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset 0",
-            dest_id
+            "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset {}",
+            dest_id, chunks_sent_[dest_id] * SNAPSHOT_CHUNK_SIZE
         ));
     }
+
     send(std::move(p), el);
     return {};
 }
