@@ -273,7 +273,7 @@ inline void Node::request_votes() {
         auto& el = this->loops_[id & (EVENT_LOOP_THREADS - 1)];
         el.outbound_inbox.PushOne(
             EventLoopMessage(RequestVoteReqPayload{
-                .dest_id = id,
+                .dest_id = static_cast<NodeID>(id),
                 .term = current_term_,
                 .candidate_id = MY_ID,
                 .last_log_idx = static_cast<uint32_t>(log_.size() - 1) + base_logical_idx_,
@@ -482,7 +482,7 @@ inline void Node::demote() {
         auto& el = this->loops_[id & (EVENT_LOOP_THREADS - 1)];
         el.outbound_inbox.PushOne(
             EventLoopMessage(
-                DisarmTimer{ .dest_id = id }
+                DisarmTimer{ .dest_id = static_cast<NodeID>(id) }
             )
         );
     });
@@ -532,7 +532,7 @@ inline void Node::become_leader() {
         // arm this peer's heartbeat timer so we know when to send the next heartbeat.
         el.outbound_inbox.PushOne(
             EventLoopMessage(
-                ArmTimer{ .dest_id = id }
+                ArmTimer{ .dest_id = static_cast<NodeID>(id) }
             )
         );
 
