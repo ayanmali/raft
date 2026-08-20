@@ -337,7 +337,6 @@ inline void Node::MainLoop() {
                         .term = current_term_}, el);
 
                     // write data into snapshot file at given offset
-                    std::byte* partial_state = payload.partial_state;
                     if (payload.offset == 0) {
                         if (snapshot_tmp_fp_ != nullptr) {
                             ::fclose(snapshot_tmp_fp_);
@@ -347,17 +346,11 @@ inline void Node::MainLoop() {
                             "error in InstallSnapshotRPC handler; failed to open snapshot tmp file\n"
                         );
                         size_t cluster_size;
-                        std::memcpy(&cluster_size, payload.partial_state, sizeof(cluster_size));
-                        node_ids_.reset_cluster(payload.partial_state + sizeof(cluster_size), cluster_size);
-                        partial_state += sm_header_bytes();
-
-                        ::fwrite(&cluster_size, sizeof(cluster_size), 1, snapshot_tmp_fp_);
-                        ::fwrite(node_ids_.cluster.data(), cluster_size, 1, snapshot_tmp_fp_);
-                        ::fwrite(&payload.last_included_idx, sizeof(payload.last_included_idx), 1, snapshot_tmp_fp_);
-                        ::fwrite(&payload.last_included_term, sizeof(payload.last_included_term), 1, snapshot_tmp_fp_);
+                        std::memcpy(&cluster_size, payload.partial_state + snapshot_config_and_data_offset_bytes(), sizeof(cluster_size));
+                        node_ids_.reset_cluster(payload.partial_state + snapshot_config_and_data_offset_bytes() + sizeof(cluster_size), cluster_size);
                     }
 
-                    ::fwrite(partial_state, payload.data_len - (partial_state - payload.partial_state), 1, snapshot_tmp_fp_);
+                    ::fwrite(payload.partial_state, payload.data_len, 1, snapshot_tmp_fp_);
 
                     if (payload.done == 0) return {};
                     // leader sent the last chunk
@@ -394,9 +387,9 @@ inline void Node::MainLoop() {
                     __off64_t sm_header = static_cast<__off64_t>(sm_header_bytes());
 
                     // add the installed snapshot to the state machine file
-                    struct stat st;
-                    if (stat(SNAPSHOT_FILE_PATH, &st) != 0
-                        || st.st_size < snapshot_header) {
+                    struct stat snapshot_stat;
+                    if (stat(SNAPSHOT_FILE_PATH, &snapshot_stat) != 0
+                        || snapshot_stat.st_size < snapshot_header) {
                         return (std::format(
                             "error in InstallSnapshotRPC handler; couldn't restore state machine from snapshot {}: bad snapshot size\n",
                             SNAPSHOT_FILE_PATH
@@ -412,16 +405,10 @@ inline void Node::MainLoop() {
                     }
 
                     __off64_t zero{0};
-                    ssize_t n = copy_file_range(fileno(snapshot_fp_), &zero,
+                    __off64_t snapshot_off = static_cast<__off64_t>(snapshot_config_and_data_offset_bytes());
+                    ssize_t n = copy_file_range(fileno(snapshot_fp_), &snapshot_off,
                                                 fileno(sm_tmp_fp), &zero,
-                                                sm_header_bytes(), 0);
-                    if (n < 0) {
-                        ::fclose(sm_tmp_fp);
-                        return "error in InstallSnapshotRPC handler; failed to copy snapshot state into the state machine\n";
-                    }
-                    n = copy_file_range(fileno(snapshot_fp_), &snapshot_header,
-                                        fileno(sm_tmp_fp), &sm_header,
-                                                st.st_size - snapshot_header, 0);
+                                                snapshot_stat.st_size - snapshot_config_and_data_offset_bytes(), 0);
                     if (n < 0) {
                         ::fclose(sm_tmp_fp);
                         return "error in InstallSnapshotRPC handler; failed to copy snapshot state into the state machine\n";
@@ -604,21 +591,21 @@ inline void Node::MainLoop() {
                         advance_to_term(payload.term);
                     }
 
-                    struct stat st;
-                    if (stat(SNAPSHOT_FILE_PATH, &st) != 0) {
+                    struct stat snapshot_stat;
+                    if (stat(SNAPSHOT_FILE_PATH, &snapshot_stat) != 0) {
                         return "failed to send snapshot chunk; couldn't get snapshot file size\n";
                     }
-                    if (st.st_size < static_cast<off_t>(snapshot_header_bytes())) {
+                    if (snapshot_stat.st_size < static_cast<off_t>(snapshot_header_bytes())) {
                         return "failed to send snapshot chunk; snapshot file smaller than its header\n";
                     }
 
-                    const size_t extra = sizeof(uint32_t) * 2; // last included idx and last included term are NOT included in the state machine
-                    if ((++chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE) + extra < st.st_size)) {
+                    if (++chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE <= snapshot_stat.st_size) {
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
                         send_install_snapshot(el, payload.server_id);
                         return {};
-                    };
+                    }
 
+                    // done sending
                     chunks_sent_[payload.server_id] = 0;
                     next_indexes_[payload.server_id] = base_logical_idx_;
                     match_indexes_[payload.server_id] = base_logical_idx_ - 1;
@@ -833,10 +820,10 @@ inline void Node::MainLoop() {
             // create the snapshot and write to disk
             snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
             size_t cluster_size_bytes = node_ids_.bytes();
-            ::fwrite(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, snapshot_tmp_fp_);
-            ::fwrite(node_ids_.cluster.data(), cluster_size_bytes, 1, snapshot_tmp_fp_);
             ::fwrite(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_tmp_fp_);
             ::fwrite(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_tmp_fp_);
+            ::fwrite(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, snapshot_tmp_fp_);
+            ::fwrite(node_ids_.cluster.data(), cluster_size_bytes, 1, snapshot_tmp_fp_);
             create_snapshot(snapshot_tmp_fp_, sm_fp_); // caller-defined
 
             // commit the temp file to disk

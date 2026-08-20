@@ -3,10 +3,10 @@
 Parse and print the contents of a Raft snapshot file.
 
 Format (from core/main_loop.cpp log-compaction path):
-  1. cluster_bitmap_size: size_t (8 bytes LE) -- byte count of the bitmap
-  2. cluster_bitmap:      cluster_bitmap_size bytes (node_ids_ bitset)
-  3. last_applied_idx:    uint32 LE
-  4. last_applied_term:   uint32 LE
+  1. last_applied_idx:    uint32 LE
+  2. last_applied_term:   uint32 LE
+  3. cluster_bitmap_size: size_t (8 bytes LE) -- byte count of the bitmap
+  4. cluster_bitmap:      cluster_bitmap_size bytes (node_ids_ bitset)
   5. state_machine_data:  variable-length (written by create_snapshot callback)
 """
 import struct
@@ -20,14 +20,22 @@ def parse_snapshot(path: str):
 
     offset = 0
 
-    # 1. cluster bitmap size (size_t, typically 8 bytes on 64-bit)
+    # 1. last_applied_idx (uint32 LE)
+    last_applied_idx = struct.unpack_from("<I", data, offset)[0]
+    offset += 4
+
+    # 2. last_applied_term (uint32 LE)
+    last_applied_term = struct.unpack_from("<I", data, offset)[0]
+    offset += 4
+
+    # 3. cluster bitmap size (size_t, typically 8 bytes on 64-bit)
     if len(data) - offset < struct.calcsize("P"):
         print(f"Snapshot file too small ({len(data)} bytes) to contain header")
         return
     cluster_size_bytes = struct.unpack_from("P", data, offset)[0]
     offset += struct.calcsize("P")
 
-    # 2. cluster bitmap
+    # 4. cluster bitmap
     cluster_bitmap = data[offset:offset + cluster_size_bytes]
     offset += cluster_size_bytes
 
@@ -38,14 +46,6 @@ def parse_snapshot(path: str):
         for bit in range(8):
             if byte & (1 << bit):
                 node_ids.append(byte_idx * 8 + bit)
-
-    # 3. last_applied_idx (uint32 LE)
-    last_applied_idx = struct.unpack_from("<I", data, offset)[0]
-    offset += 4
-
-    # 4. last_applied_term (uint32 LE)
-    last_applied_term = struct.unpack_from("<I", data, offset)[0]
-    offset += 4
 
     # 5. state machine data (everything remaining)
     state_data = data[offset:]
