@@ -589,8 +589,14 @@ inline uint32_t Node::compute_new_commit_idx() {
     if (log_.empty()) return commit_index_;
 
     const uint32_t last_log_idx = (log_.size() - 1) + base_logical_idx_;
+    #ifdef DEBUG
+    std::cout << "last log idx = " << last_log_idx << "\n";
+    #endif
 
     const size_t majority = (node_ids_.num_in_cluster - 1) / 2;
+    #ifdef DEBUG
+    std::cout << "majority = " << majority << "\n";
+    #endif
 
     // every member's last-known match index; self is always last_log_idx
     std::vector<int> matches{};
@@ -602,6 +608,14 @@ inline uint32_t Node::compute_new_commit_idx() {
     matches.push_back(last_log_idx);
     if (majority >= matches.size()) return commit_index_;
     std::nth_element(matches.begin(), matches.begin() + majority, matches.end());
+
+    #ifdef DEBUG
+    std::cout << "Matches:\n";
+    for (auto x : matches) {
+        std::cout << x << ", "
+    }
+    std::cout << "\n";
+    #endif
 
     const uint32_t N = matches[majority];
     if (N <= commit_index_) return commit_index_;
