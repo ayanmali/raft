@@ -612,7 +612,7 @@ inline uint32_t Node::compute_new_commit_idx() {
     #ifdef DEBUG
     std::cout << "Matches:\n";
     for (auto x : matches) {
-        std::cout << x << ", "
+        std::cout << x << ", ";
     }
     std::cout << "\n";
     #endif
