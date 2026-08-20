@@ -16,6 +16,7 @@ inline void Node::MainLoop() {
         if (last_applied_idx_ != commit_index_) {
             #ifdef DEBUG
             std::cout << "applying log entries from last applied index = " << last_applied_idx_ + 1 << " up to and including commit index = " << commit_index_ << "\n";
+            print_cluster();
             #endif
             for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
                 #ifdef DEBUG

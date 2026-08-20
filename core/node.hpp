@@ -635,6 +635,7 @@ inline void Node::commit_entries_if_available() {
 
     #ifdef DEBUG
     std::cout << "applying entries from last applied index = " << last_applied_idx_ + 1 << " to commit index = " << commit_index_ << "\n";
+    print_cluster();
     #endif
     if (last_applied_idx_ != commit_index_) {
         for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
