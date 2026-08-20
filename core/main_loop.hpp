@@ -336,7 +336,7 @@ inline void Node::MainLoop() {
                         .server_id = MY_ID,
                         .term = current_term_}, el);
 
-                    // write data into snapshot file at given offset
+                    // for the first snapshot chunk, the cluster data is given at the start, after the last_included_idx and last_included_term
                     if (payload.offset == 0) {
                         if (snapshot_tmp_fp_ != nullptr) {
                             ::fclose(snapshot_tmp_fp_);
@@ -350,6 +350,7 @@ inline void Node::MainLoop() {
                         node_ids_.reset_cluster(payload.partial_state + snapshot_config_and_data_offset_bytes() + sizeof(cluster_size), cluster_size);
                     }
 
+                    // write data into snapshot file at given offset
                     ::fwrite(payload.partial_state, payload.data_len, 1, snapshot_tmp_fp_);
 
                     if (payload.done == 0) return {};
@@ -396,37 +397,30 @@ inline void Node::MainLoop() {
                         ));
                     }
 
-                    FILE* sm_tmp_fp = ::fopen(STATE_MACHINE_TMP_FILE_PATH, "w+");
-                    if (sm_tmp_fp == NULL) {
-                        return (std::format(
-                            "error in InstallSnapshotRPC handler; failed to open state machine tmp file {}\n",
-                            STATE_MACHINE_TMP_FILE_PATH
-                        ));
+                    if (sm_fp_ != nullptr) {
+                        ::fclose(sm_fp_);
                     }
-
-                    __off64_t zero{0};
-                    __off64_t snapshot_off = static_cast<__off64_t>(snapshot_config_and_data_offset_bytes());
-                    ssize_t n = copy_file_range(fileno(snapshot_fp_), &snapshot_off,
-                                                fileno(sm_tmp_fp), &zero,
-                                                snapshot_stat.st_size - snapshot_config_and_data_offset_bytes(), 0);
-                    if (n < 0) {
-                        ::fclose(sm_tmp_fp);
-                        return "error in InstallSnapshotRPC handler; failed to copy snapshot state into the state machine\n";
-                    }
-
-                    ::fflush(sm_tmp_fp);
-                    ::fsync(fileno(sm_tmp_fp));
-                    ::fclose(sm_tmp_fp);
-                    if (sm_fp_ != nullptr) ::fclose(sm_fp_);
-                    ::rename(STATE_MACHINE_TMP_FILE_PATH, STATE_MACHINE_FILE_PATH);
-
-                    sm_fp_ = ::fopen(STATE_MACHINE_FILE_PATH, "r+");
+                    sm_fp_ = ::fopen(STATE_MACHINE_FILE_PATH, "w+");
                     if (sm_fp_ == NULL) {
                         return (std::format(
                             "error in InstallSnapshotRPC handler; failed to open state machine file {}\n",
                             STATE_MACHINE_FILE_PATH
                         ));
                     }
+
+                    __off64_t zero{0};
+                    __off64_t snapshot_off = static_cast<__off64_t>(snapshot_config_and_data_offset_bytes());
+                    ssize_t n = copy_file_range(fileno(snapshot_fp_), &snapshot_off,
+                                                fileno(sm_fp_), &zero,
+                                                snapshot_stat.st_size - snapshot_config_and_data_offset_bytes(), 0);
+                    if (n < 0) {
+                        ::fclose(sm_fp_);
+                        sm_fp_ = nullptr;
+                        return "error in InstallSnapshotRPC handler; failed to copy snapshot state into the state machine\n";
+                    }
+
+                    ::fflush(sm_fp_);
+                    ::fsync(fileno(sm_fp_));
 
                     commit_index_ = payload.last_included_idx;
                     last_applied_idx_ = payload.last_included_idx;
