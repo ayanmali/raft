@@ -693,9 +693,15 @@ inline std::optional<std::string> Node::recover() {
             ));
         }
 
+        __off64_t zero{0};
+        // add the cluster config to the state machine file
+        ssize_t n = copy_file_range(fileno(snapshot_fp_), &zero,
+                                    fileno(sm_tmp_fp), &zero,
+                                    sm_header_bytes(), 0);
+
         __off64_t snapshot_offset = static_cast<__off64_t>(snapshot_header_bytes());
         __off64_t sm_offset = static_cast<__off64_t>(sm_header_bytes());
-        ssize_t n = copy_file_range(fileno(snapshot_fp_), &snapshot_offset,
+        n = copy_file_range(fileno(snapshot_fp_), &snapshot_offset,
                                     fileno(sm_tmp_fp), &sm_offset,
                                     st.st_size - snapshot_offset, 0);
 
@@ -895,18 +901,21 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
     #ifdef DEBUG
     std::cout << "Sending InstallSnapshot RPC:\n";
     std::cout << "term = " << current_term_ << "\n";
-    std::cout << "offset = " << chunks_sent_[dest_id] * SNAPSHOT_CHUNK_SIZE << "\n";
+    std::cout << "chunk = " << chunks_sent_[dest_id] << "\n";
     std::cout << "dest id = " << dest_id << "\n";
     std::cout << "leader_id = " << MY_ID << "\n";
     #endif
+
     struct stat st;
-    if (stat(STATE_MACHINE_FILE_PATH, &st) != 0) {
-        return "Failed to send InstallSnapshot RPC: couldn't get state machine file size\n";
+    if (stat(SNAPSHOT_FILE_PATH, &st) != 0) {
+        return "Failed to send InstallSnapshot RPC: couldn't get snapshot file size\n";
     }
 
     #ifdef DEBUG
     std::cout << "done = " << ((chunks_sent_[dest_id] + 1) * SNAPSHOT_CHUNK_SIZE >= st.st_size) << "\n";
     #endif
+
+    const size_t extra = sizeof(uint32_t) * 2; // last included idx and last included term are not included in the state machine
     auto p = InstallSnapshotReqPayload{
         .last_included_idx = base_logical_idx_ - 1,
         .last_included_term = base_term_,
@@ -914,20 +923,18 @@ inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, Nod
         .dest_id = dest_id,
         .term = current_term_,
         .leader_id = MY_ID,
-        .done = (chunks_sent_[dest_id] + 1) * SNAPSHOT_CHUNK_SIZE >= st.st_size,
+        .done = ((chunks_sent_[dest_id] + 1) * SNAPSHOT_CHUNK_SIZE) + extra > st.st_size,
     };
-
-    // Write the snapshot chunk to the payload
     std::byte* partial_state = p.partial_state;
     if (p.offset == 0) {
         // write the cluster config to the snapshot chunk
-        size_t cluster_size = node_ids_.bytes();
-        std::memcpy(partial_state, &cluster_size, sizeof(cluster_size));
-        std::memcpy(partial_state + sizeof(cluster_size), node_ids_.cluster.data(), cluster_size);
-        partial_state += sizeof(cluster_size) + cluster_size;
+        const size_t cluster_size_bytes = node_ids_.bytes();
+        std::memcpy(partial_state, &cluster_size_bytes, sizeof(cluster_size_bytes));
+        std::memcpy(partial_state + sizeof(cluster_size_bytes), node_ids_.cluster.data(), cluster_size_bytes);
+        partial_state += sizeof(cluster_size_bytes) + cluster_size_bytes;
     }
 
-    ::fseek(snapshot_fp_, snapshot_header_bytes() + chunks_sent_[dest_id] * SNAPSHOT_CHUNK_SIZE, SEEK_SET);
+    ::fseek(snapshot_fp_, extra + p.offset, SEEK_SET);
     if (::fread(partial_state, SNAPSHOT_CHUNK_SIZE, 1, snapshot_fp_) < 1) {
         return (std::format(
             "failed to send InstallSnapshot request to node {} - couldn't read from snapshot file at offset {}",

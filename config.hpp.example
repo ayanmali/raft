@@ -21,7 +21,7 @@ static constexpr int MAX_ELECTION_TIMEOUT_MS = 300;
 
 static constexpr int BASE_CLUSTER_SIZE = 3;
 static constexpr size_t MAX_NODES = BASE_CLUSTER_SIZE * 1.5;
-static constexpr size_t MAX_CLUSTER_HEADER_SIZE = sizeof(uint64_t) + (((MAX_NODES-1) / BITS_PER_UINT64_T) + 1) / BITS_PER_BYTE;
+static constexpr size_t MAX_CLUSTER_HEADER_SIZE = sizeof(uint64_t) + (((MAX_NODES-1) / BITS_PER_UINT64_T) + 1) * sizeof(uint64_t;
 
 static constexpr int MY_ID = 0;
 
@@ -32,7 +32,7 @@ static constexpr uint64_t HEARTBEAT_INTERVAL_MS{MIN_ELECTION_TIMEOUT_MS / 3};
 static constexpr uint64_t RPC_TIMEOUT_MS{MAX_ELECTION_TIMEOUT_MS * 3};
 
 static constexpr int CMD_SIZE = 4; // # of bytes that each command in the log occupies
-static constexpr size_t SNAPSHOT_CHUNK_SIZE = 8;
+static constexpr size_t SNAPSHOT_CHUNK_SIZE = 16; // in practice this should be something like 4 KiB
 
 static constexpr const char* SERVER_PORT = "6969";
 //static constexpr uint SERVER_SNAPSHOT_PORT = 6970;

@@ -107,7 +107,7 @@ struct NodeBitset {
         if (!((cluster[idx] >> (pos % BITS_PER_UINT64_T)) & 1)) {
             ++num_in_cluster;
         }
-        cluster[idx] |= (1 << (pos % BITS_PER_UINT64_T));
+        cluster[idx] |= (uint64_t(1) << (pos % BITS_PER_UINT64_T));
     }
 
     void set_online_node(size_t pos) {
@@ -115,7 +115,7 @@ struct NodeBitset {
         if (idx >= online.size()) return;
         int prev = !((online[idx] >> (pos % BITS_PER_UINT64_T)) & 1);
         num_available += prev;
-        online[idx] |= (1 << (pos % BITS_PER_UINT64_T));
+        online[idx] |= (uint64_t(1) << (pos % BITS_PER_UINT64_T));
     }
 
     void set_unavailable_node(size_t pos) {
@@ -123,7 +123,7 @@ struct NodeBitset {
         if (idx >= online.size()) return;
         int prev = ((online[idx] >> (pos % BITS_PER_UINT64_T)) & 1);
         num_available -= prev;
-        online[idx] &= ~(1 << (pos % BITS_PER_UINT64_T)); // unset the bit
+        online[idx] &= ~(uint64_t(1) << (pos % BITS_PER_UINT64_T)); // unset the bit
     }
 
     // total number of bits stored in each vector
@@ -155,13 +155,13 @@ struct GenericBitset {
     void set(size_t pos) {
         size_t idx = pos / BITS_PER_UINT64_T;
         if (idx >= v.size()) return;
-        v[idx] |= (1 << (pos % BITS_PER_UINT64_T));
+        v[idx] |= (uint64_t(1) << (pos % BITS_PER_UINT64_T));
     }
 
     void unset(size_t pos) {
         size_t idx = pos / BITS_PER_UINT64_T;
         if (idx >= v.size()) return;
-        v[idx] &= ~(1 << (pos % BITS_PER_UINT64_T)); // unset the bit
+        v[idx] &= ~(uint64_t(1) << (pos % BITS_PER_UINT64_T)); // unset the bit
     }
 
     void reset() {

@@ -39,6 +39,7 @@ inline std::variant<NodeMessage, const char*> parse_is_req(ByteReader& byte_read
     InstallSnapshotReqPayload message;
 
     message.fd = fd;
+    if (!byte_reader.read(message.data_len)) return ("failed to parse InstallSnapshot data_len field");
     if (!byte_reader.read(message.partial_state, sizeof(message.partial_state))) return ("failed to parse InstallSnapshot snapshot field");
     if (!byte_reader.read(message.last_included_idx)) return ("failed to parse InstallSnapshot last_included_idx field");
     if (!byte_reader.read(message.last_included_term)) return ("failed to parse InstallSnapshot last_included_term field");

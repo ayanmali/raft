@@ -80,7 +80,7 @@ int main() {
 
     // Fabricate a leader snapshot: last_included_idx=10, 10 entries = 40 bytes
     // of state (4 bytes each, int 69 = 0x45 bytes).
-    uint8_t cluster[1] = {0x07};
+    uint8_t cluster[8] = {0x01}; // single-node cluster config (leader's node_ids_.bytes() == 8)
     uint8_t state[40];
     for (int i = 0; i < 10; ++i) {
         state[i * 4 + 0] = 0x45;
@@ -89,19 +89,40 @@ int main() {
         state[i * 4 + 3] = 0x00;
     }
 
-    const int num_chunks = sizeof(state) / SNAPSHOT_CHUNK_SIZE;
-    for (int c = 0; c < num_chunks; ++c) {
+    // Reproduce the leader's InstallSnapshot framing: chunk 0 carries the
+    // cluster-config header (size_t + cluster bitset) and (being the first
+    // chunk) shares its CHUNK budget with that header, so it holds no data
+    // here. Every later chunk carries SNAPSHOT_CHUNK_SIZE bytes of data; the
+    // final chunk may be partial (8 bytes).
+    const size_t cluster_bytes = sizeof(cluster); // leader's node_ids_.bytes(); receiver derives sm_header_bytes() from it
+    InstallSnapshotReqPayload p0{};
+    p0.data_len = sizeof(state);
+    p0.term = 1;
+    p0.leader_id = 0;
+    p0.last_included_idx = 10;
+    p0.last_included_term = 1;
+    p0.offset = 0;
+    p0.done = 0;
+    p0.dest_id = 0;
+    std::memcpy(p0.partial_state, &cluster_bytes, sizeof(size_t));
+    std::memcpy(p0.partial_state + sizeof(size_t), cluster, sizeof(cluster));
+    ni.Push(0, p0);
+
+    // chunk 0 held no data; chunks 1..NUM carry data_off (k-1)*CHUNK each.
+    const int num_chunks = static_cast<int>((sizeof(state) + SNAPSHOT_CHUNK_SIZE - 1) / SNAPSHOT_CHUNK_SIZE);
+    for (int k = 1; k <= num_chunks; ++k) {
+        const size_t data_off = static_cast<size_t>(k - 1) * SNAPSHOT_CHUNK_SIZE;
+        const size_t amount = std::min<size_t>(SNAPSHOT_CHUNK_SIZE, sizeof(state) - data_off);
         InstallSnapshotReqPayload p{};
+        p.data_len = sizeof(state);
         p.term = 1;
         p.leader_id = 0;
         p.last_included_idx = 10;
         p.last_included_term = 1;
-        p.cluster_raw_size = sizeof(cluster);
-        p.offset = static_cast<uint64_t>(c) * SNAPSHOT_CHUNK_SIZE;
-        p.done = (c == num_chunks - 1) ? 1 : 0;
+        p.offset = static_cast<uint64_t>(k) * SNAPSHOT_CHUNK_SIZE;
+        p.done = (data_off + amount >= sizeof(state)) ? 1 : 0;
         p.dest_id = 0;
-        std::memcpy(p.cluster, cluster, sizeof(cluster));
-        std::memcpy(p.partial_state, state + c * SNAPSHOT_CHUNK_SIZE, SNAPSHOT_CHUNK_SIZE);
+        std::memcpy(p.partial_state, state + data_off, amount);
         ni.Push(0, p);
     }
 
@@ -116,13 +137,14 @@ int main() {
     std::cout << "state machine file size = " << sm_st.st_size << "\n";
     std::cout << "last_applied_idx_ = " << node.last_applied_idx_ << "\n";
 
-    if (sm_st.st_size != static_cast<off_t>(sizeof(state)) || node.last_applied_idx_ != 10) {
+    if (sm_st.st_size != static_cast<off_t>(node.sm_header_bytes() + sizeof(state)) || node.last_applied_idx_ != 10) {
         std::cout << "Test Failed: state machine not restored from installed snapshot\n";
         return 1;
     }
 
     // verify bytes match the snapshot state
     ::rewind(node.sm_fp_);
+    ::fseek(node.sm_fp_, static_cast<long>(node.sm_header_bytes()), SEEK_SET);
     uint8_t readback[40];
     ::fread(readback, 1, sizeof(readback), node.sm_fp_);
     if (std::memcmp(readback, state, sizeof(state)) != 0) {

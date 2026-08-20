@@ -339,6 +339,9 @@ inline void Node::MainLoop() {
                     // write data into snapshot file at given offset
                     std::byte* partial_state = payload.partial_state;
                     if (payload.offset == 0) {
+                        if (snapshot_tmp_fp_ != nullptr) {
+                            ::fclose(snapshot_tmp_fp_);
+                        }
                         snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
                         if (snapshot_tmp_fp_ == NULL) return (
                             "error in InstallSnapshotRPC handler; failed to open snapshot tmp file\n"
@@ -352,10 +355,9 @@ inline void Node::MainLoop() {
                         ::fwrite(node_ids_.cluster.data(), cluster_size, 1, snapshot_tmp_fp_);
                         ::fwrite(&payload.last_included_idx, sizeof(payload.last_included_idx), 1, snapshot_tmp_fp_);
                         ::fwrite(&payload.last_included_term, sizeof(payload.last_included_term), 1, snapshot_tmp_fp_);
-
                     }
 
-                    ::fwrite(partial_state, SNAPSHOT_CHUNK_SIZE - (partial_state - payload.partial_state), 1, snapshot_tmp_fp_);
+                    ::fwrite(partial_state, payload.data_len - (partial_state - payload.partial_state), 1, snapshot_tmp_fp_);
 
                     if (payload.done == 0) return {};
                     // leader sent the last chunk
@@ -409,8 +411,16 @@ inline void Node::MainLoop() {
                         ));
                     }
 
-                    ssize_t n = copy_file_range(fileno(snapshot_fp_), &snapshot_header,
-                                                fileno(sm_tmp_fp), &sm_header,
+                    __off64_t zero{0};
+                    ssize_t n = copy_file_range(fileno(snapshot_fp_), &zero,
+                                                fileno(sm_tmp_fp), &zero,
+                                                sm_header_bytes(), 0);
+                    if (n < 0) {
+                        ::fclose(sm_tmp_fp);
+                        return "error in InstallSnapshotRPC handler; failed to copy snapshot state into the state machine\n";
+                    }
+                    n = copy_file_range(fileno(snapshot_fp_), &snapshot_header,
+                                        fileno(sm_tmp_fp), &sm_header,
                                                 st.st_size - snapshot_header, 0);
                     if (n < 0) {
                         ::fclose(sm_tmp_fp);
@@ -595,11 +605,15 @@ inline void Node::MainLoop() {
                     }
 
                     struct stat st;
-                    if (stat(STATE_MACHINE_FILE_PATH, &st) != 0) {
-                        return "failed to send snapshot chunk; couldn't get state machine file size\n";
+                    if (stat(SNAPSHOT_FILE_PATH, &st) != 0) {
+                        return "failed to send snapshot chunk; couldn't get snapshot file size\n";
+                    }
+                    if (st.st_size < static_cast<off_t>(snapshot_header_bytes())) {
+                        return "failed to send snapshot chunk; snapshot file smaller than its header\n";
                     }
 
-                    if (++chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE < st.st_size) {
+                    const size_t extra = sizeof(uint32_t) * 2; // last included idx and last included term are NOT included in the state machine
+                    if ((++chunks_sent_[payload.server_id] * SNAPSHOT_CHUNK_SIZE) + extra < st.st_size)) {
                         auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
                         send_install_snapshot(el, payload.server_id);
                         return {};
