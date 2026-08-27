@@ -791,6 +791,15 @@ inline std::optional<std::string> Node::recover() {
     ::fclose(tmp_snap);
     ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
 
+    #ifdef DEBUG
+    std::cout << "---POST RECOVERY SNAPSHOT---:\n";
+    std::cout << "last applied index = " << last_applied_idx_ << "\n";
+    std::cout << "last applied term = " << last_applied_term_ << "\n";
+    std::cout << "cluster size bytes = " << cluster_size << "\n";
+    print_cluster();
+    std::cout << "------\n";
+    #endif
+
     // if (!snapshot_restored && !read_log_entries) {
     //     // Nothing to compact; open snapshot file for runtime and return
     //     snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "w+");
