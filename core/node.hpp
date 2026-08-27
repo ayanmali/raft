@@ -136,7 +136,6 @@ public:
     bool                                                            running_                 = false;
 };
 
-
 // Factory function
 // Node requires stable addresses (i.e. not movable)
 inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
@@ -167,6 +166,25 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
     #ifdef DEBUG
     std::cout << "election timeout set to " << n->election_timeout_ << "\n";
     #endif
+
+    for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
+        std::optional<std::string> create_el_err = EventLoop::CreateEventLoop(
+            &n->loops_[i], inbox, i, HEARTBEAT_INTERVAL_MS, RPC_TIMEOUT_MS
+        );
+        if (create_el_err) {
+            return (
+                std::format("error creating event loop {}:\n{}\n", i, create_el_err.value())
+            );
+        }
+
+        n->threads_[i] = std::thread([n, i] {
+            std::optional<std::string> loop_err = n->loops_[i].Run();
+            // #ifdef DEBUG
+            // std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
+            // #endif
+        });
+    }
+
 
     // init_peers is identical on every node in the cluster, so a peer's
     // index in this array IS its globally consistent NodeID. Each node lists
@@ -216,25 +234,6 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
             "Failed to create node: {}\n",
             recover_err.value()
         ));
-    }
-
-    for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
-        //n.loops_[i] = std::move(*loop_raw);
-        std::optional<std::string> create_el_err = EventLoop::CreateEventLoop(
-            &n->loops_[i], inbox, i, HEARTBEAT_INTERVAL_MS, RPC_TIMEOUT_MS
-        );
-        if (create_el_err) {
-            return (
-                std::format("error creating event loop {}:\n{}\n", i, create_el_err.value())
-            );
-        }
-
-        n->threads_[i] = std::thread([n, i] {
-            std::optional<std::string> loop_err = n->loops_[i].Run();
-            // #ifdef DEBUG
-            // std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
-            // #endif
-        });
     }
 
     n->running_ = true;
