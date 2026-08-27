@@ -168,6 +168,28 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
     std::cout << "election timeout set to " << n->election_timeout_ << "\n";
     #endif
 
+    // init_peers is identical on every node in the cluster, so a peer's
+    // index in this array IS its globally consistent NodeID. Each node lists
+    // itself at index MY_ID using the placeholder "" in place of its own IP;
+    // we skip that slot (the loop counter still advances so peer indices stay
+    // aligned with their array positions).
+    const char* init_cluster[BASE_CLUSTER_SIZE];
+    setup_peers(init_cluster);
+    //static_assert(static_cast<size_t>(MY_ID) < BASE_CLUSTER_SIZE, "This node's ID exceeds the cluster size");
+
+    for (int i = 0; i < BASE_CLUSTER_SIZE; ++i) {
+        n->node_ids_.set_cluster_node(i);
+        if (i == MY_ID) continue;
+        std::optional<std::string> add_peer_err = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
+            .AddPeer(i, init_cluster[i], SERVER_PORT);
+        if (add_peer_err) {
+            return (
+                std::format("error creating node:\n{}\n", add_peer_err.value())
+            );
+        }
+        n->node_ids_.set_online_node(i);
+    }
+
     const char* mode;
 
     mode = access(LOG_FILE_PATH, F_OK) == 0
@@ -217,28 +239,6 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
 
     n->running_ = true;
     n->last_flush_ = std::chrono::steady_clock::now();
-
-    // init_peers is identical on every node in the cluster, so a peer's
-    // index in this array IS its globally consistent NodeID. Each node lists
-    // itself at index MY_ID using the placeholder "" in place of its own IP;
-    // we skip that slot (the loop counter still advances so peer indices stay
-    // aligned with their array positions).
-    const char* init_cluster[BASE_CLUSTER_SIZE];
-    setup_peers(init_cluster);
-    //static_assert(static_cast<size_t>(MY_ID) < BASE_CLUSTER_SIZE, "This node's ID exceeds the cluster size");
-
-    for (int i = 0; i < BASE_CLUSTER_SIZE; ++i) {
-        n->node_ids_.set_cluster_node(i);
-        if (i == MY_ID) continue;
-        std::optional<std::string> add_peer_err = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
-            .AddPeer(i, init_cluster[i], SERVER_PORT);
-        if (add_peer_err) {
-            return (
-                std::format("error creating node:\n{}\n", add_peer_err.value())
-            );
-        }
-        n->node_ids_.set_online_node(i);
-    }
 
     n->next_indexes_[MY_ID] = -1;
     n->match_indexes_[MY_ID] = -1;
