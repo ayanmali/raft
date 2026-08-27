@@ -701,6 +701,15 @@ inline std::optional<std::string> Node::recover() {
         ::fread(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, snapshot_fp_);
         node_ids_.reset_cluster(snapshot_fp_, cluster_size_bytes);
 
+        #ifdef DEBUG
+        std::cout << "---RECOVERY---:\n";
+        std::cout << "last applied index = " << last_applied_idx_ << "\n";
+        std::cout << "last applied term = " << last_applied_term_ << "\n";
+        std::cout << "cluster size bytes = " << cluster_size_bytes << "\n";
+        print_cluster();
+        std::cout << "------\n";
+        #endif
+
         FILE* sm_tmp_fp = ::fopen(STATE_MACHINE_TMP_FILE_PATH, "w+");
         if (sm_tmp_fp == nullptr) {
             return (std::format(
