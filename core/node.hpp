@@ -699,6 +699,7 @@ inline std::optional<std::string> Node::recover() {
         size_t cluster_size_bytes;
         ::fread(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, snapshot_fp_);
         node_ids_.reset_cluster(snapshot_fp_, cluster_size_bytes);
+        node_ids_.set_unavailable_node(MY_ID);
 
         #ifdef DEBUG
         std::cout << "---RECOVERY---:\n";
@@ -981,7 +982,7 @@ inline void Node::iterate_node_ids(auto&& callback) {
 
 inline void Node::print_cluster() {
     std:: cout << "current cluster: " << MY_ID << ", ";
-    iterate_node_ids([](size_t id){
+    iterate_node_ids([](size_t id){ // iterates through online (reachable) nodes only
         std::cout << id << ", ";
     });
 

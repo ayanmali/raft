@@ -349,6 +349,7 @@ inline void Node::MainLoop() {
                         size_t cluster_size;
                         std::memcpy(&cluster_size, payload.partial_state + snapshot_config_and_data_offset_bytes(), sizeof(cluster_size));
                         node_ids_.reset_cluster(payload.partial_state + snapshot_config_and_data_offset_bytes() + sizeof(cluster_size), cluster_size);
+                        node_ids_.set_unavailable_node(MY_ID);
                     }
 
                     // write data into snapshot file at given offset
