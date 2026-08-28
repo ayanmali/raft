@@ -593,9 +593,6 @@ inline uint32_t Node::compute_new_commit_idx() {
     #endif
 
     const size_t majority = (node_ids_.num_in_cluster - 1) / 2;
-    #ifdef DEBUG
-    std::cout << "majority = " << majority << "\n";
-    #endif
 
     // every member's last-known match index; self is always last_log_idx
     std::vector<int> matches{};

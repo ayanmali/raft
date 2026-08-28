@@ -20,6 +20,10 @@ inline std::variant<NodeMessage, const char*> parse_ae_reply(std::byte* rbuf) {
     ptr += sizeof(response.server_id);
     response.server_id = ntohl(response.server_id);
 
+    std::memcpy(&response.prev_log_idx, rbuf + ptr, sizeof(response.prev_log_idx));
+    ptr += sizeof(response.prev_log_idx);
+    response.prev_log_idx = ntohl(response.prev_log_idx);
+
     std::memcpy(&response.term, rbuf + ptr, sizeof(response.term));
     ptr += sizeof(response.term);
     response.term = ntohl(response.term);

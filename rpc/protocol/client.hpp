@@ -94,12 +94,13 @@ inline std::variant<NodeMessage, const char*> parse_fl_req(ByteReader& byte_read
 /* Outbound */
 
 inline void BufByteWriter::serialize(const AppendEntriesRespPayload& payload) {
-    auto msg_size        = htonl(payload.size() + sizeof(RpcKind));
-    auto kind            = static_cast<uint8_t>(RpcKind::AppendEntries);
-    auto net_entries_len = htonll(payload.entries_len);
-    auto net_server_id   = htonl(payload.server_id);
-    auto net_term        = htonl(payload.term);
-    auto net_success     = payload.success;
+    auto msg_size         = htonl(payload.size() + sizeof(RpcKind));
+    auto kind             = static_cast<uint8_t>(RpcKind::AppendEntries);
+    auto net_entries_len  = htonll(payload.entries_len);
+    auto net_server_id    = htonl(payload.server_id);
+    auto net_prev_log_idx = htonl(payload.prev_log_idx);
+    auto net_term         = htonl(payload.term);
+    auto net_success      = payload.success;
 
     size_t ptr = 0;
 
@@ -114,6 +115,9 @@ inline void BufByteWriter::serialize(const AppendEntriesRespPayload& payload) {
 
     std::memcpy(buf + ptr, &net_server_id, sizeof(net_server_id));
     ptr += sizeof(net_server_id);
+
+    std::memcpy(buf + ptr, &net_prev_log_idx, sizeof(net_prev_log_idx));
+    ptr += sizeof(net_prev_log_idx);
 
     std::memcpy(buf + ptr, &net_term, sizeof(net_term));
     ptr += sizeof(net_term);

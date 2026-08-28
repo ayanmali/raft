@@ -85,6 +85,7 @@ inline void Node::MainLoop() {
                             .entries_len = 0,
                             .client_fd = payload.fd,
                             .server_id = MY_ID,
+                            .prev_log_idx = payload.prev_log_idx,
                             .term = current_term_,
                             .success = 0}, el);
                         return {};
@@ -98,6 +99,7 @@ inline void Node::MainLoop() {
                             .entries_len = 0,
                             .client_fd = payload.fd,
                             .server_id = MY_ID,
+                            .prev_log_idx = payload.prev_log_idx,
                             .term = current_term_,
                             .success = 0}, el);
                         return {};
@@ -112,6 +114,7 @@ inline void Node::MainLoop() {
                                 .entries_len = 0,
                                 .client_fd = payload.fd,
                                 .server_id = MY_ID,
+                                .prev_log_idx = payload.prev_log_idx,
                                 .term = current_term_,
                                 .success = 0}, el);
                             return {};
@@ -130,6 +133,7 @@ inline void Node::MainLoop() {
                                 .entries_len = 0,
                                 .client_fd = payload.fd,
                                 .server_id = MY_ID,
+                                .prev_log_idx = payload.prev_log_idx,
                                 .term = current_term_,
                                 .success = 0}, el);
                             return {};
@@ -152,6 +156,7 @@ inline void Node::MainLoop() {
                             .entries_len = payload.entries_len,
                             .client_fd = payload.fd,
                             .server_id = MY_ID,
+                            .prev_log_idx = payload.prev_log_idx,
                             .term = current_term_,
                             .success = 1}, el);
                         return {};
@@ -214,6 +219,7 @@ inline void Node::MainLoop() {
                         .entries_len = payload.entries_len,
                         .client_fd = payload.fd,
                         .server_id = MY_ID,
+                        .prev_log_idx = payload.prev_log_idx,
                         .term = current_term_,
                         .success = 1}, el);
                 }
@@ -459,80 +465,43 @@ inline void Node::MainLoop() {
                         return {};
                     }
 
-                    const int32_t stored_next = next_indexes_[payload.server_id];
-                    if (stored_next < 1) {
-                        return (std::format(
-                            "Failed to process AE reply: next_index {} for server id {} too small to derive prev_log_idx",
-                            stored_next, payload.server_id
-                        ));
-                    }
-                    const uint32_t prev_log_idx = stored_next - 1;
-                    const size_t prev_log_idx_offset = prev_log_idx < base_logical_idx_ ? 0 : prev_log_idx - base_logical_idx_;
-                    if (prev_log_idx != base_logical_idx_ - 1 && prev_log_idx_offset >= log_.size()) {
-                        return (std::format(
-                            "Failed to process AE reply: prev_log_idx offset {} out of bounds (log size = {})",
-                            prev_log_idx_offset, log_.size()
-                        ));
-                    }
-                    const uint32_t prev_log_term = prev_log_idx == base_logical_idx_ - 1 ? base_term_ : log_[prev_log_idx_offset].term;
+                    if (payload.success == 1) {
+                        next_indexes_[payload.server_id] = payload.prev_log_idx + 1 + payload.entries_len;
+                        match_indexes_[payload.server_id] = payload.prev_log_idx + payload.entries_len;
 
-                    if (payload.success == 0) {
-                        // on fail: decrement nextIndex and retry from there.
-                        // send_append_entries derives the new prev_log_idx from the
-                        // updated next_index, so the retry re-sends the entries that
-                        // start AFTER the decremented prev_log_idx.
-                        next_indexes_[payload.server_id] = prev_log_idx;
-                        if (next_indexes_[payload.server_id] < 1) {
+                        commit_entries_if_available();
+                        return {};
+                    }
+
+                    // const size_t prev_log_idx_offset = payload.prev_log_idx < base_logical_idx_ ? 0 : payload.prev_log_idx - base_logical_idx_;
+                    // if (payload.prev_log_idx != base_logical_idx_ - 1 && prev_log_idx_offset >= log_.size()) {
+                    //     return (std::format(
+                    //         "Failed to process AE reply: prev_log_idx offset {} out of bounds (log size = {})",
+                    //         prev_log_idx_offset, log_.size()
+                    //     ));
+                    // }
+
+                    next_indexes_[payload.server_id] = payload.prev_log_idx;
+                    if (next_indexes_[payload.server_id] < 1) {
+                        return (std::format(
+                            "Failed to retry AE RPC: next_index {} for server id {} already at the snapshot boundary",
+                            next_indexes_[payload.server_id], payload.server_id
+                        ));
+                    }
+                    auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
+
+                    if (payload.prev_log_idx < base_logical_idx_) {
+                        installing_snapshot_.set(payload.server_id);
+                        std::optional<std::string> send_is_err = send_install_snapshot(el, payload.server_id);
+                        if (send_is_err) {
                             return (std::format(
-                                "Failed to retry AE RPC: next_index {} for server id {} already at the snapshot boundary",
-                                next_indexes_[payload.server_id], payload.server_id
+                                "error retrying IS RPC:\n{}\n",
+                                send_is_err.value()
                             ));
                         }
-                        auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
-
-                        if (next_indexes_[payload.server_id] < base_logical_idx_) {
-                            installing_snapshot_.set(payload.server_id);
-                            std::optional<std::string> send_is_err = send_install_snapshot(el, payload.server_id);
-                            if (send_is_err) {
-                                return (std::format(
-                                    "error retrying IS RPC:\n{}\n",
-                                    send_is_err.value()
-                                ));
-                            }
-                            return {};
-                        }
-                        return send_append_entries(next_indexes_[payload.server_id], el, payload.server_id);
+                        return {};
                     }
-
-                    /*
-                     on success:
-                     - nextIndex is set to prevLogIndex + 1 + len(entries)
-
-                     - matchIndex is set to the index of the last entry successfully
-                     appended (calculated as prevLogIndex + len(entries))
-                     */
-                    next_indexes_[payload.server_id] = prev_log_idx + 1 + payload.entries_len;
-                    match_indexes_[payload.server_id] = prev_log_idx + payload.entries_len;
-
-                    /*
-                     if there exists an N such that
-                     N > commit_index,
-                     a majority of matchIndex[N] >= N,
-                     and log[N].term == currentTerm,
-                     set commitIndex = N
-
-                     i.e. if a majority of servers have a matchIndex greater than or equal to index N,
-                     and the entry at N is in the current term,
-                     then set commitIndex to N
-                     --> entries <= commitIndex become committed.
-                     */
-                    commit_entries_if_available();
-
-                    // auto it = log_.begin() + (old_commit_idx - (snapshot.last_applied_idx + 1));
-                    // ::fwrite(&*it, sizeof(LogEntry), new_commit_idx - old_commit_idx, log_fp);
-                    // // to ensure crash-safety
-                    // ::fflush(log_fp);
-                    // ::fsync(fileno(log_fp));
+                    return send_append_entries(next_indexes_[payload.server_id], el, payload.server_id);
 
                 }
 
