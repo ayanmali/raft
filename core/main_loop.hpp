@@ -140,14 +140,14 @@ inline void Node::MainLoop() {
                         }
                     }
 
+                    if (payload.leader_commit > commit_index_) {
+                        commit_index_ = std::min(payload.leader_commit, static_cast<uint32_t>(payload.prev_log_idx + payload.entries_len));
+                    }
+
                     if (payload.entries_len == 0) {
                         if (current_term_ != payload.term) advance_to_term(payload.term);
                         leader_id_ = payload.leader_id;
                         leader_contact = true;
-
-                        if (payload.leader_commit > commit_index_) {
-                            commit_index_ = std::min(payload.leader_commit, static_cast<uint32_t>(payload.prev_log_idx));
-                        }
 
                         #ifdef DEBUG
                         std::cout << "accepting AE RPC\n";
@@ -202,10 +202,6 @@ inline void Node::MainLoop() {
                     else {
                         ::fseek(log_fp_, 0, SEEK_END);
                         ::fwrite(&log_[start], sizeof(LogEntry), payload.entries_len - i, log_fp_);
-                    }
-
-                    if (payload.leader_commit > commit_index_) {
-                        commit_index_ = std::min(payload.leader_commit, static_cast<uint32_t>(payload.prev_log_idx + payload.entries_len));
                     }
 
                     if (current_term_ != payload.term) advance_to_term(payload.term);

@@ -700,17 +700,8 @@ inline std::optional<std::string> Node::recover() {
 
         #ifdef DEBUG
         std::cout << "---RECOVERY---:\n";
-        std::cout << "last applied index = " << last_applied_idx_ << "\n";
-        std::cout << "last applied term = " << last_applied_term_ << "\n";
-        std::cout << "cluster size bytes = " << cluster_size_bytes << "\n";
-        print_cluster();
-        std::cout << "------\n";
-        #endif
-
-        #ifdef DEBUG
-        std::cout << "---RECOVERY---:\n";
-        std::cout << "last applied index = " << last_applied_idx_ << "\n";
-        std::cout << "last applied term = " << last_applied_term_ << "\n";
+        std::cout << "last included index = " << last_applied_idx_ << "\n";
+        std::cout << "last included term = " << last_applied_term_ << "\n";
         std::cout << "cluster size bytes = " << cluster_size_bytes << "\n";
         print_cluster();
         std::cout << "------\n";
@@ -741,10 +732,9 @@ inline std::optional<std::string> Node::recover() {
     }
 
     // Open the state machine file
-    const char* sm_mode = access(STATE_MACHINE_FILE_PATH, F_OK) == 0
+    sm_fp_ = ::fopen(STATE_MACHINE_FILE_PATH, access(STATE_MACHINE_FILE_PATH, F_OK) == 0
         ? "r+"
-        : "w+";
-    sm_fp_ = ::fopen(STATE_MACHINE_FILE_PATH, sm_mode);
+        : "w+");
     if (sm_fp_ == nullptr) {
         return (std::format(
             "Error opening state machine file with path {}\n",
@@ -768,59 +758,8 @@ inline std::optional<std::string> Node::recover() {
 
     }
 
-    // Apply all log entries to the state machine. After a previous log
-    // compaction the log file starts at logical index last_applied_idx_ + 1,
-    // so vector index 0 corresponds to logical index last_applied_idx_ + 1
-    // (when a snapshot was restored), or to 0 (when no snapshot exists).
-    for (size_t v = 0; v < log_.size(); ++v) {
-        apply_entry(sm_fp_, log_[v]);
-        ++last_applied_idx_;
-        last_applied_term_ = log_[v].term;
-    }
-
-    // Clear the log file, keeping only term and voted_for
-    ::freopen(LOG_FILE_PATH, "w+", log_fp_);
-    ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
-    ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
-    log_.clear();
-
-    // Create a new snapshot reflecting the fully replayed state
-    FILE* tmp_snap = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
-    ::fwrite(&last_applied_idx_, sizeof(last_applied_idx_), 1, tmp_snap);
-    ::fwrite(&last_applied_term_, sizeof(last_applied_term_), 1, tmp_snap);
-    size_t cluster_size = node_ids_.bytes();
-    ::fwrite(&cluster_size, sizeof(cluster_size), 1, tmp_snap);
-    ::fwrite(node_ids_.cluster.data(), cluster_size, 1, tmp_snap);
-    create_snapshot(tmp_snap, sm_fp_);
-    ::fflush(tmp_snap);
-    ::fsync(fileno(tmp_snap));
-    ::fclose(tmp_snap);
-    ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
-
-    #ifdef DEBUG
-    std::cout << "---POST RECOVERY SNAPSHOT---:\n";
-    std::cout << "last applied index = " << last_applied_idx_ << "\n";
-    std::cout << "last applied term = " << last_applied_term_ << "\n";
-    std::cout << "cluster size bytes = " << cluster_size << "\n";
-    print_cluster();
-    std::cout << "------\n";
-    #endif
-
-    // if (!snapshot_restored && !read_log_entries) {
-    //     // Nothing to compact; open snapshot file for runtime and return
-    //     snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "w+");
-    //     if (snapshot_fp_ == nullptr) {
-    //         return UnexpectedF(std::format(
-    //             "Error opening snapshot file with path {}\n",
-    //             SNAPSHOT_FILE_PATH
-    //         ));
-    //     }
-    //     return {};
-    // }
-
     // Open snapshot file for runtime use
-    // if (snapshot_fp_ != nullptr) ::fclose(snapshot_fp_);
-    snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "r+");
+    snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, snapshot_restored ? "r+" : "w+");
     if (snapshot_fp_ == nullptr) {
         return (std::format(
             "Error opening snapshot file with path {}\n",
