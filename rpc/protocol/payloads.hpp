@@ -62,11 +62,12 @@ struct AppendEntriesRespPayload {
     uint64_t entries_len;
     FD client_fd; // not serialized across network; only used for routing purposes
     NodeID server_id;
+    uint32_t prev_log_idx;
     uint32_t term;
     uint8_t success; // 0 = fail, 1 = success
 
     static constexpr auto size() {
-      auto s = sizeof(server_id) + sizeof(entries_len) + sizeof(term) + sizeof(success);
+      auto s = sizeof(entries_len) + sizeof(server_id) + sizeof(prev_log_idx) + sizeof(term) + sizeof(success);
       return s;
     };
 };

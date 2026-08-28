@@ -136,7 +136,6 @@ public:
     bool                                                            running_                 = false;
 };
 
-
 // Factory function
 // Node requires stable addresses (i.e. not movable)
 inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
@@ -168,6 +167,47 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
     std::cout << "election timeout set to " << n->election_timeout_ << "\n";
     #endif
 
+    for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
+        std::optional<std::string> create_el_err = EventLoop::CreateEventLoop(
+            &n->loops_[i], inbox, i, HEARTBEAT_INTERVAL_MS, RPC_TIMEOUT_MS
+        );
+        if (create_el_err) {
+            return (
+                std::format("error creating event loop {}:\n{}\n", i, create_el_err.value())
+            );
+        }
+
+        n->threads_[i] = std::thread([n, i] {
+            std::optional<std::string> loop_err = n->loops_[i].Run();
+            // #ifdef DEBUG
+            // std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
+            // #endif
+        });
+    }
+
+
+    // init_peers is identical on every node in the cluster, so a peer's
+    // index in this array IS its globally consistent NodeID. Each node lists
+    // itself at index MY_ID using the placeholder "" in place of its own IP;
+    // we skip that slot (the loop counter still advances so peer indices stay
+    // aligned with their array positions).
+    const char* init_cluster[BASE_CLUSTER_SIZE];
+    setup_peers(init_cluster);
+    //static_assert(static_cast<size_t>(MY_ID) < BASE_CLUSTER_SIZE, "This node's ID exceeds the cluster size");
+
+    for (int i = 0; i < BASE_CLUSTER_SIZE; ++i) {
+        n->node_ids_.set_cluster_node(i);
+        if (i == MY_ID) continue;
+        std::optional<std::string> add_peer_err = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
+            .AddPeer(i, init_cluster[i], SERVER_PORT);
+        if (add_peer_err) {
+            return (
+                std::format("error creating node:\n{}\n", add_peer_err.value())
+            );
+        }
+        n->node_ids_.set_online_node(i);
+    }
+
     const char* mode;
 
     mode = access(LOG_FILE_PATH, F_OK) == 0
@@ -196,49 +236,8 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
         ));
     }
 
-    for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
-        //n.loops_[i] = std::move(*loop_raw);
-        std::optional<std::string> create_el_err = EventLoop::CreateEventLoop(
-            &n->loops_[i], inbox, i, HEARTBEAT_INTERVAL_MS, RPC_TIMEOUT_MS
-        );
-        if (create_el_err) {
-            return (
-                std::format("error creating event loop {}:\n{}\n", i, create_el_err.value())
-            );
-        }
-
-        n->threads_[i] = std::thread([n, i] {
-            std::optional<std::string> loop_err = n->loops_[i].Run();
-            // #ifdef DEBUG
-            // std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
-            // #endif
-        });
-    }
-
     n->running_ = true;
     n->last_flush_ = std::chrono::steady_clock::now();
-
-    // init_peers is identical on every node in the cluster, so a peer's
-    // index in this array IS its globally consistent NodeID. Each node lists
-    // itself at index MY_ID using the placeholder "" in place of its own IP;
-    // we skip that slot (the loop counter still advances so peer indices stay
-    // aligned with their array positions).
-    const char* init_cluster[BASE_CLUSTER_SIZE];
-    setup_peers(init_cluster);
-    //static_assert(static_cast<size_t>(MY_ID) < BASE_CLUSTER_SIZE, "This node's ID exceeds the cluster size");
-
-    for (int i = 0; i < BASE_CLUSTER_SIZE; ++i) {
-        n->node_ids_.set_cluster_node(i);
-        if (i == MY_ID) continue;
-        std::optional<std::string> add_peer_err = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
-            .AddPeer(i, init_cluster[i], SERVER_PORT);
-        if (add_peer_err) {
-            return (
-                std::format("error creating node:\n{}\n", add_peer_err.value())
-            );
-        }
-        n->node_ids_.set_online_node(i);
-    }
 
     n->next_indexes_[MY_ID] = -1;
     n->match_indexes_[MY_ID] = -1;
@@ -594,9 +593,6 @@ inline uint32_t Node::compute_new_commit_idx() {
     #endif
 
     const size_t majority = (node_ids_.num_in_cluster - 1) / 2;
-    #ifdef DEBUG
-    std::cout << "majority = " << majority << "\n";
-    #endif
 
     // every member's last-known match index; self is always last_log_idx
     std::vector<int> matches{};
@@ -700,6 +696,16 @@ inline std::optional<std::string> Node::recover() {
         size_t cluster_size_bytes;
         ::fread(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, snapshot_fp_);
         node_ids_.reset_cluster(snapshot_fp_, cluster_size_bytes);
+        node_ids_.set_unavailable_node(MY_ID);
+
+        #ifdef DEBUG
+        std::cout << "---RECOVERY---:\n";
+        std::cout << "last applied index = " << last_applied_idx_ << "\n";
+        std::cout << "last applied term = " << last_applied_term_ << "\n";
+        std::cout << "cluster size bytes = " << cluster_size_bytes << "\n";
+        print_cluster();
+        std::cout << "------\n";
+        #endif
 
         #ifdef DEBUG
         std::cout << "---RECOVERY---:\n";
@@ -790,6 +796,15 @@ inline std::optional<std::string> Node::recover() {
     ::fsync(fileno(tmp_snap));
     ::fclose(tmp_snap);
     ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
+
+    #ifdef DEBUG
+    std::cout << "---POST RECOVERY SNAPSHOT---:\n";
+    std::cout << "last applied index = " << last_applied_idx_ << "\n";
+    std::cout << "last applied term = " << last_applied_term_ << "\n";
+    std::cout << "cluster size bytes = " << cluster_size << "\n";
+    print_cluster();
+    std::cout << "------\n";
+    #endif
 
     // if (!snapshot_restored && !read_log_entries) {
     //     // Nothing to compact; open snapshot file for runtime and return
@@ -973,7 +988,7 @@ inline void Node::iterate_node_ids(auto&& callback) {
 
 inline void Node::print_cluster() {
     std:: cout << "current cluster: " << MY_ID << ", ";
-    iterate_node_ids([](size_t id){
+    iterate_node_ids([](size_t id){ // iterates through online (reachable) nodes only
         std::cout << id << ", ";
     });
 
