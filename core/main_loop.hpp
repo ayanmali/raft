@@ -482,10 +482,10 @@ inline void Node::MainLoop() {
                     // }
 
                     next_indexes_[payload.server_id] = payload.prev_log_idx;
-                    if (next_indexes_[payload.server_id] < 1) {
+                    if (payload.prev_log_idx < 1) {
                         return (std::format(
                             "Failed to retry AE RPC: next_index {} for server id {} already at the snapshot boundary",
-                            next_indexes_[payload.server_id], payload.server_id
+                            payload.prev_log_idx, payload.server_id
                         ));
                     }
                     auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
