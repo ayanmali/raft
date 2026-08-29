@@ -12,27 +12,6 @@ inline void Node::MainLoop() {
     std::cout << "starting node loop (main thread)\n";
     #endif
     while (running_) {
-        // TODO: notify client that entries were committed
-        if (last_applied_idx_ != commit_index_) {
-            #ifdef DEBUG
-            std::cout << "applying log entries from last applied index = " << last_applied_idx_ + 1 << " up to and including commit index = " << commit_index_ << "\n";
-            print_cluster();
-            #endif
-            for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
-                #ifdef DEBUG
-                std::cout << "applying entry at logical index " << i << "\n";
-                #endif
-                apply_entry(sm_fp_, log_[i - base_logical_idx_]);
-            }
-            // last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - (last_applied_idx_ + 1)].term;
-            last_applied_idx_ = commit_index_;
-            last_applied_term_ = log_.empty() ? base_term_ : log_[commit_index_ - base_logical_idx_].term;
-            #ifdef DEBUG
-            std::cout << "last_applied_idx_ set to " << last_applied_idx_ << "\n";
-            std::cout << "last_applied_term_ set to " << last_applied_term_ << "\n";
-            #endif
-        }
-
         // check the reply inbox for new replies that have arrived
         bool leader_contact{false};
         inbox_->DrainAll([this, &leader_contact](NodeMessage&& message) {
@@ -388,44 +367,6 @@ inline void Node::MainLoop() {
                         ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
                     }
 
-                    __off64_t snapshot_header = static_cast<__off64_t>(snapshot_header_bytes());
-                    __off64_t sm_header = static_cast<__off64_t>(sm_header_bytes());
-
-                    // add the installed snapshot to the state machine file
-                    struct stat snapshot_stat;
-                    if (stat(SNAPSHOT_FILE_PATH, &snapshot_stat) != 0
-                        || snapshot_stat.st_size < snapshot_header) {
-                        return (std::format(
-                            "error in InstallSnapshotRPC handler; couldn't restore state machine from snapshot {}: bad snapshot size\n",
-                            SNAPSHOT_FILE_PATH
-                        ));
-                    }
-
-                    if (sm_fp_ != nullptr) {
-                        ::fclose(sm_fp_);
-                    }
-                    sm_fp_ = ::fopen(STATE_MACHINE_FILE_PATH, "w+");
-                    if (sm_fp_ == NULL) {
-                        return (std::format(
-                            "error in InstallSnapshotRPC handler; failed to open state machine file {}\n",
-                            STATE_MACHINE_FILE_PATH
-                        ));
-                    }
-
-                    __off64_t zero{0};
-                    __off64_t snapshot_off = static_cast<__off64_t>(snapshot_config_and_data_offset_bytes());
-                    ssize_t n = copy_file_range(fileno(snapshot_fp_), &snapshot_off,
-                                                fileno(sm_fp_), &zero,
-                                                snapshot_stat.st_size - snapshot_config_and_data_offset_bytes(), 0);
-                    if (n < 0) {
-                        ::fclose(sm_fp_);
-                        sm_fp_ = nullptr;
-                        return "error in InstallSnapshotRPC handler; failed to copy snapshot state into the state machine\n";
-                    }
-
-                    ::fflush(sm_fp_);
-                    ::fsync(fileno(sm_fp_));
-
                     commit_index_ = payload.last_included_idx;
                     last_applied_idx_ = payload.last_included_idx;
                     last_applied_term_ = payload.last_included_term;
@@ -748,53 +689,7 @@ inline void Node::MainLoop() {
         // only compact entries that have been applied
         if (log_.size() >= LOG_COMPACT_THRESHOLD
             && last_applied_idx_ >= base_logical_idx_) {
-            #ifdef DEBUG
-            std::cout << "log size reached compact threshold; compacting...\n";
-            std::cout << "log_.size() = " << log_.size() << "\n";
-            std::cout << "last_applied_idx_ = " << last_applied_idx_ << "\n";
-            std::cout << "base_logical_idx_ = " << base_logical_idx_ << "\n";
-            std::cout << "commit_index_ = " << commit_index_ << "\n";
-            #endif
-            const size_t num_applied = last_applied_idx_ - base_logical_idx_ + 1;
-            #ifdef DEBUG
-            std::cout << "num_applied = " << num_applied << "\n";
-            #endif
-            base_term_ = log_[num_applied - 1].term;
-            #ifdef DEBUG
-            std::cout << "base_term_ = " << base_term_ << "\n";
-            #endif
-            log_.erase(log_.begin(), log_.begin() + num_applied);
-            base_logical_idx_ = last_applied_idx_ + 1;
-            #ifdef DEBUG
-            std::cout << "base_logical_idx_ = " << base_logical_idx_ << "\n";
-            std::cout << "log_.size() after compaction = " << log_.size() << "\n";
-            #endif
-
-            ::freopen(LOG_FILE_PATH, "w+", log_fp_); // clears the file and sets the file position to the beginning
-            ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
-            ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
-            // preserve any unapplied entries so they can be replayed after a restart
-            if (!log_.empty()) {
-                ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
-            }
-
-            // create the snapshot and write to disk
-            snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
-            size_t cluster_size_bytes = node_ids_.bytes();
-            ::fwrite(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_tmp_fp_);
-            ::fwrite(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_tmp_fp_);
-            ::fwrite(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, snapshot_tmp_fp_);
-            ::fwrite(node_ids_.cluster.data(), cluster_size_bytes, 1, snapshot_tmp_fp_);
-            create_snapshot(snapshot_tmp_fp_, sm_fp_); // caller-defined
-
-            // commit the temp file to disk
-            ::fflush(snapshot_tmp_fp_);
-            ::fsync(fileno(snapshot_tmp_fp_));
-
-            ::fclose(snapshot_tmp_fp_);
-            snapshot_tmp_fp_ = nullptr;
-            ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
-            snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "r+");
+            compact();
         }
 
         if (state_ == NodeState::Leader) continue;
