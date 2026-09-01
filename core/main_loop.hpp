@@ -49,7 +49,7 @@ inline void Node::MainLoop() {
 
                     #endif
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
-                    add_peer_if_not_exists(payload.leader_id, payload.fd, el);
+                    add_peer_if_not_exists(payload.leader_id, payload.client_ip_addr, el);
 
                     // reply false if:
                     // term < current_term
@@ -62,7 +62,7 @@ inline void Node::MainLoop() {
                         #endif
                         send(AppendEntriesRespPayload{
                             .entries_len = 0,
-                            .client_fd = payload.fd,
+                            .client_ip_addr = payload.client_ip_addr,
                             .server_id = MY_ID,
                             .prev_log_idx = payload.prev_log_idx,
                             .term = current_term_,
@@ -76,7 +76,7 @@ inline void Node::MainLoop() {
                         #endif
                         send(AppendEntriesRespPayload{
                             .entries_len = 0,
-                            .client_fd = payload.fd,
+                            .client_ip_addr = payload.client_ip_addr,
                             .server_id = MY_ID,
                             .prev_log_idx = payload.prev_log_idx,
                             .term = current_term_,
@@ -91,7 +91,7 @@ inline void Node::MainLoop() {
                             #endif
                             send(AppendEntriesRespPayload{
                                 .entries_len = 0,
-                                .client_fd = payload.fd,
+                                .client_ip_addr = payload.client_ip_addr,
                                 .server_id = MY_ID,
                                 .prev_log_idx = payload.prev_log_idx,
                                 .term = current_term_,
@@ -110,7 +110,7 @@ inline void Node::MainLoop() {
                             #endif
                             send(AppendEntriesRespPayload{
                                 .entries_len = 0,
-                                .client_fd = payload.fd,
+                                .client_ip_addr = payload.client_ip_addr,
                                 .server_id = MY_ID,
                                 .prev_log_idx = payload.prev_log_idx,
                                 .term = current_term_,
@@ -133,7 +133,7 @@ inline void Node::MainLoop() {
                         #endif
                         send(AppendEntriesRespPayload{
                             .entries_len = payload.entries_len,
-                            .client_fd = payload.fd,
+                            .client_ip_addr = payload.client_ip_addr,
                             .server_id = MY_ID,
                             .prev_log_idx = payload.prev_log_idx,
                             .term = current_term_,
@@ -192,7 +192,7 @@ inline void Node::MainLoop() {
                     #endif
                     send(AppendEntriesRespPayload{
                         .entries_len = payload.entries_len,
-                        .client_fd = payload.fd,
+                        .client_ip_addr = payload.client_ip_addr,
                         .server_id = MY_ID,
                         .prev_log_idx = payload.prev_log_idx,
                         .term = current_term_,
@@ -204,7 +204,7 @@ inline void Node::MainLoop() {
                     std::cout << "found RV RPC from node " << payload.candidate_id << "\n";
                     #endif
                     auto& el = loops_[payload.candidate_id & (EVENT_LOOP_THREADS - 1)];
-                    add_peer_if_not_exists(payload.candidate_id, payload.fd, el);
+                    add_peer_if_not_exists(payload.candidate_id, payload.client_ip_addr, el);
 
                     #ifdef DEBUG
                     print_cluster();
@@ -234,7 +234,7 @@ inline void Node::MainLoop() {
                         std::cout << "rejecting RV from node " << payload.candidate_id << "\n";
                         #endif
                         send(RequestVoteRespPayload{
-                            .client_fd = payload.fd,
+                            .client_ip_addr = payload.client_ip_addr,
                             .server_id = MY_ID,
                             .term = current_term_,
                             .vote_granted = 0}, el);
@@ -255,7 +255,7 @@ inline void Node::MainLoop() {
                         voted_for_ = payload.candidate_id;
                         write_voted_for();
                         send(RequestVoteRespPayload{
-                            .client_fd = payload.fd,
+                            .client_ip_addr = payload.client_ip_addr,
                             .server_id = MY_ID,
                             .term = current_term_,
                             .vote_granted = 1}, el);
@@ -271,7 +271,7 @@ inline void Node::MainLoop() {
                     std::cout << "(default) rejecting RV from node " << payload.candidate_id << "\n";
                     #endif
                     send(RequestVoteRespPayload{
-                        .client_fd = payload.fd,
+                        .client_ip_addr = payload.client_ip_addr,
                         .server_id = MY_ID,
                         .term = current_term_,
                         .vote_granted = 0}, el);
@@ -290,7 +290,7 @@ inline void Node::MainLoop() {
                     std::cout << "payload.done = " << static_cast<int>(payload.done) << "\n";
                     #endif
                     auto& el = loops_[payload.leader_id & (EVENT_LOOP_THREADS - 1)];
-                    add_peer_if_not_exists(payload.leader_id, payload.fd, el);
+                    add_peer_if_not_exists(payload.leader_id, payload.client_ip_addr, el);
 
                     if (payload.term > current_term_) {
                         advance_to_term(payload.term);
@@ -314,7 +314,7 @@ inline void Node::MainLoop() {
                     std::cout << "accepting snapshot chunk\n";
                     #endif
                     send(InstallSnapshotRespPayload{
-                        .client_fd = payload.fd,
+                        .client_ip_addr = payload.client_ip_addr,
                         .server_id = MY_ID,
                         .term = current_term_}, el);
 
@@ -597,7 +597,7 @@ inline void Node::MainLoop() {
                         return {};
                     }
                     auto& el = loops_[payload.sender_id & (EVENT_LOOP_THREADS - 1)];
-                    add_peer_if_not_exists(payload.sender_id, payload.fd, el);
+                    add_peer_if_not_exists(payload.sender_id, payload.client_ip_addr, el);
                     append_commands(payload.entries, payload.entries_len);
                 }
 

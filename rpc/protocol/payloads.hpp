@@ -3,6 +3,7 @@
 RPC request/response payload structs.
 */
 #include "../../config.hpp"
+#include <arpa/inet.h>
 #include <cstring>
 #include <netinet/in.h>
 #include <variant>
@@ -15,8 +16,23 @@ RPC request/response payload structs.
 // static constexpr uint8_t RV_REPLY_ID = 5;
 // static constexpr uint8_t IS_REPLY_ID = 6;
 
-using NodeID = uint32_t;
+using NodeID = int32_t;
 using FD = int;
+using IPAddrPort = uint64_t; // 32 bit IP address left shifted by 16 bits, and 16 bit port number
+inline IPAddrPort encode(uint32_t ip, uint16_t port) {
+    return (uint64_t(ip) << 16) | port;
+};
+inline IPAddrPort encode(const char* ip, uint16_t port) {
+    unsigned char buf[sizeof(struct in6_addr)];
+    uint32_t ip_addr = inet_pton(AF_INET, ip, buf);
+    return encode(ip_addr, port);
+}
+inline std::pair<uint32_t, uint16_t> decode(uint64_t val) {
+    return {
+        (val >> 16) & 0xFFFFFFFF,
+        val & ((1 << 16) - 1)
+    };
+}
 
 struct LogEntry {
     std::byte data_[CMD_SIZE];
@@ -32,8 +48,8 @@ struct LogEntry {
 
 struct AppendEntriesReqPayload {
     LogEntry entries[MAX_ENTRIES];
+    IPAddrPort client_ip_addr; // populated by the event loop on client read; not serialized across network
     size_t entries_len;
-    FD fd; // populated by the event loop on client read; not serialized across network
     NodeID dest_id; // for routing purposes only; not serialized across network
     uint32_t term;
     uint32_t leader_id;
@@ -60,7 +76,7 @@ struct AppendEntriesReqPayload {
 
 struct AppendEntriesRespPayload {
     uint64_t entries_len;
-    FD client_fd; // not serialized across network; only used for routing purposes
+    IPAddrPort client_ip_addr; // not serialized across network; only used for routing purposes
     NodeID server_id;
     uint32_t prev_log_idx;
     uint32_t term;
@@ -73,7 +89,7 @@ struct AppendEntriesRespPayload {
 };
 
 struct RequestVoteReqPayload {
-    FD fd; // populated by the event loop on client read; not serialized across network
+    IPAddrPort client_ip_addr; // populated by the event loop on client read; not serialized across network
     NodeID dest_id; // for routing purposes only; not serialized across network
     uint32_t term;
     uint32_t candidate_id;
@@ -97,7 +113,7 @@ struct RequestVoteReqPayload {
 };
 
 struct RequestVoteRespPayload {
-    FD client_fd; // not serialized across network; only used for routing purposes
+    IPAddrPort client_ip_addr; // not serialized across network; only used for routing purposes
     NodeID server_id;
     uint32_t term;
     uint8_t vote_granted;
@@ -110,6 +126,7 @@ struct RequestVoteRespPayload {
 
 struct InstallSnapshotReqPayload {
     std::byte partial_state[SNAPSHOT_CHUNK_SIZE]; // IS RPCs send smaller chunks of the state at a time
+    IPAddrPort client_ip_addr; // populated by the event loop on client read; not serialized across network
     uint64_t data_len;
     uint32_t last_included_idx;
     uint32_t last_included_term;
@@ -117,7 +134,7 @@ struct InstallSnapshotReqPayload {
     FD fd; // populated by the event loop on client read; not serialized across network
     NodeID dest_id; // for routing purposes only; populated by the event loop
     uint32_t term;
-    uint32_t leader_id; // 0 is null value
+    uint32_t leader_id;
     uint8_t done; // non-zero if this is the last chunk
 
     // InstallSnapshotReqPayload(std::vector<std::byte>& snapshot, NodeID node_id, uint32_t term, uint32_t leader_id, uint32_t last_included_idx, uint32_t last_included_term, uint32_t offset, uint8_t done)
@@ -152,7 +169,7 @@ struct InstallSnapshotReqPayload {
 };
 
 struct InstallSnapshotRespPayload {
-    FD client_fd; // not serialized across network; only used for routing purposes
+    IPAddrPort client_ip_addr; // not serialized across network; only used for routing purposes
     NodeID server_id;
     uint32_t term;
 
@@ -169,9 +186,10 @@ struct HeartbeatTimeout { NodeID source_id; };
 
 /* For supporting dynamic cluster configurations */
 struct DropPeerMsg { NodeID source_id; };
-struct AddPeerMsg { FD fd; const char* port; NodeID dest_id; };
+struct AddPeerMsg { IPAddrPort ip_addr; NodeID dest_id; };
 struct ForwardLeaderMsg {
     std::byte entries[MAX_ENTRIES][CMD_SIZE];
+    IPAddrPort client_ip_addr; // for routing purposes only; not serialized across network
     size_t entries_len;
     FD fd; // populated by the event loop on client read; not serialized across network
     NodeID sender_id;

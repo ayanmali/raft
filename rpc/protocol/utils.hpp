@@ -22,7 +22,8 @@ using ReqParserFunc = std::variant<NodeMessage, const char*>(*)(ByteReader&, FD)
 using ReplyParserFunc = std::variant<NodeMessage, const char*>(*)(std::byte*);
 
 std::variant<NodeMessage, const char*> parse_rbuf(std::byte* rbuf, uint32_t total_length, TimerFDs& timer_fds);
-std::variant<NodeMessage, const char*> parse_rbuf(ClientConn* c, uint32_t msg_len, size_t parsed);
+template <SocketType T>
+std::variant<NodeMessage, const char*> parse_rbuf(ClientConn<T>* c, uint32_t msg_len, size_t parsed);
 
 struct ByteReader {
     public:
@@ -49,6 +50,16 @@ struct ByteReader {
     }
 
     bool read(uint32_t& out) {
+        if (remaining() < sizeof(out)) return false;
+
+        std::memcpy(&out, ptr, sizeof(out));
+        out = ntohl(out);
+        ptr += sizeof(out);
+
+        return true;
+    }
+
+    bool read(int32_t& out) {
         if (remaining() < sizeof(out)) return false;
 
         std::memcpy(&out, ptr, sizeof(out));

@@ -27,7 +27,10 @@ Buffering convention (used by both flavors):
 #include <utility>
 #include <algorithm>
 
+constexpr SocketType TCP = SocketType::TCP;
+constexpr SocketType UDP = SocketType::UDP;
 enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot, ForwardLeader };
+
 constexpr size_t REQ_SIZE = std::max(
   {
       AppendEntriesReqPayload::size(),
@@ -46,12 +49,15 @@ constexpr uint32_t RESP_SIZE = static_cast<uint32_t>(
     )
 );
 
-struct ClientConn {
-    // std::vector<std::byte> rbuf;
+template <SocketType T>
+struct ClientConn;
+
+template <>
+struct ClientConn<TCP> {
     std::byte rbuf[REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind)]{};
     std::byte wbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)]{};
 
-    char client_ip_addr[INET_ADDRSTRLEN];
+    uint64_t client_ip_addr = 0;
 
     ClientConn* next_free  = nullptr; // freelist link, valid only when free
 
@@ -73,6 +79,18 @@ struct ClientConn {
     bool     closing       =  false;
     // uint32_t next_seq      = 0;
 
+};
+
+template <>
+struct ClientConn<UDP> {
+    std::byte wbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)]{};
+
+    uint64_t client_ip_addr = 0;
+
+    ClientConn* next_free   = nullptr; // freelist link, valid only when free
+
+    // size_t wbuf_offset      =  0; // to track how much of the wbuf has been sent (for chunked sends)
+    size_t wbuf_size        =  0; // tracks the number of serialized bytes in wbuf to send over the network
 };
 
 /*
@@ -160,11 +178,12 @@ private:
 
     char*       buffer_    = nullptr;
     T*          free_head_ = nullptr;
-    std::size_t cap_       = 0;
+    size_t      cap_       = 0;
 };
 
+template <SocketType T>
 struct ClientConnSlab {
-    Slab<ClientConn> slab;
+    Slab<ClientConn<T>> slab;
 
     ClientConnSlab() : slab(MAX_SERVER_CONNS) {}
     ClientConnSlab(ClientConnSlab&&)                 = delete;
@@ -172,15 +191,15 @@ struct ClientConnSlab {
     ClientConnSlab(const ClientConnSlab&)            = delete;
     ClientConnSlab& operator=(const ClientConnSlab&) = delete;
 
-    ClientConn* Acquire() { return slab.Acquire(); }
+    ClientConn<T>* Acquire() { return slab.Acquire(); }
 
-    void Release(ClientConn* c) {
+    void Release(ClientConn<TCP>* c) {
         std::memset(c->rbuf, 0, sizeof(c->rbuf));
         std::memset(c->wbuf, 0, sizeof(c->wbuf));
         c->wbuf_offset = 0;
         c->wbuf_size = 0;
         c->rbuf_offset = 0;
-        std::memset(c->client_ip_addr, 0, sizeof(c->client_ip_addr));
+        c->client_ip_addr = 0;
         c->fd = -1;
         //c->client_id = 0;
         // c->id = 0;
@@ -189,6 +208,15 @@ struct ClientConnSlab {
         // c->want_write = false;
         c->epoll_events = 0;
         // c->next_seq = 0;
+        slab.Release(c);
+    }
+
+    void Release(ClientConn<UDP>* c) {
+        std::memset(c->wbuf, 0, sizeof(c->wbuf));
+        // c->wbuf_offset = 0;
+        c->wbuf_size = 0;
+        c->client_ip_addr = 0;
+        //std::memset(c->client_ip_addr, 0, sizeof(c->client_ip_addr));
         slab.Release(c);
     }
 };
@@ -201,7 +229,7 @@ State machine:
   Disconnected -> Connecting -> Connected -> Disconnected (on EOF/error)
 
   Disconnected: fd == -1. Pending writes queue up in `wbuf`; the loop
-                kicks a non-blocking connect() before draining.
+                kicks a non-blocking 3) before draining.
   Connecting:   fd >= 0, EPOLLOUT armed. Connection completion arrives
                 as EPOLLOUT with SO_ERROR == 0.
   Connected:    EPOLLIN always armed; EPOLLOUT armed iff wbuf_offset <
@@ -272,25 +300,28 @@ struct PeerConn {
     std::byte rbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)]{};
 
     // Configuration (set once when the peer subset is wired into the loop).
-    const char* ip        = nullptr;
-    const char* port      = nullptr;
+    IPAddrPort peer_ip_addr = 0;
 
-    size_t wbuf_offset    = 0;
-    size_t wbuf_size      = 0;
-    size_t rbuf_offset    = 0;
+    size_t wbuf_offset      = 0;
+    size_t wbuf_size        = 0;
+    size_t rbuf_offset      = 0;
 
-    NodeID peer_id        = 0;
+    NodeID peer_id          = -1;
 
-    FD fd                 = -1;
+    FD fd                   = -1;
 
     TimerFDs timer_fds{};
 
-    uint32_t epoll_events = 0;
+    uint32_t epoll_events   = 0;
 
     // Connection state.
     enum class State : uint8_t { Disconnected, Connecting, Connected };
     State state           = State::Disconnected;
 
-    PeerConn(const char* ip_, const char* port_, NodeID peer_id_) : ip{ip_}, port{port_}, peer_id{peer_id_} {}
+    operator bool() {
+        return fd != -1;
+    }
+    PeerConn(IPAddrPort ip_addr, NodeID peer_id) : peer_ip_addr{ip_addr}, peer_id{peer_id} {}
+    PeerConn() {};
 
 };

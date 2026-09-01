@@ -8,13 +8,19 @@
 #include <cstdint>
 #include <sys/types.h>
 
+/* Should stay as is */
 static constexpr int BITS_PER_BYTE = 8;
 static constexpr int BITS_PER_UINT64_T = 64;
 static constexpr size_t CACHE_LINE_SIZE = std::hardware_destructive_interference_size;
+// ----
+
+enum class SocketType: uint8_t { TCP, UDP };
+static constexpr SocketType SOCKET_TYPE = SocketType::UDP;
 
 static constexpr uint EVENT_LOOP_THREADS = 1;
 
 constexpr int EPOLL_BATCH = 64; // max # of fds processed per loop iteration
+constexpr int UDP_RECV_BATCH = 64; // Max datagrams drained from the UDP listen socket per recvmmsg() call.
 
 static constexpr int MIN_ELECTION_TIMEOUT_MS = 150;
 static constexpr int MAX_ELECTION_TIMEOUT_MS = 300;
@@ -34,7 +40,7 @@ static constexpr uint64_t RPC_TIMEOUT_MS{MAX_ELECTION_TIMEOUT_MS * 3};
 static constexpr int CMD_SIZE = 4; // # of bytes that each command in the log occupies
 static constexpr size_t SNAPSHOT_CHUNK_SIZE = 16; // in practice this should be something like 4 KiB
 
-static constexpr const char* SERVER_PORT = "6969";
+static constexpr const char* SERVER_PORT = 6969;
 //static constexpr uint SERVER_SNAPSHOT_PORT = 6970;
 //static constexpr uint CLIENT_SNAPSHOT_PORT = 6972;
 

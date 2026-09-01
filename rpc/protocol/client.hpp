@@ -5,10 +5,11 @@
 
 /* Inbound */
 
-inline std::variant<NodeMessage, const char*> parse_ae_req(ByteReader& byte_reader, FD fd) {
+inline std::variant<NodeMessage, const char*> parse_ae_req(ByteReader& byte_reader, IPAddrPort client_ip_addr) {
     AppendEntriesReqPayload message;
 
-    message.fd = fd;
+    message.client_ip_addr = client_ip_addr;
+
     if (!byte_reader.read(message.entries_len)) return ("failed to parse AppendEntries entries_len field");
     if (!byte_reader.read(message.entries, message.entries_len)) return ("failed to parse AppendEntries entries field");
     if (!byte_reader.read(message.term)) return ("failed to parse AppendEntries term field");
@@ -20,10 +21,11 @@ inline std::variant<NodeMessage, const char*> parse_ae_req(ByteReader& byte_read
     return message;
 }
 
-inline std::variant<NodeMessage, const char*> parse_rv_req(ByteReader& byte_reader, FD fd) {
+inline std::variant<NodeMessage, const char*> parse_rv_req(ByteReader& byte_reader, IPAddrPort client_ip_addr) {
     RequestVoteReqPayload message;
 
-    message.fd = fd;
+    message.client_ip_addr = client_ip_addr;
+
     if (!byte_reader.read(message.term)) return ("failed to parse RequestVote term field");
     if (!byte_reader.read(message.candidate_id)) return ("failed to parse RequestVote candidate_id field");
     if (!byte_reader.read(message.last_log_idx)) return ("failed to parse RequestVote last_log_idx field");
@@ -32,10 +34,11 @@ inline std::variant<NodeMessage, const char*> parse_rv_req(ByteReader& byte_read
     return message;
 }
 
-inline std::variant<NodeMessage, const char*> parse_is_req(ByteReader& byte_reader, FD fd) {
+inline std::variant<NodeMessage, const char*> parse_is_req(ByteReader& byte_reader, IPAddrPort client_ip_addr) {
     InstallSnapshotReqPayload message;
 
-    message.fd = fd;
+    message.client_ip_addr = client_ip_addr;
+
     if (!byte_reader.read(message.data_len)) return ("failed to parse InstallSnapshot data_len field");
     if (!byte_reader.read(message.partial_state, sizeof(message.partial_state))) return ("failed to parse InstallSnapshot snapshot field");
     if (!byte_reader.read(message.last_included_idx)) return ("failed to parse InstallSnapshot last_included_idx field");
@@ -48,10 +51,11 @@ inline std::variant<NodeMessage, const char*> parse_is_req(ByteReader& byte_read
     return message;
 }
 
-inline std::variant<NodeMessage, const char*> parse_fl_req(ByteReader& byte_reader, FD fd) {
+inline std::variant<NodeMessage, const char*> parse_fl_req(ByteReader& byte_reader, IPAddrPort client_ip_addr) {
     ForwardLeaderMsg message;
 
-    message.fd = fd;
+    message.client_ip_addr = client_ip_addr;
+
     if (!byte_reader.read(message.entries_len)) return ("failed to parse ForwardLeader entries_len field");
     if (!byte_reader.read(message.entries, message.entries_len)) return ("failed to parse ForwardLeader entries field");
     if (!byte_reader.read(message.sender_id)) return ("failed to parse ForwardLeader sender ID field");
@@ -60,33 +64,48 @@ inline std::variant<NodeMessage, const char*> parse_fl_req(ByteReader& byte_read
     return message;
 }
 
-    inline std::variant<NodeMessage, const char*> parse_rbuf(ClientConn* c, uint32_t message_size, size_t parsed) {
-        // if (sizeof(c->rbuf_) < sizeof(uint32_t)) { return ("not enough data to read"); } // need to see message size first
-        // ByteReader byte_reader(std::span<std::byte>(c->rbuf_ + sizeof(message_size), c->rbuf_ + sizeof(message_size) + message_size));
-        // Restrict reads to this frame's payload so we can't accidentally read into the next frame.
-        ByteReader byte_reader(std::span<std::byte>(c->rbuf + parsed + sizeof(message_size), message_size));
-        uint8_t rpc_id;
+inline std::variant<NodeMessage, const char*> parse_rbuf(ClientConn<TCP>* c, uint32_t message_size, size_t parsed) {
+    // if (sizeof(c->rbuf_) < sizeof(uint32_t)) { return ("not enough data to read"); } // need to see message size first
+    // ByteReader byte_reader(std::span<std::byte>(c->rbuf_ + sizeof(message_size), c->rbuf_ + sizeof(message_size) + message_size));
+    // Restrict reads to this frame's payload so we can't accidentally read into the next frame.
+    ByteReader byte_reader(std::span<std::byte>(c->rbuf + parsed + sizeof(message_size), message_size));
+    uint8_t rpc_id;
 
-        if (!byte_reader.read(rpc_id)) return ("failed to parse RPC id");
+    if (!byte_reader.read(rpc_id)) return ("failed to parse RPC id");
 
-        switch (static_cast<RpcKind>(rpc_id)) {
-            case RpcKind::AppendEntries:
-                return parse_ae_req(byte_reader, c->fd);
-            case RpcKind::RequestVote:
-                return parse_rv_req(byte_reader, c->fd);
-            case RpcKind::InstallSnapshot:
-                return parse_is_req(byte_reader, c->fd);
-            case RpcKind::ForwardLeader:
-                return parse_fl_req(byte_reader, c->fd);
-            default:
-                return "invalid RPC id";
-        }
-        // if (rpc_id >= PARSER_TABLE.size()) return ("invalid RPC id");
-        // auto func = PARSER_TABLE[rpc_id];
-        // if (!func) return ("invalid RPC id");
-
-        // return func(byte_reader, c->fd);
+    switch (static_cast<RpcKind>(rpc_id)) {
+        case RpcKind::AppendEntries:
+            return parse_ae_req(byte_reader, c->client_ip_addr);
+        case RpcKind::RequestVote:
+            return parse_rv_req(byte_reader, c->client_ip_addr);
+        case RpcKind::InstallSnapshot:
+            return parse_is_req(byte_reader, c->client_ip_addr);
+        case RpcKind::ForwardLeader:
+            return parse_fl_req(byte_reader, c->client_ip_addr);
+        default:
+            return "invalid RPC id";
     }
+}
+
+inline std::variant<NodeMessage, const char*> parse_datagram(std::byte* buf, size_t message_size, IPAddrPort client_ip_addr) {
+    ByteReader byte_reader(std::span<std::byte>(buf + sizeof(message_size), message_size));
+    uint8_t rpc_id;
+
+    if (!byte_reader.read(rpc_id)) return ("failed to parse RPC id");
+
+    switch (static_cast<RpcKind>(rpc_id)) {
+        case RpcKind::AppendEntries:
+            return parse_ae_req(byte_reader, client_ip_addr);
+        case RpcKind::RequestVote:
+            return parse_rv_req(byte_reader, client_ip_addr);
+        case RpcKind::InstallSnapshot:
+            return parse_is_req(byte_reader, client_ip_addr);
+        case RpcKind::ForwardLeader:
+            return parse_fl_req(byte_reader, client_ip_addr);
+        default:
+            return "invalid RPC id";
+    }
+}
 
 /* Outbound */
 

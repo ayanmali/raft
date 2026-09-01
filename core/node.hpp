@@ -17,6 +17,7 @@ Persistence:
 #include "./helpers.hpp"
 #include "../config.hpp"
 #include "../rpc/event_loop/event_loop.hpp"
+#include "../rpc/event_loop/main_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
 #include <chrono>
 #include <csignal>
@@ -70,21 +71,21 @@ public:
     // TODO: replace AoS EventLoop w/ SoA pattern
     private:
     template <typename T>
-    void send(T&& payload, EventLoop& el) {
+    void send(T&& payload, EventLoop<SOCKET_TYPE>& el) {
         el.outbound_inbox.PushOne(
             EventLoopMessage(std::forward<T>(payload))
         );
         el.Wake();
     }
-    std::optional<std::string> send_append_entries(int32_t next_idx, EventLoop&, NodeID);
-    std::optional<std::string> send_install_snapshot(EventLoop&, NodeID);
+    std::optional<std::string> send_append_entries(int32_t next_idx, EventLoop<SOCKET_TYPE>&, NodeID);
+    std::optional<std::string> send_install_snapshot(EventLoop<SOCKET_TYPE>&, NodeID);
     void request_votes();
 
     void demote();
     void become_leader();
     void advance_to_term(uint32_t);
 
-    void add_peer_if_not_exists(NodeID, FD, EventLoop&);
+    void add_peer_if_not_exists(NodeID, IPAddrPort, EventLoop<SOCKET_TYPE>&);
     uint32_t compute_new_commit_idx();
     void commit_entries_if_available();
 
@@ -115,7 +116,7 @@ public:
     std::vector<int32_t>                                            match_indexes_           = std::vector<int32_t>(BASE_CLUSTER_SIZE, 0);         // leader-only, one per peer
     NodeBitset                                                      node_ids_                = NodeBitset(BASE_CLUSTER_SIZE);
 
-    std::array<EventLoop, EVENT_LOOP_THREADS>                       loops_{};
+    std::array<EventLoop<SOCKET_TYPE>, EVENT_LOOP_THREADS>          loops_{};
     std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
 
     std::chrono::steady_clock::time_point                           last_leader_contact_;
@@ -173,7 +174,7 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
     #endif
 
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
-        std::optional<std::string> create_el_err = EventLoop::CreateEventLoop(
+        std::optional<std::string> create_el_err = EventLoop<SOCKET_TYPE>::CreateEventLoop(
             &n->loops_[i], inbox, i, HEARTBEAT_INTERVAL_MS, RPC_TIMEOUT_MS
         );
         if (create_el_err) {
@@ -203,8 +204,10 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
     for (int i = 0; i < BASE_CLUSTER_SIZE; ++i) {
         n->node_ids_.set_cluster_node(i);
         if (i == MY_ID) continue;
+
+        IPAddrPort ip_addr = encode(init_cluster[i], SERVER_PORT);
         std::optional<std::string> add_peer_err = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
-            .AddPeer(i, init_cluster[i], SERVER_PORT);
+            .AddPeer(i, ip_addr);
         if (add_peer_err) {
             return (
                 std::format("error creating node:\n{}\n", add_peer_err.value())
@@ -557,7 +560,7 @@ inline void Node::become_leader() {
     for (auto& loop : loops_) { loop.Wake(); }
 }
 
-inline void Node::add_peer_if_not_exists(NodeID node_id, FD fd, EventLoop& el) {
+inline void Node::add_peer_if_not_exists(NodeID node_id, IPAddrPort ip_addr, EventLoop<SOCKET_TYPE>& el) {
     if (node_ids_.is_available(node_id)) return;
 
     // The peer is unknown or was dropped earlier. (Re)establish it as a live peer.
@@ -577,7 +580,7 @@ inline void Node::add_peer_if_not_exists(NodeID node_id, FD fd, EventLoop& el) {
 
     el.outbound_inbox.PushOne(
         EventLoopMessage(
-            AddPeerMsg{ .fd = fd, .port = SERVER_PORT, .dest_id = node_id }
+            AddPeerMsg{ .ip_addr = ip_addr, .dest_id = node_id }
         )
     );
 
@@ -871,7 +874,7 @@ inline void Node::flush_files() {
     last_flush_ = std::chrono::steady_clock::now();
 }
 
-inline std::optional<std::string> Node::send_append_entries(int32_t next_idx, EventLoop& el, NodeID dest_id) {
+inline std::optional<std::string> Node::send_append_entries(int32_t next_idx, EventLoop<SOCKET_TYPE>& el, NodeID dest_id) {
     #ifdef DEBUG
     std::cout << "checking for entries to send to node " << dest_id << "\n";
     std::cout << "next index = " << next_idx << "\n";
@@ -942,7 +945,7 @@ inline size_t Node::snapshot_config_and_data_offset_bytes() const {
     return sizeof(last_applied_idx_) + sizeof(last_applied_term_);
 }
 
-inline std::optional<std::string> Node::send_install_snapshot(EventLoop& el, NodeID dest_id) {
+inline std::optional<std::string> Node::send_install_snapshot(EventLoop<SOCKET_TYPE>& el, NodeID dest_id) {
     #ifdef DEBUG
     std::cout << "Sending InstallSnapshot RPC:\n";
     std::cout << "term = " << current_term_ << "\n";
