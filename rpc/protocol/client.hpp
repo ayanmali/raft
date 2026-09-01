@@ -2,9 +2,6 @@
 #include "../conns.hpp"
 #include "./utils.hpp"
 #include "payloads.hpp"
-#ifdef DEBUG
-#include <iostream>
-#endif
 
 /* Inbound */
 

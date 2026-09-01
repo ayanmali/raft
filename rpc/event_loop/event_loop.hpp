@@ -28,10 +28,8 @@
 
 constexpr int MAX_ATTEMPTS = 10;
 
-constexpr size_t INBOX_RING_CAP = 1024; // per producer; must be power of 2
-
 // for processing incoming requests/replies
-using NodeInbox = MPSC<NodeMessage, INBOX_RING_CAP, EVENT_LOOP_THREADS>;
+using NodeInbox = MPSC<NodeMessage, NODE_INBOX_RING_CAP, EVENT_LOOP_THREADS>;
 
 struct ReplyHandlerVisitor;
 struct RequestHandlerVisitor;
@@ -55,7 +53,7 @@ struct EventLoop {
     void Wake();
     std::optional<std::string> AddPeer(NodeID id, const char* ip_addr, const char* port);
 
-    SPSCQueue<EventLoopMessage, INBOX_RING_CAP> outbound_inbox{};
+    SPSCQueue<EventLoopMessage, EVENT_LOOP_INBOX_RING_CAP> outbound_inbox{};
 
     std::atomic<bool> stopped{false};
 

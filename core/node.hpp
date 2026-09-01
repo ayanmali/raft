@@ -41,7 +41,7 @@ Persistence:
 
 struct Node {
 public:
-    static std::optional<std::string> CreateNode(Node*, NodeInbox*, void(*)(FILE*, const LogEntry&), void(*)(FILE*, FILE*));
+    static std::optional<std::string> CreateNode(Node*, NodeInbox*, void(*)(FILE*, const LogEntry&));
     ~Node();
     Node()                       = default;
     Node(const Node&)            = delete;
@@ -55,13 +55,10 @@ public:
     void MainLoop();
 
     void append_commands(std::vector<std::byte*>&);
-    // void append_commands(std::vector<int16_t>&);
-    // void append_commands(std::vector<int32_t>&);
-    // void append_commands(std::vector<int64_t>&);
     void append_commands(std::byte (&)[MAX_ENTRIES][CMD_SIZE], size_t num_entries);
+    void append_commands(std::vector<LogEntry>&&);
 
-    void forward_request(std::vector<std::byte*>&);
-    void forward_request(std::byte (&)[MAX_ENTRIES][CMD_SIZE], size_t num_entries);
+    void read_state(FILE* out);
 
     int get_leader();
 
@@ -78,6 +75,9 @@ public:
     std::optional<std::string> send_install_snapshot(EventLoop&, NodeID);
     void request_votes();
 
+    void append_commands_local(std::vector<LogEntry>&&);
+    void forward_request(const std::vector<LogEntry>&);
+
     void demote();
     void become_leader();
     void advance_to_term(uint32_t);
@@ -90,8 +90,11 @@ public:
     size_t sm_header_bytes() const;
     size_t snapshot_config_and_data_offset_bytes() const;
 
-    /* log compaction/snapshotting/recovery */
+    std::optional<std::string> compact();
+
     std::optional<std::string> recover();
+
+    std::optional<std::string> reconstruct_state(FILE* out, uint32_t up_to_idx);
 
     void write_current_term();
     void write_voted_for();
@@ -120,7 +123,6 @@ public:
     FILE*                                                           log_fp_                  = nullptr;
     FILE*                                                           snapshot_fp_             = nullptr;
     FILE*                                                           snapshot_tmp_fp_         = nullptr;
-    FILE*                                                           sm_fp_                   = nullptr;
     void(*apply_entry)(FILE*, const LogEntry&);
     void(*create_snapshot)(FILE*, FILE*);
     int                                                             leader_id_               = -1;
@@ -139,8 +141,7 @@ public:
 // Factory function
 // Node requires stable addresses (i.e. not movable)
 inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
-    void(*apply_entry_to_sm)(FILE*, const LogEntry&),
-    void(*create_snapshot)(FILE*, FILE*)) {
+    void(*apply_entry_to_sm)(FILE*, const LogEntry&)) {
     static_assert(EVENT_LOOP_THREADS > 0 && (EVENT_LOOP_THREADS & (EVENT_LOOP_THREADS - 1)) == 0,
         "Node: EVENT_LOOP_THREADS must be a power of 2 (MPSC inbox requires it)");
     static_assert(SNAPSHOT_CHUNK_SIZE >= MAX_CLUSTER_HEADER_SIZE,
@@ -148,7 +149,6 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
 
     n->inbox_ = inbox;
     n->apply_entry = apply_entry_to_sm;
-    n->create_snapshot = create_snapshot;
 
     // SIGPIPE would otherwise kill the process if a peer disappears
     // mid-send. send/recv calls also pass MSG_NOSIGNAL belt-and-
@@ -256,12 +256,14 @@ inline Node::~Node() {
 
     ::fclose(log_fp_);
     if (snapshot_fp_ != nullptr) ::fclose(snapshot_fp_);
-    ::fclose(sm_fp_);
     if (snapshot_tmp_fp_ != nullptr) ::fclose(snapshot_tmp_fp_);
 }
 
 inline void Node::Stop() {
-    inbox_->Push(0, StopNodeMsg{});
+    bool done = false;
+    while (!done) {
+        done = inbox_->Push(0, StopNodeMsg{});
+    }
 }
 
 // ---- outbound --------------------------------------------------------
@@ -287,7 +289,37 @@ inline void Node::request_votes() {
 }
 
 inline void Node::append_commands(std::vector<std::byte*>& commands) {
-    //const uint32_t last_log_idx = log_.size() - 1;
+    std::vector<LogEntry> entries;
+    entries.reserve(commands.size());
+    for (std::byte* command : commands) {
+        entries.emplace_back(command, CMD_SIZE, 0); // term assigned on append
+    }
+    bool done = false;
+    while (!done) {
+        inbox_->Push(0, NodeMessage{AppendClientReq{std::move(entries)}});
+    }
+}
+
+inline void Node::append_commands(std::byte (&commands)[MAX_ENTRIES][CMD_SIZE], size_t num_entries) {
+    std::vector<LogEntry> entries;
+    entries.reserve(num_entries);
+    for (size_t i = 0; i < num_entries; ++i) {
+        entries.emplace_back(commands[i], CMD_SIZE, 0); // term assigned on append
+    }
+    bool done = false;
+    while (!done) {
+        inbox_->Push(0, NodeMessage{AppendClientReq{std::move(entries)}});
+    }
+}
+
+inline void Node::append_commands(std::vector<LogEntry>&& commands) {
+    bool done = false;
+    while (!done) {
+        inbox_->Push(0, NodeMessage{AppendClientReq{std::move(commands)}});
+    }
+}
+
+inline void Node::append_commands_local(std::vector<LogEntry>&& commands) {
     #ifdef DEBUG
     std::cout << "Found append request; state = " << static_cast<int>(state_) << "; leader_id = " << leader_id_ << "\n";
     #endif
@@ -298,7 +330,7 @@ inline void Node::append_commands(std::vector<std::byte*>& commands) {
             #endif
             forward_request(commands);
         }
-        return;
+        return; // note: nodes that do not know who the leader is will drop these entries
     }
     #ifdef DEBUG
     std::cout << "appending commands...\n";
@@ -313,84 +345,11 @@ inline void Node::append_commands(std::vector<std::byte*>& commands) {
     }
     #endif
 
-    log_.reserve(log_.size() + commands.size());
-    for (std::byte* command : commands) {
-        log_.emplace_back(command, CMD_SIZE, current_term_);
-    }
-    ::fseek(log_fp_, 0, SEEK_END);
-    ::fwrite(log_.data() + log_.size() - commands.size(), sizeof(LogEntry), commands.size(), log_fp_);
-
-    commit_entries_if_available();
-
-    #ifdef DEBUG
-    std::cout << "New log (size = " << log_.size() << "):\n";
-    for (const LogEntry& e : log_) {
-        std::cout << "[(";
-        for (std::byte b : e.data_) {
-            std::cout << static_cast<int>(b) << ", ";
-        }
-        std::cout << "), " << e.term << "]\n";
-    }
-    #endif
-
-    // auto log_index = log_.size();
-
-
-    // for (int i = 0; i < node_ids_.size(); ++i) {
-    //     const uint32_t next_idx = next_index_[i];
-    //     if (last_log_idx < next_idx) continue;
-
-    //     const uint32_t prev_log_idx = next_idx > 0 ? next_idx - 1 : 0;
-    //     const uint32_t prev_log_term = log_[prev_log_idx].term;
-
-        //auto& el = loops_[node_ids_[i] & (EVENT_LOOP_THREADS - 1)];
-        //auto entries_to_append = std::span<LogEntry>(log_.data() + next_idx, log_.size() - next_idx);
-
-        // Message will be posted to event loop when the next heartbeat is sent.
-
-        // el->outbound_inbox.PushOne(
-        //     std::make_unique<RaftMessage>(AppendEntriesReqPayload{
-        //         entries_to_append,
-        //         current_term_,
-        //         MY_ID,
-        //         prev_log_idx,
-        //         prev_log_term,
-        //         commit_index_
-        //     }, node_ids_[i])
-        // );
-        //}
-}
-
-inline void Node::append_commands(std::byte (&commands)[MAX_ENTRIES][CMD_SIZE], size_t num_entries) {
-    //const uint32_t last_log_idx = log_.size() - 1;
-    #ifdef DEBUG
-    std::cout << "Found append request; state = " << static_cast<int>(state_) << "; leader_id = " << leader_id_ << "\n";
-    #endif
-    if (state_ != NodeState::Leader) {
-        if (leader_id_ != -1) {
-            #ifdef DEBUG
-            std::cout << "Not in non-leader state - forwarding...\n";
-            #endif
-            forward_request(commands, num_entries);
-        }
-        return;
-    }
-    #ifdef DEBUG
-    std::cout << "appending commands...\n";
-    std::cout << "last_applied_idx_ = " << last_applied_idx_ << "\n";
-    std::cout << "Existing log:\n";
-    for (const LogEntry& e : log_) {
-        std::cout << "[(";
-        for (std::byte b : e.data_) {
-            std::cout << static_cast<int>(b) << ", ";
-        }
-        std::cout << "), " << e.term << "]\n";
-    }
-    #endif
-
+    const size_t num_entries = commands.size();
     log_.reserve(log_.size() + num_entries);
-    for (int i = 0; i < num_entries; ++i) {
-        log_.emplace_back(commands[i], CMD_SIZE, current_term_);
+    for (LogEntry& e : commands) {
+        e.term = current_term_;
+        log_.push_back(std::move(e));
     }
     ::fseek(log_fp_, 0, SEEK_END);
     ::fwrite(log_.data() + log_.size() - num_entries, sizeof(LogEntry), num_entries, log_fp_);
@@ -409,7 +368,7 @@ inline void Node::append_commands(std::byte (&commands)[MAX_ENTRIES][CMD_SIZE], 
     #endif
 }
 
-inline void Node::forward_request(std::vector<std::byte*>& commands) {
+inline void Node::forward_request(const std::vector<LogEntry>& commands) {
     auto& el = loops_[leader_id_ & (EVENT_LOOP_THREADS - 1)];
     size_t sent{0};
     while (sent < commands.size()) {
@@ -421,7 +380,7 @@ inline void Node::forward_request(std::vector<std::byte*>& commands) {
             .term = current_term_
         };
         for (size_t i = 0; i < num_entries; ++i) {
-            std::memcpy(msg.entries[i], commands[sent + i], CMD_SIZE);
+            std::memcpy(msg.entries[i], commands[sent + i].data_, CMD_SIZE);
         }
         el.outbound_inbox.PushOne(EventLoopMessage(std::move(msg)));
         sent += num_entries;
@@ -430,16 +389,14 @@ inline void Node::forward_request(std::vector<std::byte*>& commands) {
     return;
 }
 
-inline void Node::forward_request(std::byte (&commands)[MAX_ENTRIES][CMD_SIZE], size_t num_entries) {
-    auto& el = loops_[leader_id_ & (EVENT_LOOP_THREADS - 1)];
-    ForwardLeaderMsg msg{
-        .entries_len = num_entries,
-        .sender_id = MY_ID,
-        .dest_id = static_cast<NodeID>(leader_id_),
-        .term = current_term_
-    };
-    std::memcpy(&msg.entries, &commands, CMD_SIZE * num_entries);
-    el.outbound_inbox.PushOne(msg);
+inline void Node::read_state(FILE* out) {
+    #ifdef DEBUG
+    std::cout << "Found client request to read state\n";
+    #endif
+    bool done = false;
+    while (!done) {
+        inbox_->Push(0, ReadStateClientReq{out});
+    }
 }
 
 inline int Node::get_leader() {
@@ -643,20 +600,9 @@ inline void Node::commit_entries_if_available() {
     if (new_commit_idx == commit_index_) return;
     commit_index_ = new_commit_idx;
 
-    #ifdef DEBUG
-    std::cout << "applying entries from last applied index = " << last_applied_idx_ + 1 << " to commit index = " << commit_index_ << "\n";
-    print_cluster();
-    #endif
     if (last_applied_idx_ != commit_index_) {
-        for (size_t i = last_applied_idx_ + 1; i <= commit_index_; ++i) {
-            #ifdef DEBUG
-            std::cout << "applying entry at logical index " << i << "\n";
-            #endif
-            apply_entry(sm_fp_, log_[i - base_logical_idx_]);
-        }
-        // last_applied_term_ = log_.empty() ? last_applied_term_ : log_[commit_index_ - (last_applied_idx_ + 1)].term;
         last_applied_idx_ = commit_index_;
-        last_applied_term_ = log_.empty() ? base_term_ : log_[commit_index_ - base_logical_idx_].term;
+        last_applied_term_ = commit_index_ < base_logical_idx_ ? base_term_ : log_[commit_index_ - base_logical_idx_].term;
         #ifdef DEBUG
         std::cout << "last_applied_idx_ set to " << last_applied_idx_ << "\n";
         std::cout << "last_applied_term_ set to " << last_applied_term_ << "\n";
@@ -664,16 +610,89 @@ inline void Node::commit_entries_if_available() {
     }
 }
 
-/*
-    If the snapshot file exists and contains data, open it
-    and copy its state data to a separate temp file
-    Atomically rename the temp file to become the new state file
-    If the log file exists and has data,
-    iterate through each entry and apply each one to the state machine
-    Create a new snapshot and store it on disk
-    Clear the log
+inline std::optional<std::string> Node::compact() {
+    #ifdef DEBUG
+    std::cout << "log size reached compact threshold; compacting...\n";
+    std::cout << "log_.size() = " << log_.size() << "\n";
+    std::cout << "last_applied_idx_ = " << last_applied_idx_ << "\n";
+    std::cout << "base_logical_idx_ = " << base_logical_idx_ << "\n";
+    std::cout << "commit_index_ = " << commit_index_ << "\n";
+    #endif
 
- */
+    const size_t num_applied = last_applied_idx_ - base_logical_idx_ + 1;
+
+    #ifdef DEBUG
+    std::cout << "num_applied = " << num_applied << "\n";
+    #endif
+
+    base_term_ = log_[num_applied - 1].term;
+
+    #ifdef DEBUG
+    std::cout << "base_term_ = " << base_term_ << "\n";
+    #endif
+
+    FILE* sm_tmp_fp = ::fopen(STATE_MACHINE_TMP_FILE_PATH, "w+");
+    if (sm_tmp_fp == nullptr) {
+        return (std::format(
+            "Error opening state machine tmp file with path {}\n",
+            STATE_MACHINE_TMP_FILE_PATH
+        ));
+    }
+
+    reconstruct_state(sm_tmp_fp, last_applied_idx_);
+    log_.erase(log_.begin(), log_.begin() + num_applied);
+    base_logical_idx_ = last_applied_idx_ + 1;
+
+    #ifdef DEBUG
+    std::cout << "base_logical_idx_ = " << base_logical_idx_ << "\n";
+    std::cout << "log_.size() after compaction = " << log_.size() << "\n";
+    #endif
+
+    ::freopen(LOG_FILE_PATH, "w+", log_fp_);
+    ::fwrite(&current_term_, sizeof(current_term_), 1, log_fp_);
+    ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
+    // preserve any unapplied entries so they can be replayed after a restart
+    if (!log_.empty()) {
+        ::fwrite(log_.data(), sizeof(LogEntry), log_.size(), log_fp_);
+    }
+
+    // create the snapshot and write to disk
+    ::fflush(sm_tmp_fp);
+    struct stat st;
+    if (fstat(fileno(sm_tmp_fp), &st) != 0) {
+        return "compaction failed: failed to get SM temp file size\n";
+    }
+    snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
+    const size_t cluster_size_bytes = node_ids_.bytes();
+    ::fwrite(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_tmp_fp_);
+    ::fwrite(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_tmp_fp_);
+
+    __off_t sm_offset{0};
+    __off64_t snapshot_offset{static_cast<__off64_t>(snapshot_config_and_data_offset_bytes())};
+    ssize_t n = copy_file_range(fileno(sm_tmp_fp), &sm_offset,
+                                fileno(snapshot_tmp_fp_), &snapshot_offset,
+                                st.st_size, 0);
+    if (n != st.st_size) {
+        return std::format(
+            "failed to compact - copy_file_range failed to copy all bytes from SM to snapshot file (n = {}, SM file size = {})\n",
+            n, st.st_size
+        );
+    }
+
+    ::fclose(sm_tmp_fp);
+
+    // commit the temp file to disk
+    ::fflush(snapshot_tmp_fp_);
+    ::fsync(fileno(snapshot_tmp_fp_));
+    ::fclose(snapshot_tmp_fp_);
+    if (snapshot_fp_ != nullptr) ::fclose(snapshot_fp_);
+    snapshot_tmp_fp_ = nullptr;
+    ::rename(SNAPSHOT_TMP_FILE_PATH, SNAPSHOT_FILE_PATH);
+    snapshot_fp_ = ::fopen(SNAPSHOT_FILE_PATH, "r+");
+
+    return {};
+}
+
 inline std::optional<std::string> Node::recover() {
     // Read existing snapshot if it exists and restore the state machine
     struct stat snapshot_stat;
@@ -707,39 +726,9 @@ inline std::optional<std::string> Node::recover() {
         std::cout << "------\n";
         #endif
 
-        FILE* sm_tmp_fp = ::fopen(STATE_MACHINE_TMP_FILE_PATH, "w+");
-        if (sm_tmp_fp == nullptr) {
-            return (std::format(
-                "Error opening state machine file with path {}\n",
-                STATE_MACHINE_FILE_PATH
-            ));
-        }
-
-        __off64_t zero{0};
-        __off64_t snapshot_offset = static_cast<__off64_t>(snapshot_config_and_data_offset_bytes());
-        ssize_t n = copy_file_range(fileno(snapshot_fp_), &snapshot_offset,
-                                    fileno(sm_tmp_fp), &zero,
-                                    snapshot_stat.st_size - snapshot_config_and_data_offset_bytes(), 0);
-
-        ::fflush(sm_tmp_fp);
-        ::fsync(fileno(sm_tmp_fp));
-        ::fclose(sm_tmp_fp);
-        ::rename(STATE_MACHINE_TMP_FILE_PATH, STATE_MACHINE_FILE_PATH);
-
         ::fclose(snapshot_fp_);
         snapshot_fp_ = nullptr;
         snapshot_restored = true;
-    }
-
-    // Open the state machine file
-    sm_fp_ = ::fopen(STATE_MACHINE_FILE_PATH, access(STATE_MACHINE_FILE_PATH, F_OK) == 0
-        ? "r+"
-        : "w+");
-    if (sm_fp_ == nullptr) {
-        return (std::format(
-            "Error opening state machine file with path {}\n",
-            STATE_MACHINE_FILE_PATH
-        ));
     }
 
     // Read the log file header and entries
@@ -778,6 +767,43 @@ inline std::optional<std::string> Node::recover() {
     return {};
 }
 
+inline std::optional<std::string> Node::reconstruct_state(FILE* out, uint32_t up_to_idx) {
+    assert(snapshot_fp_ != nullptr);
+
+    struct stat snapshot_stat;
+    ::fseek(out, 0, SEEK_SET);
+    if (stat(SNAPSHOT_FILE_PATH, &snapshot_stat) == 0
+        && snapshot_stat.st_size >= static_cast<off_t>(snapshot_header_bytes())) {
+            __off64_t zero{0};
+            __off64_t snapshot_offset{static_cast<__off64_t>(snapshot_config_and_data_offset_bytes())};
+            ssize_t n = copy_file_range(fileno(snapshot_fp_), &snapshot_offset,
+                                        fileno(out), &zero,
+                                        snapshot_stat.st_size - snapshot_config_and_data_offset_bytes(), 0);
+            if (n != snapshot_stat.st_size - snapshot_config_and_data_offset_bytes()) {
+                return std::format(
+                    "failed to reconstruct state - copy_file_range failed to copy all bytes from snapshot file (n = {}, snapshot file size = {})\n",
+                    n, snapshot_stat.st_size
+                );
+            }
+
+    }
+    else {
+        const size_t cluster_size_bytes = node_ids_.bytes();
+        ::fwrite(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, out);
+        ::fwrite(node_ids_.cluster.data(), cluster_size_bytes, 1, out);
+    }
+
+    for (uint32_t i = base_logical_idx_; i <= up_to_idx; ++i) {
+        #ifdef DEBUG
+        std::cout << "in state machine: applying entry at logical index " << i << "\n";
+        #endif
+        apply_entry(out, log_[i - base_logical_idx_]);
+        //::fseek(out, sm_header_bytes(), SEEK_SET);
+    }
+
+    return {};
+}
+
 inline void Node::write_current_term() {
     #ifdef DEBUG
     std::cout << "writing current term = " << current_term_ << " to log file\n";
@@ -800,7 +826,6 @@ inline void Node::flush_files() {
     #endif
     if (log_fp_) { ::fflush(log_fp_); ::fsync(fileno(log_fp_)); }
     if (snapshot_fp_) { ::fflush(snapshot_fp_); ::fsync(fileno(snapshot_fp_)); }
-    if (sm_fp_) { ::fflush(sm_fp_); ::fsync(fileno(sm_fp_)); }
     last_flush_ = std::chrono::steady_clock::now();
 }
 

@@ -6,6 +6,7 @@ RPC request/response payload structs.
 #include <cstring>
 #include <netinet/in.h>
 #include <variant>
+#include <vector>
 
 // static constexpr uint8_t AE_RPC_ID = 0;
 // static constexpr uint8_t RV_RPC_ID = 1;
@@ -190,5 +191,10 @@ struct AETimeout { NodeID source_id; };
 struct RVTimeout { NodeID source_id; };
 struct ISTimeout { NodeID source_id; };
 
-using NodeMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeout, DropPeerMsg, ForwardLeaderMsg, StopNodeMsg, AETimeout, RVTimeout, ISTimeout>;
+struct AppendClientReq {
+    std::vector<LogEntry> entries; // terms are assigned by the node thread on append
+};
+struct ReadStateClientReq { FILE* fp; };
+
+using NodeMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeout, DropPeerMsg, ForwardLeaderMsg, StopNodeMsg, AETimeout, RVTimeout, ISTimeout, AppendClientReq, ReadStateClientReq>;
 using EventLoopMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisarmTimer, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, AddPeerMsg, ForwardLeaderMsg>;
