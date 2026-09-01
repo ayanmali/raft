@@ -11,19 +11,9 @@ int main() {
         int num{69};
         ::fwrite(&num, sizeof(num), 1, state_machine_fp);
     };
-    auto create_snapshot = [](FILE* snapshot_fp, FILE* state_machine_fp) {
-        constexpr size_t SNAPSHOT_WRITE_BUFFER_SIZE = 1024;
-        std::byte buffer[SNAPSHOT_WRITE_BUFFER_SIZE];
-        ::rewind(state_machine_fp);
-
-        size_t bytes_read;
-        while ((bytes_read = ::fread(buffer, 1, SNAPSHOT_WRITE_BUFFER_SIZE, state_machine_fp)) > 0) {
-              ::fwrite(buffer, 1, bytes_read, snapshot_fp);
-        }
-    };
 
     Node node{};
-    std::optional<std::string> node_err = Node::CreateNode(&node, &ni, apply_func, create_snapshot);
+    std::optional<std::string> node_err = Node::CreateNode(&node, &ni, apply_func);
     if (node_err) {
         #ifdef DEBUG
         std::cout << node_err.value() << "\n";

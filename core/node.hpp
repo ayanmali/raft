@@ -41,7 +41,7 @@ Persistence:
 
 struct Node {
 public:
-    static std::optional<std::string> CreateNode(Node*, NodeInbox*, void(*)(FILE*, const LogEntry&), void(*)(FILE*, FILE*));
+    static std::optional<std::string> CreateNode(Node*, NodeInbox*, void(*)(FILE*, const LogEntry&));
     ~Node();
     Node()                       = default;
     Node(const Node&)            = delete;
@@ -94,7 +94,6 @@ public:
 
     std::optional<std::string> compact();
 
-    /* log compaction/snapshotting/recovery */
     std::optional<std::string> recover();
 
     std::optional<std::string> reconstruct_state(FILE* out, uint32_t up_to_idx);
@@ -144,8 +143,7 @@ public:
 // Factory function
 // Node requires stable addresses (i.e. not movable)
 inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
-    void(*apply_entry_to_sm)(FILE*, const LogEntry&),
-    void(*create_snapshot)(FILE*, FILE*)) {
+    void(*apply_entry_to_sm)(FILE*, const LogEntry&)) {
     static_assert(EVENT_LOOP_THREADS > 0 && (EVENT_LOOP_THREADS & (EVENT_LOOP_THREADS - 1)) == 0,
         "Node: EVENT_LOOP_THREADS must be a power of 2 (MPSC inbox requires it)");
     static_assert(SNAPSHOT_CHUNK_SIZE >= MAX_CLUSTER_HEADER_SIZE,
@@ -153,7 +151,6 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
 
     n->inbox_ = inbox;
     n->apply_entry = apply_entry_to_sm;
-    n->create_snapshot = create_snapshot;
 
     // SIGPIPE would otherwise kill the process if a peer disappears
     // mid-send. send/recv calls also pass MSG_NOSIGNAL belt-and-
@@ -655,9 +652,8 @@ inline void Node::commit_entries_if_available() {
     commit_index_ = new_commit_idx;
 
     if (last_applied_idx_ != commit_index_) {
-        // TODO: can these be deleted?
         last_applied_idx_ = commit_index_;
-        last_applied_term_ = log_.empty() ? base_term_ : log_[commit_index_ - base_logical_idx_].term;
+        last_applied_term_ = commit_index_ < base_logical_idx_ ? base_term_ : log_[commit_index_ - base_logical_idx_].term;
         #ifdef DEBUG
         std::cout << "last_applied_idx_ set to " << last_applied_idx_ << "\n";
         std::cout << "last_applied_term_ set to " << last_applied_term_ << "\n";
@@ -712,14 +708,27 @@ inline std::optional<std::string> Node::compact() {
     }
 
     // create the snapshot and write to disk
+    ::fflush(sm_tmp_fp);
+    struct stat st;
+    if (fstat(fileno(sm_tmp_fp), &st) != 0) {
+        return "compaction failed: failed to get SM temp file size\n";
+    }
     snapshot_tmp_fp_ = ::fopen(SNAPSHOT_TMP_FILE_PATH, "w+");
     const size_t cluster_size_bytes = node_ids_.bytes();
     ::fwrite(&last_applied_idx_, sizeof(last_applied_idx_), 1, snapshot_tmp_fp_);
     ::fwrite(&last_applied_term_, sizeof(last_applied_term_), 1, snapshot_tmp_fp_);
-    ::fwrite(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, snapshot_tmp_fp_);
-    ::fwrite(node_ids_.cluster.data(), cluster_size_bytes, 1, snapshot_tmp_fp_);
-    ::fseek(sm_tmp_fp, sm_header_bytes(), SEEK_SET);
-    create_snapshot(snapshot_tmp_fp_, sm_tmp_fp); // caller-defined
+
+    __off_t sm_offset{0};
+    __off64_t snapshot_offset{static_cast<__off64_t>(snapshot_config_and_data_offset_bytes())};
+    ssize_t n = copy_file_range(fileno(sm_tmp_fp), &sm_offset,
+                                fileno(snapshot_tmp_fp_), &snapshot_offset,
+                                st.st_size, 0);
+    if (n != st.st_size) {
+        return std::format(
+            "failed to compact - copy_file_range failed to copy all bytes from SM to snapshot file (n = {}, SM file size = {})\n",
+            n, st.st_size
+        );
+    }
 
     ::fclose(sm_tmp_fp);
 
@@ -735,16 +744,6 @@ inline std::optional<std::string> Node::compact() {
     return {};
 }
 
-/*
-    If the snapshot file exists and contains data, open it
-    and copy its state data to a separate temp file
-    Atomically rename the temp file to become the new state file
-    If the log file exists and has data,
-    iterate through each entry and apply each one to the state machine
-    Create a new snapshot and store it on disk
-    Clear the log
-
- */
 inline std::optional<std::string> Node::recover() {
     // Read existing snapshot if it exists and restore the state machine
     struct stat snapshot_stat;
@@ -820,27 +819,37 @@ inline std::optional<std::string> Node::recover() {
 }
 
 inline std::optional<std::string> Node::reconstruct_state(FILE* out, uint32_t up_to_idx) {
+    assert(snapshot_fp_ != nullptr);
+
     struct stat snapshot_stat;
-    if (stat(SNAPSHOT_FILE_PATH, &snapshot_stat) != 0
-        || snapshot_stat.st_size < static_cast<off_t>(snapshot_header_bytes())) {
-                return {};
+    ::fseek(out, 0, SEEK_SET);
+    if (stat(SNAPSHOT_FILE_PATH, &snapshot_stat) == 0
+        && snapshot_stat.st_size >= static_cast<off_t>(snapshot_header_bytes())) {
+            __off64_t zero{0};
+            __off64_t snapshot_offset{static_cast<__off64_t>(snapshot_config_and_data_offset_bytes())};
+            ssize_t n = copy_file_range(fileno(snapshot_fp_), &snapshot_offset,
+                                        fileno(out), &zero,
+                                        snapshot_stat.st_size - snapshot_config_and_data_offset_bytes(), 0);
+            if (n != snapshot_stat.st_size - snapshot_config_and_data_offset_bytes()) {
+                return std::format(
+                    "failed to reconstruct state - copy_file_range failed to copy all bytes from snapshot file (n = {}, snapshot file size = {})\n",
+                    n, snapshot_stat.st_size
+                );
+            }
+
+    }
+    else {
+        const size_t cluster_size_bytes = node_ids_.bytes();
+        ::fwrite(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, out);
+        ::fwrite(node_ids_.cluster.data(), cluster_size_bytes, 1, out);
     }
 
-    __off64_t zero{0};
-    __off64_t snapshot_offset = static_cast<__off64_t>(snapshot_config_and_data_offset_bytes());
-    ssize_t n = copy_file_range(fileno(snapshot_fp_), &snapshot_offset,
-                                fileno(out), &zero,
-                                snapshot_stat.st_size - snapshot_config_and_data_offset_bytes(), 0);
-
-    const size_t cluster_size_bytes = node_ids_.bytes();
-    ::fwrite(&cluster_size_bytes, sizeof(cluster_size_bytes), 1, out);
-    ::fwrite(node_ids_.cluster.data(), cluster_size_bytes, 1, out);
     for (uint32_t i = base_logical_idx_; i <= up_to_idx; ++i) {
         #ifdef DEBUG
         std::cout << "in state machine: applying entry at logical index " << i << "\n";
         #endif
         apply_entry(out, log_[i - base_logical_idx_]);
-        ::fseek(out, sm_header_bytes(), SEEK_SET);
+        //::fseek(out, sm_header_bytes(), SEEK_SET);
     }
 
     return {};
