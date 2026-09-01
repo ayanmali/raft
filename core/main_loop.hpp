@@ -605,7 +605,6 @@ inline void Node::MainLoop() {
                         return {};
                     }
                     auto& el = loops_[payload.sender_id & (EVENT_LOOP_THREADS - 1)];
-
                     add_peer_if_not_exists(payload.sender_id, payload.client_ip_addr, el);
 
                     std::vector<LogEntry> entries;

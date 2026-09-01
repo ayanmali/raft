@@ -83,6 +83,9 @@ struct EventLoop {
 
     NodeInbox* node_inbox; // incoming messages; multi-producer (each event loop is a producer)
 
+    long heartbeat_period_ms;
+    long rpc_timeout_ms;
+
     size_t this_id;
     std::atomic<bool> wake_armed{false};
 
@@ -90,8 +93,6 @@ struct EventLoop {
     FD listen_fd = -1;
     FD event_fd = -1;
     uint32_t listen_epoll_events = 0; // current epoll mask for listen_fd (used by UDP replies)
-    long heartbeat_period_ms;
-    long rpc_timeout_ms;
 
     // ---- helpers ----
     static std::optional<const char*> set_nonblocking(FD fd);
