@@ -606,7 +606,13 @@ inline void Node::MainLoop() {
                     }
                     auto& el = loops_[payload.sender_id & (EVENT_LOOP_THREADS - 1)];
                     add_peer_if_not_exists(payload.sender_id, payload.fd, el);
-                    append_commands(payload.entries, payload.entries_len);
+
+                    std::vector<LogEntry> entries;
+                    entries.reserve(payload.entries_len);
+                    for (size_t i = 0; i < payload.entries_len; ++i) {
+                        entries.emplace_back(payload.entries[i], CMD_SIZE, 0); // term assigned on append
+                    }
+                    append_commands_local(std::move(entries));
                 }
 
                 else if constexpr (std::is_same_v<T, AETimeout>) {
@@ -674,6 +680,24 @@ inline void Node::MainLoop() {
 
                 else if constexpr (std::is_same_v<T, StopNodeMsg>) {
                     running_ = false;
+                }
+
+                else if constexpr (std::is_same_v<T, AppendClientReq>) {
+                    #ifdef DEBUG
+                    std::cout << "found client append request with " << payload.entries.size() << " commands\n";
+                    #endif
+                    append_commands_local(std::move(payload.entries));
+                }
+
+                else if constexpr (std::is_same_v<T, ReadStateClientReq>) {
+                    std::optional<std::string> err = reconstruct_state(payload.fp, commit_index_);
+                    if (err) {
+                        #ifdef DEBUG
+                        std::cout << "reconstructed state\n";
+                        #endif
+                        return err;
+                    }
+                    // TODO: notify client that the state was reconstructed/run a callback
                 }
 
                 else {

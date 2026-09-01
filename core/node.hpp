@@ -55,15 +55,10 @@ public:
     void MainLoop();
 
     void append_commands(std::vector<std::byte*>&);
-    // void append_commands(std::vector<int16_t>&);
-    // void append_commands(std::vector<int32_t>&);
-    // void append_commands(std::vector<int64_t>&);
     void append_commands(std::byte (&)[MAX_ENTRIES][CMD_SIZE], size_t num_entries);
+    void append_commands(std::vector<LogEntry>&&);
 
-    void forward_request(std::vector<std::byte*>&);
-    void forward_request(std::byte (&)[MAX_ENTRIES][CMD_SIZE], size_t num_entries);
-
-    std::optional<std::string> read_state(FILE* out);
+    void read_state(FILE* out);
 
     int get_leader();
 
@@ -79,6 +74,9 @@ public:
     std::optional<std::string> send_append_entries(int32_t next_idx, EventLoop&, NodeID);
     std::optional<std::string> send_install_snapshot(EventLoop&, NodeID);
     void request_votes();
+
+    void append_commands_local(std::vector<LogEntry>&&);
+    void forward_request(const std::vector<LogEntry>&);
 
     void demote();
     void become_leader();
@@ -262,7 +260,10 @@ inline Node::~Node() {
 }
 
 inline void Node::Stop() {
-    inbox_->Push(0, StopNodeMsg{});
+    bool done = false;
+    while (!done) {
+        done = inbox_->Push(0, StopNodeMsg{});
+    }
 }
 
 // ---- outbound --------------------------------------------------------
@@ -288,7 +289,37 @@ inline void Node::request_votes() {
 }
 
 inline void Node::append_commands(std::vector<std::byte*>& commands) {
-    //const uint32_t last_log_idx = log_.size() - 1;
+    std::vector<LogEntry> entries;
+    entries.reserve(commands.size());
+    for (std::byte* command : commands) {
+        entries.emplace_back(command, CMD_SIZE, 0); // term assigned on append
+    }
+    bool done = false;
+    while (!done) {
+        inbox_->Push(0, NodeMessage{AppendClientReq{std::move(entries)}});
+    }
+}
+
+inline void Node::append_commands(std::byte (&commands)[MAX_ENTRIES][CMD_SIZE], size_t num_entries) {
+    std::vector<LogEntry> entries;
+    entries.reserve(num_entries);
+    for (size_t i = 0; i < num_entries; ++i) {
+        entries.emplace_back(commands[i], CMD_SIZE, 0); // term assigned on append
+    }
+    bool done = false;
+    while (!done) {
+        inbox_->Push(0, NodeMessage{AppendClientReq{std::move(entries)}});
+    }
+}
+
+inline void Node::append_commands(std::vector<LogEntry>&& commands) {
+    bool done = false;
+    while (!done) {
+        inbox_->Push(0, NodeMessage{AppendClientReq{std::move(commands)}});
+    }
+}
+
+inline void Node::append_commands_local(std::vector<LogEntry>&& commands) {
     #ifdef DEBUG
     std::cout << "Found append request; state = " << static_cast<int>(state_) << "; leader_id = " << leader_id_ << "\n";
     #endif
@@ -299,7 +330,7 @@ inline void Node::append_commands(std::vector<std::byte*>& commands) {
             #endif
             forward_request(commands);
         }
-        return;
+        return; // note: nodes that do not know who the leader is will drop these entries
     }
     #ifdef DEBUG
     std::cout << "appending commands...\n";
@@ -314,84 +345,11 @@ inline void Node::append_commands(std::vector<std::byte*>& commands) {
     }
     #endif
 
-    log_.reserve(log_.size() + commands.size());
-    for (std::byte* command : commands) {
-        log_.emplace_back(command, CMD_SIZE, current_term_);
-    }
-    ::fseek(log_fp_, 0, SEEK_END);
-    ::fwrite(log_.data() + log_.size() - commands.size(), sizeof(LogEntry), commands.size(), log_fp_);
-
-    commit_entries_if_available();
-
-    #ifdef DEBUG
-    std::cout << "New log (size = " << log_.size() << "):\n";
-    for (const LogEntry& e : log_) {
-        std::cout << "[(";
-        for (std::byte b : e.data_) {
-            std::cout << static_cast<int>(b) << ", ";
-        }
-        std::cout << "), " << e.term << "]\n";
-    }
-    #endif
-
-    // auto log_index = log_.size();
-
-
-    // for (int i = 0; i < node_ids_.size(); ++i) {
-    //     const uint32_t next_idx = next_index_[i];
-    //     if (last_log_idx < next_idx) continue;
-
-    //     const uint32_t prev_log_idx = next_idx > 0 ? next_idx - 1 : 0;
-    //     const uint32_t prev_log_term = log_[prev_log_idx].term;
-
-        //auto& el = loops_[node_ids_[i] & (EVENT_LOOP_THREADS - 1)];
-        //auto entries_to_append = std::span<LogEntry>(log_.data() + next_idx, log_.size() - next_idx);
-
-        // Message will be posted to event loop when the next heartbeat is sent.
-
-        // el->outbound_inbox.PushOne(
-        //     std::make_unique<RaftMessage>(AppendEntriesReqPayload{
-        //         entries_to_append,
-        //         current_term_,
-        //         MY_ID,
-        //         prev_log_idx,
-        //         prev_log_term,
-        //         commit_index_
-        //     }, node_ids_[i])
-        // );
-        //}
-}
-
-inline void Node::append_commands(std::byte (&commands)[MAX_ENTRIES][CMD_SIZE], size_t num_entries) {
-    //const uint32_t last_log_idx = log_.size() - 1;
-    #ifdef DEBUG
-    std::cout << "Found append request; state = " << static_cast<int>(state_) << "; leader_id = " << leader_id_ << "\n";
-    #endif
-    if (state_ != NodeState::Leader) {
-        if (leader_id_ != -1) {
-            #ifdef DEBUG
-            std::cout << "Not in non-leader state - forwarding...\n";
-            #endif
-            forward_request(commands, num_entries);
-        }
-        return;
-    }
-    #ifdef DEBUG
-    std::cout << "appending commands...\n";
-    std::cout << "last_applied_idx_ = " << last_applied_idx_ << "\n";
-    std::cout << "Existing log:\n";
-    for (const LogEntry& e : log_) {
-        std::cout << "[(";
-        for (std::byte b : e.data_) {
-            std::cout << static_cast<int>(b) << ", ";
-        }
-        std::cout << "), " << e.term << "]\n";
-    }
-    #endif
-
+    const size_t num_entries = commands.size();
     log_.reserve(log_.size() + num_entries);
-    for (int i = 0; i < num_entries; ++i) {
-        log_.emplace_back(commands[i], CMD_SIZE, current_term_);
+    for (LogEntry& e : commands) {
+        e.term = current_term_;
+        log_.push_back(std::move(e));
     }
     ::fseek(log_fp_, 0, SEEK_END);
     ::fwrite(log_.data() + log_.size() - num_entries, sizeof(LogEntry), num_entries, log_fp_);
@@ -410,7 +368,7 @@ inline void Node::append_commands(std::byte (&commands)[MAX_ENTRIES][CMD_SIZE], 
     #endif
 }
 
-inline void Node::forward_request(std::vector<std::byte*>& commands) {
+inline void Node::forward_request(const std::vector<LogEntry>& commands) {
     auto& el = loops_[leader_id_ & (EVENT_LOOP_THREADS - 1)];
     size_t sent{0};
     while (sent < commands.size()) {
@@ -422,7 +380,7 @@ inline void Node::forward_request(std::vector<std::byte*>& commands) {
             .term = current_term_
         };
         for (size_t i = 0; i < num_entries; ++i) {
-            std::memcpy(msg.entries[i], commands[sent + i], CMD_SIZE);
+            std::memcpy(msg.entries[i], commands[sent + i].data_, CMD_SIZE);
         }
         el.outbound_inbox.PushOne(EventLoopMessage(std::move(msg)));
         sent += num_entries;
@@ -431,23 +389,14 @@ inline void Node::forward_request(std::vector<std::byte*>& commands) {
     return;
 }
 
-inline void Node::forward_request(std::byte (&commands)[MAX_ENTRIES][CMD_SIZE], size_t num_entries) {
-    auto& el = loops_[leader_id_ & (EVENT_LOOP_THREADS - 1)];
-    ForwardLeaderMsg msg{
-        .entries_len = num_entries,
-        .sender_id = MY_ID,
-        .dest_id = static_cast<NodeID>(leader_id_),
-        .term = current_term_
-    };
-    std::memcpy(&msg.entries, &commands, CMD_SIZE * num_entries);
-    el.outbound_inbox.PushOne(msg);
-}
-
-inline std::optional<std::string> Node::read_state(FILE* out) {
+inline void Node::read_state(FILE* out) {
     #ifdef DEBUG
     std::cout << "Found client request to read state\n";
     #endif
-    return reconstruct_state(out, commit_index_);
+    bool done = false;
+    while (!done) {
+        inbox_->Push(0, ReadStateClientReq{out});
+    }
 }
 
 inline int Node::get_leader() {
