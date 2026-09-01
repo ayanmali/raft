@@ -12,6 +12,14 @@ inline void Node::MainLoop() {
     std::cout << "starting node loop (main thread)\n";
     #endif
     while (running_) {
+        if (last_applied_idx_ != commit_index_) {
+            last_applied_idx_ = commit_index_;
+            last_applied_term_ = commit_index_ < base_logical_idx_ ? base_term_ : log_[commit_index_ - base_logical_idx_].term;
+            #ifdef DEBUG
+            std::cout << "last_applied_idx_ set to " << last_applied_idx_ << "\n";
+            std::cout << "last_applied_term_ set to " << last_applied_term_ << "\n";
+            #endif
+        }
         // check the reply inbox for new replies that have arrived
         bool leader_contact{false};
         inbox_->DrainAll([this, &leader_contact](NodeMessage&& message) {
