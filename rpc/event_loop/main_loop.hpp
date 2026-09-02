@@ -166,7 +166,7 @@ inline std::optional<std::string> EventLoop<T>::Run() {
                 }
 
                 case EpollContextKind::Peer: {
-                    PeerConn& p = peer_id_to_conn[ctx & 0xFFFFFFFF];
+                    PeerConn<T>& p = peer_id_to_conn[ctx & 0xFFFFFFFF];
                     if (e & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                         #ifdef DEBUG
                         std::cout << "event loop received epoll error ";
@@ -262,7 +262,7 @@ inline std::optional<std::string> EventLoop<T>::Run() {
                 }
 
                 case EpollContextKind::PeerTimer: {
-                    PeerConn& p = peer_id_to_conn[ctx & 0xFFFFFFFF];
+                    PeerConn<T>& p = peer_id_to_conn[ctx & 0xFFFFFFFF];
                     const TimerKind subtype = static_cast<TimerKind>((ctx >> 48) & 0xFF);
 
                     if (e & EPOLLIN) {

@@ -12,7 +12,7 @@
 #endif
 
 template <SocketType T>
-inline std::optional<const char*> EventLoop<T>::modify_peer_interest(PeerConn& p, uint32_t events) {
+inline std::optional<const char*> EventLoop<T>::modify_peer_interest(PeerConn<T>& p, uint32_t events) {
     if (p.epoll_events == events) return {};
     epoll_event ev{};
     ev.events  = events;
@@ -32,7 +32,7 @@ inline std::optional<std::string> EventLoop<T>::AddPeer(NodeID id, IPAddrPort ip
     if (id >= peer_id_to_conn.size()) {
         peer_id_to_conn.resize(id + 1);
     }
-    PeerConn& p = peer_id_to_conn[id];
+    PeerConn<T>& p = peer_id_to_conn[id];
     p.peer_ip_addr = ip_addr;
     p.peer_id = id;
     std::optional<std::string> connect_err = StartConnect(p);
@@ -46,20 +46,14 @@ inline std::optional<std::string> EventLoop<T>::AddPeer(NodeID id, IPAddrPort ip
     }
     return {};
 }
-
-template <SocketType T>
-inline std::optional<std::string> EventLoop<T>::StartConnect(PeerConn& p) {
+template <>
+inline std::optional<std::string> EventLoop<TCP>::StartConnect(PeerConn<TCP>& p) {
     #ifdef DEBUG
     std::cout << "attempting to connect to peer " << p.peer_id << "\n";
     #endif
     addrinfo hints{};
     hints.ai_family   = AF_INET;
-    if constexpr (SOCKET_TYPE == TCP) {
-        hints.ai_socktype = SOCK_STREAM;
-    }
-    if constexpr (SOCKET_TYPE == UDP) {
-        hints.ai_socktype = SOCK_DGRAM;
-    }
+    hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags    = AI_NUMERICHOST | AI_NUMERICSERV;
 
     addrinfo* res = nullptr;
@@ -81,28 +75,14 @@ inline std::optional<std::string> EventLoop<T>::StartConnect(PeerConn& p) {
     if (p.fd < 0) return "Failed to start socket";
 
     int yes = 1;
-    if constexpr (SOCKET_TYPE == TCP) {
-        ::setsockopt(p.fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-    }
-    // TODO: tune send/receive buffer size
-    if constexpr (SOCKET_TYPE == UDP) {
-        const auto send_size = REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind);
-        const auto rcv_size = RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind);
-        ::setsockopt(listen_fd, SOL_SOCKET, SO_SNDBUF, &send_size, sizeof(send_size));
-        ::setsockopt(listen_fd, SOL_SOCKET, SO_RCVBUF, &rcv_size, sizeof(rcv_size));
-    }
+    ::setsockopt(p.fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
     int rc = ::connect(p.fd, res->ai_addr, res->ai_addrlen);
 
     if (rc < 0 && errno != EINPROGRESS) { ::close(p.fd); return "Failed to connect socket"; }
 
     p.epoll_events  = EPOLLOUT | EPOLLRDHUP | EPOLLET;
-    if constexpr (SOCKET_TYPE == TCP) {
-        p.state = PeerConn::State::Connecting;
-    }
-    if constexpr (SOCKET_TYPE == UDP) {
-        p.state = PeerConn::State::Connected;
-    }
+    p.state = PeerConn<TCP>::State::Connecting;
 
     int heartbeat_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     int ae_timeout_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
@@ -112,7 +92,7 @@ inline std::optional<std::string> EventLoop<T>::StartConnect(PeerConn& p) {
     if (heartbeat_fd < 0 || ae_timeout_fd < 0 || rv_timeout_fd < 0 || is_timeout_fd < 0) {
         ::close(p.fd);
         p.fd = -1;
-        p.state = PeerConn::State::Disconnected;
+        p.state = PeerConn<TCP>::State::Disconnected;
         p.epoll_events = 0;
         return std::format(
             "Failed to connect to socket for peer {}:\nerror creating timer fds\n",
@@ -129,7 +109,7 @@ inline std::optional<std::string> EventLoop<T>::StartConnect(PeerConn& p) {
     if (peer_fd_err) {
         ::close(p.fd);
         p.fd = -1;
-        p.state = PeerConn::State::Disconnected;
+        p.state = PeerConn<TCP>::State::Disconnected;
         p.epoll_events = 0;
         return std::format(
             "Failed to connect to peer {}:\n{}\n",
@@ -138,11 +118,8 @@ inline std::optional<std::string> EventLoop<T>::StartConnect(PeerConn& p) {
     }
 
     std::optional<const char*> timer_fd_err = register_fd(heartbeat_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::Heartbeat, p.peer_id);
-
     std::optional<const char*> ae_timeout_fd_err = register_fd(ae_timeout_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::AE, p.peer_id);
-
     std::optional<const char*> rv_timeout_fd_err = register_fd(rv_timeout_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::RV, p.peer_id);
-
     std::optional<const char*> is_timeout_fd_err = register_fd(is_timeout_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::IS, p.peer_id);
 
     if (timer_fd_err || ae_timeout_fd_err || rv_timeout_fd_err || is_timeout_fd_err) {
@@ -156,7 +133,7 @@ inline std::optional<std::string> EventLoop<T>::StartConnect(PeerConn& p) {
         p.timer_fds.set_rv_timeout(-1);
         p.timer_fds.set_is_timeout(-1);
 
-        p.state = PeerConn::State::Disconnected;
+        p.state = PeerConn<TCP>::State::Disconnected;
         p.epoll_events = 0;
         return std::format(
             "Failed to connect to peer {}: failed to register timer/timeout fds\n",
@@ -172,8 +149,114 @@ inline std::optional<std::string> EventLoop<T>::StartConnect(PeerConn& p) {
     return {};
 }
 
-template <SocketType T>
-inline std::optional<const char*> EventLoop<T>::OnPeerReadable(PeerConn& p) {
+template <>
+inline std::optional<std::string> EventLoop<UDP>::StartConnect(PeerConn<UDP>& p) {
+    #ifdef DEBUG
+    std::cout << "attempting to connect to peer " << p.peer_id << "\n";
+    #endif
+    addrinfo hints{};
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_flags    = AI_NUMERICHOST | AI_NUMERICSERV;
+
+    addrinfo* res = nullptr;
+    auto [ip_addr, port] = decode(p.peer_ip_addr); // stored in network byte order
+    struct in_addr addr{ .s_addr = ip_addr };
+    char ip_addr_str[INET_ADDRSTRLEN];
+    if (::inet_ntop(AF_INET, &addr, ip_addr_str, sizeof(ip_addr_str)) == nullptr) {
+        return "Error converting peer IP address to string";
+    }
+    std::string port_str = std::to_string(ntohs(port));
+
+    if (::getaddrinfo(ip_addr_str, port_str.c_str(), &hints, &res) != 0 || res == nullptr) {
+        return "Error getting address info for peer";
+    }
+
+    p.fd = ::socket(res->ai_family,
+                     res->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC,
+                     res->ai_protocol);
+    if (p.fd < 0) return "Failed to start socket";
+
+    int yes = 1;
+    const auto send_size = REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind);
+    const auto rcv_size = RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind);
+    ::setsockopt(listen_fd, SOL_SOCKET, SO_SNDBUF, &send_size, sizeof(send_size));
+    ::setsockopt(listen_fd, SOL_SOCKET, SO_RCVBUF, &rcv_size, sizeof(rcv_size));
+
+    int rc = ::connect(p.fd, res->ai_addr, res->ai_addrlen);
+
+    if (rc < 0 && errno != EINPROGRESS) { ::close(p.fd); return "Failed to connect socket"; }
+
+    p.epoll_events  = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
+    p.state = PeerConn<UDP>::State::Connected;
+
+    int heartbeat_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+    int ae_timeout_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+    int rv_timeout_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+    int is_timeout_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+
+    if (heartbeat_fd < 0 || ae_timeout_fd < 0 || rv_timeout_fd < 0 || is_timeout_fd < 0) {
+        ::close(p.fd);
+        p.fd = -1;
+        p.state = PeerConn<UDP>::State::Disconnected;
+        p.epoll_events = 0;
+        return std::format(
+            "Failed to connect to socket for peer {}:\nerror creating timer fds\n",
+            p.peer_id
+        );
+    }
+
+    p.timer_fds.set_heartbeat(heartbeat_fd);
+    p.timer_fds.set_ae_timeout(ae_timeout_fd);
+    p.timer_fds.set_rv_timeout(rv_timeout_fd);
+    p.timer_fds.set_is_timeout(is_timeout_fd);
+
+    std::optional<const char*> peer_fd_err = register_fd(p.fd, p.epoll_events, EpollContextKind::Peer, p.peer_id);
+    if (peer_fd_err) {
+        ::close(p.fd);
+        p.fd = -1;
+        p.state = PeerConn<UDP>::State::Disconnected;
+        p.epoll_events = 0;
+        return std::format(
+            "Failed to connect to peer {}:\n{}\n",
+            p.peer_id, peer_fd_err.value()
+        );
+    }
+
+    std::optional<const char*> timer_fd_err = register_fd(heartbeat_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::Heartbeat, p.peer_id);
+    std::optional<const char*> ae_timeout_fd_err = register_fd(ae_timeout_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::AE, p.peer_id);
+    std::optional<const char*> rv_timeout_fd_err = register_fd(rv_timeout_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::RV, p.peer_id);
+    std::optional<const char*> is_timeout_fd_err = register_fd(is_timeout_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::IS, p.peer_id);
+
+    if (timer_fd_err || ae_timeout_fd_err || rv_timeout_fd_err || is_timeout_fd_err) {
+        ::close(p.timer_fds.get_heartbeat());
+        ::close(p.timer_fds.get_ae_timeout());
+        ::close(p.timer_fds.get_rv_timeout());
+        ::close(p.timer_fds.get_is_timeout());
+
+        p.timer_fds.set_heartbeat(-1);
+        p.timer_fds.set_ae_timeout(-1);
+        p.timer_fds.set_rv_timeout(-1);
+        p.timer_fds.set_is_timeout(-1);
+
+        p.state = PeerConn<UDP>::State::Disconnected;
+        p.epoll_events = 0;
+        return std::format(
+            "Failed to connect to peer {}: failed to register timer/timeout fds\n",
+            p.peer_id
+        );
+    }
+
+    #ifdef DEBUG
+    std::cout << "finished connecting to peer " << p.peer_id << "\n";
+    #endif
+
+    ::freeaddrinfo(res);
+    return {};
+}
+
+template <>
+inline std::optional<const char*> EventLoop<TCP>::OnPeerReadable(PeerConn<TCP>& p) {
     #ifdef DEBUG
     std::cout << "peer " << p.peer_id << " readable\n";
     #endif
@@ -211,20 +294,46 @@ inline std::optional<const char*> EventLoop<T>::OnPeerReadable(PeerConn& p) {
     return {};
 }
 
-template <SocketType T>
-inline std::optional<const char*> EventLoop<T>::OnPeerWritable(PeerConn& p) {
+template <>
+inline std::optional<const char*> EventLoop<UDP>::OnPeerReadable(PeerConn<UDP>& p) {
+    #ifdef DEBUG
+    std::cout << "peer " << p.peer_id << " readable\n";
+    #endif
+
+    ssize_t n = ::recv(p.fd, p.rbuf, sizeof(p.rbuf), 0);
+    if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) { return "failed to read peer reply: data not available\n"; }
+
+    uint32_t net_len;
+    std::memcpy(&net_len, p.rbuf, sizeof(net_len));
+    uint32_t msg_len = ntohl(net_len);
+    size_t frame_size = msg_len + sizeof(msg_len);
+    if (n < frame_size) return "peer sent oversized request\n";
+
+    auto result = parse_rbuf(p.rbuf + sizeof(msg_len), msg_len, p.timer_fds);
+    if (std::holds_alternative<const char*>(result)) return std::get<const char*>(result);
+
+    #ifdef DEBUG
+    std::cout << "passing reply from peer " << p.peer_id << " back to node\n";
+    #endif
+    post_node_inbox(std::move(std::get<NodeMessage>(result)));
+
+    return {};
+}
+
+template <>
+inline std::optional<const char*> EventLoop<TCP>::OnPeerWritable(PeerConn<TCP>& p) {
     #ifdef DEBUG
     std::cout << "peer " << p.peer_id << " writable\n";
     #endif
 
-    if (p.state == PeerConn::State::Connecting) {
+    if (p.state == PeerConn<TCP>::State::Connecting) {
         int err = 0;
         socklen_t l = sizeof(err);
         if (::getsockopt(p.fd, SOL_SOCKET, SO_ERROR, &err, &l) < 0 || err != 0) {
             DropPeer(p);
             return "error attempting to write to peer socket\n";
         }
-        p.state = PeerConn::State::Connected;
+        p.state = PeerConn<TCP>::State::Connected;
         #ifdef DEBUG
         std::cout << "Set peer " << p.peer_id << " fd to Connected\n";
         #endif
@@ -271,8 +380,39 @@ inline std::optional<const char*> EventLoop<T>::OnPeerWritable(PeerConn& p) {
     return {};
 }
 
+template <>
+inline std::optional<const char*> EventLoop<UDP>::OnPeerWritable(PeerConn<UDP>& p) {
+    #ifdef DEBUG
+    std::cout << "peer " << p.peer_id << " writable\n";
+    #endif
+
+    itimerspec spec{};
+    const long rpc_timeout_ns = rpc_timeout_ms * 1'000'000; // rpc_timeout is in ms
+    spec.it_value.tv_sec  = rpc_timeout_ns / NS_PER_SEC;
+    spec.it_value.tv_nsec = rpc_timeout_ns % NS_PER_SEC;
+    spec.it_interval      = {0, 0};
+
+    uint8_t kind;
+    std::memcpy(&kind, p.wbuf + sizeof(uint32_t), sizeof(kind));
+    if (static_cast<RpcKind>(kind) != RpcKind::ForwardLeader) {
+        ::timerfd_settime(p.timer_fds.fds[kind + 1], 0, &spec, nullptr);
+    }
+
+    ssize_t n = ::send(p.fd,
+        p.wbuf,
+        p.wbuf_size,
+        MSG_NOSIGNAL);
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return "failed to send reply to peer: socket write buffer full\n";
+
+    std::memset(p.wbuf, 0, p.wbuf_size);
+    p.wbuf_size = 0;
+    std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
+    if (modify_err) return modify_err;
+    return {};
+}
+
 template <SocketType T>
-inline std::optional<const char*> EventLoop<T>::OnPeerHeartbeatTimeout(PeerConn& p) {
+inline std::optional<const char*> EventLoop<T>::OnPeerHeartbeatTimeout(PeerConn<T>& p) {
     #ifdef DEBUG
     std::cout << "heartbeat timer fired for peer " << p.peer_id << "\n";
     #endif
@@ -289,7 +429,7 @@ inline std::optional<const char*> EventLoop<T>::OnPeerHeartbeatTimeout(PeerConn&
 }
 
 template <SocketType T>
-inline std::optional<const char*> EventLoop<T>::OnPeerAERPCTimeout(PeerConn& p) {
+inline std::optional<const char*> EventLoop<T>::OnPeerAERPCTimeout(PeerConn<T>& p) {
     #ifdef DEBUG
     std::cout << "AE timeout timer fired for peer " << p.peer_id << "\n";
     #endif
@@ -306,7 +446,7 @@ inline std::optional<const char*> EventLoop<T>::OnPeerAERPCTimeout(PeerConn& p) 
 }
 
 template <SocketType T>
-inline std::optional<const char*> EventLoop<T>::OnPeerRVRPCTimeout(PeerConn& p) {
+inline std::optional<const char*> EventLoop<T>::OnPeerRVRPCTimeout(PeerConn<T>& p) {
     #ifdef DEBUG
     std::cout << "RV timeout timer fired for peer " << p.peer_id << "\n";
     #endif
@@ -323,7 +463,7 @@ inline std::optional<const char*> EventLoop<T>::OnPeerRVRPCTimeout(PeerConn& p) 
 }
 
 template <SocketType T>
-inline std::optional<const char*> EventLoop<T>::OnPeerISRPCTimeout(PeerConn& p) {
+inline std::optional<const char*> EventLoop<T>::OnPeerISRPCTimeout(PeerConn<T>& p) {
     #ifdef DEBUG
     std::cout << "IS timeout timer fired for peer " << p.peer_id << "\n";
     #endif
@@ -340,7 +480,7 @@ inline std::optional<const char*> EventLoop<T>::OnPeerISRPCTimeout(PeerConn& p) 
 }
 
 template <SocketType T>
-inline void EventLoop<T>::DropPeer(PeerConn& p) {
+inline void EventLoop<T>::DropPeer(PeerConn<T>& p) {
     #ifdef DEBUG
     std::cout << "Dropping peer " << p.peer_id << "\n";
     #endif
@@ -360,53 +500,26 @@ inline void EventLoop<T>::DropPeer(PeerConn& p) {
         }
     }
 
-    p.state        = PeerConn::State::Disconnected;
-    p.epoll_events = 0;
-    std::memset(p.wbuf, 0, sizeof(p.wbuf));
-    p.wbuf_offset = 0;
-    p.wbuf_size = 0;
-    std::memset(p.rbuf, 0, sizeof(p.rbuf));
-    p.rbuf_offset = 0;
+    if constexpr (T == TCP) {
+        p.state        = PeerConn<TCP>::State::Disconnected;
+        p.epoll_events = 0;
+        std::memset(p.wbuf, 0, sizeof(p.wbuf));
+        p.wbuf_offset = 0;
+        p.wbuf_size = 0;
+        std::memset(p.rbuf, 0, sizeof(p.rbuf));
+        p.rbuf_offset = 0;
+    }
+
+    if constexpr (T == UDP) {
+        p.state        = PeerConn<UDP>::State::Disconnected;
+        p.epoll_events = 0;
+        std::memset(p.wbuf, 0, sizeof(p.wbuf));
+        p.wbuf_size = 0;
+        std::memset(p.rbuf, 0, sizeof(p.rbuf));
+    }
     // send message to node thread to remove this peer from its nodes list
     post_node_inbox(NodeMessage{DropPeerMsg{.source_id = p.peer_id}});
 }
-
-/* Enqueue functions post a new message to the back of the destination peer struct's outbox queue. */
-
-// template <size_t P>
-// inline void EventLoop<P>::EnqueueAE(NodeID peer_id, AppendEntriesReqPayload payload) {
-//     InflightRPC rpc{};
-//     rpc.kind = RpcKind::AppendEntries
-//     post_inflight(peer_id, rpc);
-// }
-
-// template <size_t P>
-// inline void EventLoop<P>::EnqueueRV(NodeID peer_id, AppendEntriesReqPayload payload) {
-//     InflightRPC rpc{};
-//     rpc.kind = RpcKind::RequestVote;
-//     post_inflight(peer_id, rpc);
-// }
-
-// template <size_t P>
-// inline void EventLoop<P>::EnqueueIS(NodeID peer_id, AppendEntriesReqPayload payload) {
-//     InflightRPC rpc{};
-//     rpc.kind = RpcKind::InstallSnapshot;
-//     post_inflight(peer_id, rpc);
-// }
-
-// template <size_t P>
-// inline void EventLoop<P>::EnqueueArmTimer(NodeID peer_id, std::chrono::nanoseconds period) {
-//     InflightRPC rpc;
-//     inflight.kind = RpcKind::ArmTimer;
-//     post_inflight(peer_id, rpc);
-// }
-
-// template <size_t P>
-// inline void EventLoop<P>::EnqueueDisarmTimer(NodeID peer_id, std::chrono::nanoseconds period) {
-//     InflightRPC rpc;
-//     inflight.kind = RpcKind::DisarmTimer;
-//     post_inflight(peer_id, rpc);
-// }
 
 /* called when draining the messages in the event loop's MPSC inbox. */
 template <SocketType T>
@@ -425,8 +538,8 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(AppendEntriesReqPa
             "Failed to post AE RPC to inflight queue: peer id {} not found in peer_conns\n",
             payload.dest_id);
     }
-    PeerConn& p = peer_id_to_conn[payload.dest_id];
-    if (p.peer_id == -1) {
+    PeerConn<T>& p = peer_id_to_conn[payload.dest_id];
+    if (!p) {
         return std::format(
             "Failed to post AE RPC to inflight queue: peer id {} not found in peer_conns\n",
             payload.dest_id);
@@ -442,7 +555,7 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(AppendEntriesReqPa
     std::cout << "serialized\n";
     #endif
 
-    if (p.state == PeerConn::State::Connected) {
+    if (p.state == PeerConn<T>::State::Connected) {
         std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
         if (modify_err) {
             return std::format(
@@ -466,8 +579,8 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(RequestVoteReqPayl
             "Failed to post RV RPC to inflight queue: peer id {} not found in peer_conns\n",
             payload.dest_id);
     }
-    PeerConn& p = peer_id_to_conn[payload.dest_id];
-    if (p.peer_id == -1) {
+    PeerConn<T>& p = peer_id_to_conn[payload.dest_id];
+    if (!p) {
         return std::format(
             "Failed to post RV RPC to inflight queue: peer id {} not found in peer_conns\n",
             payload.dest_id);
@@ -477,7 +590,7 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(RequestVoteReqPayl
     BufByteWriter writer{p.wbuf};
     writer.serialize(payload);
 
-    if (p.state == PeerConn::State::Connected) {
+    if (p.state == PeerConn<T>::State::Connected) {
         std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
         if (modify_err) {
             return std::format(
@@ -501,8 +614,8 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(InstallSnapshotReq
             "Failed to post IS RPC to inflight queue: peer id {} not found in peer_conns\n",
             payload.dest_id);
     }
-    PeerConn& p = peer_id_to_conn[payload.dest_id];
-    if (p.peer_id == -1) {
+    PeerConn<T>& p = peer_id_to_conn[payload.dest_id];
+    if (!p) {
         return std::format(
             "Failed to post IS RPC to inflight queue: peer id {} not found in peer_conns\n",
             payload.dest_id);
@@ -512,7 +625,7 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(InstallSnapshotReq
     BufByteWriter writer{p.wbuf};
     writer.serialize(payload);
 
-    if (p.state == PeerConn::State::Connected) {
+    if (p.state == PeerConn<T>::State::Connected) {
         std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
         if (modify_err) {
             return std::format(
@@ -536,8 +649,8 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(ForwardLeaderMsg& 
             "Failed to post FL RPC to inflight queue: peer id {} not found in peer_conns\n",
             payload.dest_id);
     }
-    PeerConn& p = peer_id_to_conn[payload.dest_id];
-    if (p.peer_id == -1) {
+    PeerConn<T>& p = peer_id_to_conn[payload.dest_id];
+    if (!p) {
         return std::format(
             "Failed to post FL RPC to inflight queue: peer id {} not found in peer_conns\n",
             payload.dest_id);
@@ -547,7 +660,7 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(ForwardLeaderMsg& 
     BufByteWriter writer{p.wbuf};
     writer.serialize(payload);
 
-    if (p.state == PeerConn::State::Connected) {
+    if (p.state == PeerConn<T>::State::Connected) {
         std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
         if (modify_err) {
             return std::format(
@@ -571,8 +684,8 @@ inline std::optional<std::string> EventLoop<T>::arm_heartbeat_timer(NodeID peer_
             "Failed to arm heartbeat timer: peer id {} not found in peer_conns\n",
             peer_id);
     }
-    PeerConn& p = peer_id_to_conn[peer_id];
-    if (p.peer_id == -1) {
+    PeerConn<T>& p = peer_id_to_conn[peer_id];
+    if (!p) {
         return std::format(
             "Failed to arm heartbeat timer: peer id {} not found in peer_conns\n",
             peer_id);
@@ -602,8 +715,8 @@ inline std::optional<std::string> EventLoop<T>::disarm_heartbeat_timer(NodeID pe
             "Failed to disarm heartbeat timer: peer id {} not found in peer_conns\n",
             peer_id);
     }
-    PeerConn& p = peer_id_to_conn[peer_id];
-    if (p.peer_id == -1) {
+    PeerConn<T>& p = peer_id_to_conn[peer_id];
+    if (!p) {
         return std::format(
             "Failed to disarm heartbeat timer: peer id {} not found in peer_conns\n",
             peer_id);

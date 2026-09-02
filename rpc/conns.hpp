@@ -292,14 +292,17 @@ struct TimerFDs {
 
 };
 
-struct PeerConn {
+template <SocketType T>
+struct PeerConn;
+
+template<>
+struct PeerConn<TCP> {
     // Single write buffer for all outbound data (requests are serialized
     // and appended). wbuf_offset tracks chunked-send progress.
     std::byte wbuf[REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind)]{};
 
     std::byte rbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)]{};
 
-    // Configuration (set once when the peer subset is wired into the loop).
     IPAddrPort peer_ip_addr = 0;
 
     size_t wbuf_offset      = 0;
@@ -314,9 +317,36 @@ struct PeerConn {
 
     uint32_t epoll_events   = 0;
 
-    // Connection state.
     enum class State : uint8_t { Disconnected, Connecting, Connected };
-    State state           = State::Disconnected;
+    State state             = State::Disconnected;
+
+    operator bool() {
+        return fd != -1;
+    }
+    PeerConn(IPAddrPort ip_addr, NodeID peer_id) : peer_ip_addr{ip_addr}, peer_id{peer_id} {}
+    PeerConn() {};
+
+};
+
+template<>
+struct PeerConn<UDP> {
+    std::byte wbuf[REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind)]{};
+    std::byte rbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)]{};
+
+    IPAddrPort peer_ip_addr = 0;
+
+    size_t wbuf_size        = 0;
+
+    NodeID peer_id          = -1;
+
+    FD fd                   = -1;
+
+    TimerFDs timer_fds{};
+
+    uint32_t epoll_events   = 0;
+
+    enum class State : uint8_t { Disconnected, Connected };
+    State state             = State::Disconnected;
 
     operator bool() {
         return fd != -1;

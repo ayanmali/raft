@@ -76,7 +76,7 @@ struct EventLoop {
 
     private:
     ClientData<T> client_data;
-    std::vector<PeerConn> peer_id_to_conn;
+    std::vector<PeerConn<T>> peer_id_to_conn;
 
     ClientConnSlab<T> client_slab;
 
@@ -99,7 +99,7 @@ struct EventLoop {
     std::optional<const char*> register_fd(FD fd, uint32_t events, EpollContextKind, uint32_t);
     std::optional<const char*> register_fd(FD fd, uint32_t events, EpollContextKind);
     std::optional<const char*> modify_client_interest(ClientConn<T>* c, uint32_t events);
-    std::optional<const char*> modify_peer_interest(PeerConn& p, uint32_t events);
+    std::optional<const char*> modify_peer_interest(PeerConn<T>& p, uint32_t events);
     std::optional<const char*> modify_listener_interest(uint32_t events);
 
     std::optional<std::string> post_inflight(AppendEntriesReqPayload& payload);
@@ -119,14 +119,14 @@ struct EventLoop {
     void CloseClient(ClientConn<TCP>* c);
 
     // outbound messaging
-    std::optional<const char*> OnPeerWritable(PeerConn& p);
-    std::optional<const char*> OnPeerReadable(PeerConn& p);
-    std::optional<const char*> OnPeerHeartbeatTimeout(PeerConn& p);
-    std::optional<const char*> OnPeerAERPCTimeout(PeerConn& p);
-    std::optional<const char*> OnPeerRVRPCTimeout(PeerConn& p);
-    std::optional<const char*> OnPeerISRPCTimeout(PeerConn& p);
-    std::optional<std::string> StartConnect(PeerConn& p);
-    void DropPeer(PeerConn& p);
+    std::optional<const char*> OnPeerWritable(PeerConn<T>& p);
+    std::optional<const char*> OnPeerReadable(PeerConn<T>& p);
+    std::optional<const char*> OnPeerHeartbeatTimeout(PeerConn<T>& p);
+    std::optional<const char*> OnPeerAERPCTimeout(PeerConn<T>& p);
+    std::optional<const char*> OnPeerRVRPCTimeout(PeerConn<T>& p);
+    std::optional<const char*> OnPeerISRPCTimeout(PeerConn<T>& p);
+    std::optional<std::string> StartConnect(PeerConn<T>& p);
+    void DropPeer(PeerConn<T>& p);
 
     // wake / inbox
     std::optional<std::string> arm_heartbeat_timer(NodeID peer_id);
@@ -189,7 +189,7 @@ inline EventLoop<T>::~EventLoop() {
     if (listen_fd >= 0) ::close(listen_fd);
     if (epoll_fd >= 0) ::close(epoll_fd);
     if (event_fd >= 0) ::close(event_fd);
-    for (PeerConn& p : peer_id_to_conn) {
+    for (PeerConn<T>& p : peer_id_to_conn) {
         if (p.fd >= 0) ::close(p.fd);
     }
 };

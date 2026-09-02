@@ -20,7 +20,7 @@ static constexpr SocketType SOCKET_TYPE = SocketType::UDP;
 static constexpr uint EVENT_LOOP_THREADS = 1;
 
 static constexpr int EPOLL_BATCH = 64; // max # of fds processed per loop iteration
-static constexpr int UDP_RECV_BATCH = 64; // Max datagrams drained from the UDP listen socket per recvmmsg() call.
+static constexpr int UDP_RECV_BATCH = 32; // Max datagrams drained from the UDP listen socket per recvmmsg() call.
 
 static constexpr size_t NODE_INBOX_RING_CAP = 512;
 static constexpr size_t EVENT_LOOP_INBOX_RING_CAP = 1024; // per producer; must be power of 2
