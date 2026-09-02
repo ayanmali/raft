@@ -110,7 +110,6 @@ inline std::optional<std::string> EventLoop<T>::Run() {
                                 }
                             }
 
-                            break;
                         }
 
                         // ready to send reply to client
