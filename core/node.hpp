@@ -257,7 +257,7 @@ inline Node::~Node() {
         if (threads_[i].joinable()) threads_[i].join();
     }
 
-    ::fclose(log_fp_);
+    if (log_fp_ != nullptr) ::fclose(log_fp_);
     if (snapshot_fp_ != nullptr) ::fclose(snapshot_fp_);
     if (snapshot_tmp_fp_ != nullptr) ::fclose(snapshot_tmp_fp_);
 }
