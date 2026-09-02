@@ -303,7 +303,7 @@ inline void Node::append_commands(std::vector<std::byte*>& commands) {
     }
     bool done = false;
     while (!done) {
-        inbox_->Push(0, NodeMessage{AppendClientReq{std::move(entries)}});
+        done = inbox_->Push(0, NodeMessage{AppendClientReq{std::move(entries)}});
     }
 }
 
@@ -315,14 +315,14 @@ inline void Node::append_commands(std::byte (&commands)[MAX_ENTRIES][CMD_SIZE], 
     }
     bool done = false;
     while (!done) {
-        inbox_->Push(0, NodeMessage{AppendClientReq{std::move(entries)}});
+        done = inbox_->Push(0, NodeMessage{AppendClientReq{std::move(entries)}});
     }
 }
 
 inline void Node::append_commands(std::vector<LogEntry>&& commands) {
     bool done = false;
     while (!done) {
-        inbox_->Push(0, NodeMessage{AppendClientReq{std::move(commands)}});
+        done = inbox_->Push(0, NodeMessage{AppendClientReq{std::move(commands)}});
     }
 }
 
@@ -402,7 +402,7 @@ inline void Node::read_state(FILE* out) {
     #endif
     bool done = false;
     while (!done) {
-        inbox_->Push(0, ReadStateClientReq{out});
+        done = inbox_->Push(0, ReadStateClientReq{out});
     }
 }
 
