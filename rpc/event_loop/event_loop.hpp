@@ -57,8 +57,7 @@ One event loop runs on one thread.
 template <SocketType T>
 struct EventLoop {
     public:
-    static std::optional<std::string> CreateEventLoop(EventLoop*, NodeInbox*, size_t this_id, long heartbeat_period_ms, long rpc_timeout_ms);
-    EventLoop(size_t inbound_cap, NodeInbox*, size_t this_id, long period);
+    static std::optional<std::string> CreateEventLoop(EventLoop*, NodeInbox*, NodeID this_id, uint num_peers_init, long heartbeat_period_ms, long rpc_timeout_ms);
     EventLoop() = default;
     ~EventLoop();
     EventLoop(EventLoop&&) = delete;
@@ -154,9 +153,10 @@ struct EventLoop {
 #include "./peer.hpp"
 
 template <SocketType T>
-inline std::optional<std::string> EventLoop<T>::CreateEventLoop(EventLoop* loop, NodeInbox* node_inbox, size_t this_id, long heartbeat_period_ms, long rpc_timeout_ms) {
+inline std::optional<std::string> EventLoop<T>::CreateEventLoop(EventLoop* loop, NodeInbox* node_inbox, NodeID this_id, uint num_peers_init, long heartbeat_period_ms, long rpc_timeout_ms) {
     loop->node_inbox = node_inbox;
     loop->this_id = this_id;
+    loop->peer_id_to_conn.resize(num_peers_init);
     loop->heartbeat_period_ms = heartbeat_period_ms;
     loop->rpc_timeout_ms = rpc_timeout_ms;
 

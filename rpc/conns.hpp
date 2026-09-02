@@ -277,16 +277,16 @@ struct TimerFDs {
 
     ~TimerFDs() {
         if (get_heartbeat() != -1) {
-            close(get_heartbeat());
+            ::close(get_heartbeat());
         }
         if (get_ae_timeout() != -1) {
-            close(get_ae_timeout());
+            ::close(get_ae_timeout());
         }
         if (get_rv_timeout() != -1) {
-            close(get_rv_timeout());
+            ::close(get_rv_timeout());
         }
         if (get_is_timeout() != -1) {
-            close(get_is_timeout());
+            ::close(get_is_timeout());
         }
     }
 
