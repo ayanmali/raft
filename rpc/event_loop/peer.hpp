@@ -29,11 +29,13 @@ inline std::optional<const char*> EventLoop<T>::modify_peer_interest(PeerConn& p
 template <SocketType T>
 inline std::optional<std::string> EventLoop<T>::AddPeer(NodeID id, IPAddrPort ip_addr) {
     auto [addr, port] = decode(ip_addr);
-    if (id > peer_id_to_conn.size()) {
+    if (id >= peer_id_to_conn.size()) {
         peer_id_to_conn.resize(id + 1);
     }
-    auto it = peer_id_to_conn.emplace(peer_id_to_conn.begin() + id, ip_addr, id);
-    std::optional<std::string> connect_err = StartConnect(*it);
+    PeerConn& p = peer_id_to_conn[id];
+    p.peer_ip_addr = ip_addr;
+    p.peer_id = id;
+    std::optional<std::string> connect_err = StartConnect(p);
     if (connect_err) {
         #ifdef DEBUG
         std::cout << "error adding peer " << id << " (ip address = " << ip_addr << ") to configuration: " << connect_err.value() << "\n";
