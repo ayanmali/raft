@@ -1,6 +1,7 @@
 #pragma once
 #include "./event_loop.hpp"
 #include "../protocol/utils.hpp"
+#include <arpa/inet.h>
 #include <asm-generic/socket.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
@@ -60,11 +61,15 @@ inline std::optional<std::string> EventLoop<T>::StartConnect(PeerConn& p) {
     hints.ai_flags    = AI_NUMERICHOST | AI_NUMERICSERV;
 
     addrinfo* res = nullptr;
-    auto [ip_addr, port] = decode(p.peer_ip_addr);
-    std::string ip_addr_str = std::to_string(ip_addr);
-    std::string port_str = std::to_string(port);
+    auto [ip_addr, port] = decode(p.peer_ip_addr); // stored in network byte order
+    struct in_addr addr{ .s_addr = ip_addr };
+    char ip_addr_str[INET_ADDRSTRLEN];
+    if (::inet_ntop(AF_INET, &addr, ip_addr_str, sizeof(ip_addr_str)) == nullptr) {
+        return "Error converting peer IP address to string";
+    }
+    std::string port_str = std::to_string(ntohs(port));
 
-    if (::getaddrinfo(ip_addr_str.c_str(), port_str.c_str(), &hints, &res) != 0 || res == nullptr) {
+    if (::getaddrinfo(ip_addr_str, port_str.c_str(), &hints, &res) != 0 || res == nullptr) {
         return "Error getting address info for peer";
     }
 

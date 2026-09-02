@@ -19,14 +19,14 @@ RPC request/response payload structs.
 
 using NodeID = int32_t;
 using FD = int;
-using IPAddrPort = uint64_t; // 32 bit IP address left shifted by 16 bits, and 16 bit port number
+using IPAddrPort = uint64_t; // 32 bit IP address left shifted by 16 bits, and 16 bit port number, both in network byte order
 inline IPAddrPort encode(uint32_t ip, uint16_t port) {
     return (uint64_t(ip) << 16) | port;
 };
-inline IPAddrPort encode(const char* ip, uint16_t port) {
-    unsigned char buf[sizeof(struct in6_addr)];
-    uint32_t ip_addr = inet_pton(AF_INET, ip, buf);
-    return encode(ip_addr, port);
+inline std::variant<IPAddrPort, const char*> encode(const char* ip, uint16_t port) {
+    struct in_addr addr;
+    if (inet_pton(AF_INET, ip, &addr) != 1) return "failed to encode IP address and port";
+    return encode(addr.s_addr, htons(port));
 }
 inline std::pair<uint32_t, uint16_t> decode(uint64_t val) {
     return {

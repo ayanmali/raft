@@ -200,7 +200,11 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
         n->node_ids_.set_cluster_node(i);
         if (i == MY_ID) continue;
 
-        IPAddrPort ip_addr = encode(init_cluster[i], SERVER_PORT);
+        auto result = encode(init_cluster[i], SERVER_PORT);
+        if (std::holds_alternative<const char*>(result)) {
+            return std::get<const char*>(result);
+        }
+        IPAddrPort ip_addr = std::get<IPAddrPort>(result);
         std::optional<std::string> add_peer_err = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
             .AddPeer(i, ip_addr);
         if (add_peer_err) {
