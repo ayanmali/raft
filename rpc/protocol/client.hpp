@@ -87,7 +87,7 @@ inline std::variant<NodeMessage, const char*> parse_rbuf(ClientConn<TCP>* c, uin
     }
 }
 
-inline std::variant<NodeMessage, const char*> parse_datagram(std::byte* buf, size_t message_size, IPAddrPort client_ip_addr) {
+inline std::variant<NodeMessage, const char*> parse_datagram(std::byte* buf, uint32_t message_size, IPAddrPort client_ip_addr) {
     ByteReader byte_reader(std::span<std::byte>(buf + sizeof(message_size), message_size));
     uint8_t rpc_id;
 
