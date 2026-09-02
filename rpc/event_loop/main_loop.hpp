@@ -120,6 +120,7 @@ inline std::optional<std::string> EventLoop<T>::Run() {
                                 if (c->wbuf_size > 0) {
                                     auto [client_ip, client_port] = decode(c->client_ip_addr);
                                     struct sockaddr_in raw_addr;
+                                    raw_addr.sin_family = AF_INET;
                                     raw_addr.sin_addr.s_addr = client_ip;
                                     raw_addr.sin_port = client_port;
                                     socklen_t addrlen = sizeof(raw_addr);
