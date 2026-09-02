@@ -268,11 +268,11 @@ template <SocketType T>
 inline std::optional<const char*> EventLoop<T>::setup_listen_socket() {
     addrinfo hints{};
     hints.ai_family   = AF_INET;
-    if constexpr (SOCKET_TYPE == TCP) {
-        hints.ai_socktype = SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC;
+    if constexpr (T == TCP) {
+        hints.ai_socktype = SOCK_STREAM;
     }
-    if constexpr (SOCKET_TYPE == UDP) {
-        hints.ai_socktype = SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC;
+    if constexpr (T == UDP) {
+        hints.ai_socktype = SOCK_DGRAM;
     }
     hints.ai_flags    = AI_PASSIVE;
 
@@ -282,7 +282,12 @@ inline std::optional<const char*> EventLoop<T>::setup_listen_socket() {
         return ("getaddrinfo failed");
     }
 
-    listen_fd = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if constexpr (T == TCP) {
+        listen_fd = ::socket(res->ai_family, res->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC, res->ai_protocol);
+    }
+    if constexpr (T == UDP) {
+        listen_fd = ::socket(res->ai_family, res->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC, res->ai_protocol);
+    }
     if (listen_fd < 0) return ("socket failed");
 
     int yes = 1;
