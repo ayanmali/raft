@@ -558,14 +558,24 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(AppendEntriesReqPa
             payload.dest_id);
     }
 
-    p.wbuf_size = payload.size() + sizeof(uint32_t) + sizeof(uint8_t);
+    if constexpr (T == TCP) {
+        if (p.wbuf_offset > 0) {
+            std::memmove(p.wbuf, p.wbuf + p.wbuf_offset, p.wbuf_size - p.wbuf_offset);
+            p.wbuf_size -= p.wbuf_offset;
+            p.wbuf_offset = 0;
+        }
+    }
+
+    auto total_size = payload.size() + sizeof(uint32_t) + sizeof(RpcKind);
+    if (sizeof(p.wbuf) - p.wbuf_size < total_size) {
+        return {}; // TODO: handle the case where the PeerConn's write buffer is full
+    }
+    BufByteWriter writer{p.wbuf + p.wbuf_size};
+    writer.serialize(payload);
+    p.wbuf_size += total_size;
+
     #ifdef DEBUG
     std::cout << "p.wbuf_size = " << p.wbuf_size << "\n";
-    #endif
-    BufByteWriter writer{p.wbuf};
-    writer.serialize(payload);
-    #ifdef DEBUG
-    std::cout << "serialized\n";
     #endif
 
     if (p.state == PeerConn<T>::State::Connected) {
@@ -599,9 +609,25 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(RequestVoteReqPayl
             payload.dest_id);
     }
 
-    p.wbuf_size = payload.size() + sizeof(uint32_t) + sizeof(uint8_t);
-    BufByteWriter writer{p.wbuf};
+    if constexpr (T == TCP) {
+        if (p.wbuf_offset > 0) {
+            std::memmove(p.wbuf, p.wbuf + p.wbuf_offset, p.wbuf_size - p.wbuf_offset);
+            p.wbuf_size -= p.wbuf_offset;
+            p.wbuf_offset = 0;
+        }
+    }
+
+    auto total_size = payload.size() + sizeof(uint32_t) + sizeof(RpcKind);
+    if (sizeof(p.wbuf) - p.wbuf_size < total_size) {
+        return {}; // TODO: handle the case where the PeerConn's write buffer is full
+    }
+    BufByteWriter writer{p.wbuf + p.wbuf_size};
     writer.serialize(payload);
+    p.wbuf_size += total_size;
+
+    #ifdef DEBUG
+    std::cout << "p.wbuf_size = " << p.wbuf_size << "\n";
+    #endif
 
     if (p.state == PeerConn<T>::State::Connected) {
         std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
@@ -634,9 +660,25 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(InstallSnapshotReq
             payload.dest_id);
     }
 
-    p.wbuf_size = payload.size() + sizeof(uint32_t) + sizeof(uint8_t);
-    BufByteWriter writer{p.wbuf};
+    if constexpr (T == TCP) {
+        if (p.wbuf_offset > 0) {
+            std::memmove(p.wbuf, p.wbuf + p.wbuf_offset, p.wbuf_size - p.wbuf_offset);
+            p.wbuf_size -= p.wbuf_offset;
+            p.wbuf_offset = 0;
+        }
+    }
+
+    auto total_size = payload.size() + sizeof(uint32_t) + sizeof(RpcKind);
+    if (sizeof(p.wbuf) - p.wbuf_size < total_size) {
+        return {}; // TODO: handle the case where the PeerConn's write buffer is full
+    }
+    BufByteWriter writer{p.wbuf + p.wbuf_size};
     writer.serialize(payload);
+    p.wbuf_size += total_size;
+
+    #ifdef DEBUG
+    std::cout << "p.wbuf_size = " << p.wbuf_size << "\n";
+    #endif
 
     if (p.state == PeerConn<T>::State::Connected) {
         std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
@@ -669,9 +711,25 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(ForwardLeaderMsg& 
             payload.dest_id);
     }
 
-    p.wbuf_size = payload.size() + sizeof(uint32_t) + sizeof(uint8_t);
-    BufByteWriter writer{p.wbuf};
+    if constexpr (T == TCP) {
+        if (p.wbuf_offset > 0) {
+            std::memmove(p.wbuf, p.wbuf + p.wbuf_offset, p.wbuf_size - p.wbuf_offset);
+            p.wbuf_size -= p.wbuf_offset;
+            p.wbuf_offset = 0;
+        }
+    }
+
+    auto total_size = payload.size() + sizeof(uint32_t) + sizeof(RpcKind);
+    if (sizeof(p.wbuf) - p.wbuf_size < total_size) {
+        return {}; // TODO: handle the case where the PeerConn's write buffer is full
+    }
+    BufByteWriter writer{p.wbuf + p.wbuf_size};
     writer.serialize(payload);
+    p.wbuf_size += total_size;
+
+    #ifdef DEBUG
+    std::cout << "p.wbuf_size = " << p.wbuf_size << "\n";
+    #endif
 
     if (p.state == PeerConn<T>::State::Connected) {
         std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events | EPOLLOUT);
