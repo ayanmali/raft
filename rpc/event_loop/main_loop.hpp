@@ -122,22 +122,31 @@ inline std::optional<std::string> EventLoop<T>::Run() {
                         if (e & EPOLLOUT) {
                             bool drained = true;
                             for (auto& [client_ip_addr, c] : client_data.client_ip_to_conn) {
-                                if (c->wbuf_size > 0) {
-                                    auto [client_ip, client_port] = decode(c->client_ip_addr);
-                                    struct sockaddr_in raw_addr;
-                                    raw_addr.sin_family = AF_INET;
-                                    raw_addr.sin_addr.s_addr = client_ip;
-                                    raw_addr.sin_port = client_port;
-                                    socklen_t addrlen = sizeof(raw_addr);
+                                if (c->wbuf_size == 0) continue;
+
+                                auto [client_ip, client_port] = decode(c->client_ip_addr);
+                                struct sockaddr_in raw_addr;
+                                raw_addr.sin_family = AF_INET;
+                                raw_addr.sin_addr.s_addr = client_ip;
+                                raw_addr.sin_port = client_port;
+
+                                while (c->wbuf_size > 0) {
+                                    uint32_t msg_len;
+                                    std::memcpy(&msg_len, c->wbuf, sizeof(uint32_t));
+                                    msg_len = ntohl(msg_len);
+
                                     ssize_t sent = ::sendto(listen_fd,
-                                        c->wbuf, c->wbuf_size,
+                                        c->wbuf, sizeof(msg_len) + msg_len,
                                         0,
-                                        (struct sockaddr*)&raw_addr, addrlen);
+                                        (struct sockaddr*)&raw_addr, sizeof(raw_addr));
                                     if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                                         drained = false; // keep the datagram queued and EPOLLOUT armed
                                         break;
                                     }
-                                    c->wbuf_size = 0; // sent, or dropped on error (UDP is best-effort)
+                                    c->wbuf_size -= (sizeof(msg_len) + msg_len); // sent, or dropped on error (UDP is best-effort)
+                                    if (c->wbuf_size > 0) {
+                                        std::memmove(c->wbuf, c->wbuf + (sizeof(msg_len) + msg_len), c->wbuf_size);
+                                    }
                                 }
                             }
                             if (drained) {

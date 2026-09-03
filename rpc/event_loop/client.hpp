@@ -124,6 +124,7 @@ inline std::optional<const char*> EventLoop<TCP>::OnClientWritable(ClientConn<TC
     }
     std::memset(c->wbuf, 0, c->wbuf_size);
     c->wbuf_offset = 0;
+    c->wbuf_size = 0;
     std::optional<const char*> modify_err = modify_client_interest(c, c->epoll_events & ~EPOLLOUT);
     if (modify_err) {
         #ifdef DEBUG
@@ -207,28 +208,35 @@ inline std::optional<std::string> EventLoop<T>::post_reply(AppendEntriesRespPayl
     #ifdef DEBUG
     std::cout << "posting AE reply to outbound queue to node w/ ip " << c->client_ip_addr << "\n";
     #endif
-    //++c.pending_tasks;
-
-    c->wbuf_size = payload.size() + sizeof(uint32_t) + sizeof(RpcKind);
-    BufByteWriter writer{c->wbuf};
-    writer.serialize(payload);
 
     if constexpr (T == TCP) {
-        if (c->wbuf_offset < c->wbuf_size) {
-            std::optional<const char*> modify_err = modify_client_interest(c, c->epoll_events | EPOLLOUT);
-            if (modify_err) {
-                return modify_err.value();
-            }
-            Wake();
+        if (c->wbuf_offset > 0) {
+            std::memmove(c->wbuf, c->wbuf + c->wbuf_offset, c->wbuf_size - c->wbuf_offset);
+            c->wbuf_size -= c->wbuf_offset;
+            c->wbuf_offset = 0;
         }
+    }
+
+    auto total_size = payload.size() + sizeof(uint32_t) + sizeof(RpcKind);
+    if (sizeof(c->wbuf) - c->wbuf_size < total_size) {
+        return {}; // TODO: handle the case where the ClientConn's write buffer is full
+    }
+
+    BufByteWriter writer{c->wbuf + c->wbuf_size};
+    writer.serialize(payload);
+    c->wbuf_size += total_size;
+
+    std::optional<const char*> modify_err;
+    if constexpr (T == TCP) {
+        modify_err = modify_client_interest(c, c->epoll_events | EPOLLOUT);
     }
     if constexpr (T == UDP) {
-        std::optional<const char*> modify_err = modify_listener_interest(listen_epoll_events | EPOLLOUT);
-        if (modify_err) {
-            return modify_err.value();
-        }
-        Wake();
+        modify_err = modify_listener_interest(listen_epoll_events | EPOLLOUT);
     }
+    if (modify_err) {
+        return modify_err.value();
+    }
+    Wake();
     return {};
 }
 
@@ -246,26 +254,34 @@ inline std::optional<std::string> EventLoop<T>::post_reply(RequestVoteRespPayloa
     std::cout << "posting RV reply to outbound queue to node w/ ip " << c->client_ip_addr << "\n";
     #endif
 
-    c->wbuf_size = payload.size() + sizeof(uint32_t) + sizeof(RpcKind);
-    BufByteWriter writer{c->wbuf};
-    writer.serialize(payload);
-
     if constexpr (T == TCP) {
-        if (c->wbuf_offset < c->wbuf_size) {
-            std::optional<const char*> modify_err = modify_client_interest(c, c->epoll_events | EPOLLOUT);
-            if (modify_err) {
-                return modify_err.value();
-            }
-            Wake();
+        if (c->wbuf_offset > 0) {
+            std::memmove(c->wbuf, c->wbuf + c->wbuf_offset, c->wbuf_size - c->wbuf_offset);
+            c->wbuf_size -= c->wbuf_offset;
+            c->wbuf_offset = 0;
         }
+    }
+
+    auto total_size = payload.size() + sizeof(uint32_t) + sizeof(RpcKind);
+    if (sizeof(c->wbuf) - c->wbuf_size < total_size) {
+        return {}; // TODO: handle the case where the ClientConn's write buffer is full;
+    }
+
+    BufByteWriter writer{c->wbuf + c->wbuf_size};
+    writer.serialize(payload);
+    c->wbuf_size += total_size;
+
+    std::optional<const char*> modify_err;
+    if constexpr (T == TCP) {
+        modify_err = modify_client_interest(c, c->epoll_events | EPOLLOUT);
     }
     if constexpr (T == UDP) {
-        std::optional<const char*> modify_err = modify_listener_interest(listen_epoll_events | EPOLLOUT);
-        if (modify_err) {
-            return modify_err.value();
-        }
-        Wake();
+        modify_err = modify_listener_interest(listen_epoll_events | EPOLLOUT);
     }
+    if (modify_err) {
+        return modify_err.value();
+    }
+    Wake();
     return {};
 }
 
@@ -282,28 +298,34 @@ inline std::optional<std::string> EventLoop<T>::post_reply(InstallSnapshotRespPa
     #ifdef DEBUG
     std::cout << "posting IS reply to outbound queue to node w/ ip " << c->client_ip_addr << "\n";
     #endif
-    //++c.pending_tasks;
-
-    c->wbuf_size = payload.size() + sizeof(uint32_t) + sizeof(RpcKind);
-    BufByteWriter writer{c->wbuf};
-    writer.serialize(payload);
-
 
     if constexpr (T == TCP) {
-        if (c->wbuf_offset < c->wbuf_size) {
-            std::optional<const char*> modify_err = modify_client_interest(c, c->epoll_events | EPOLLOUT);
-            if (modify_err) {
-                return modify_err.value();
-            }
-            Wake();
+        if (c->wbuf_offset > 0) {
+            std::memmove(c->wbuf, c->wbuf + c->wbuf_offset, c->wbuf_size - c->wbuf_offset);
+            c->wbuf_size -= c->wbuf_offset;
+            c->wbuf_offset = 0;
         }
+    }
+
+    auto total_size = payload.size() + sizeof(uint32_t) + sizeof(RpcKind);
+    if (sizeof(c->wbuf) - c->wbuf_size < total_size) {
+        return {}; // TODO: handle the case where the ClientConn's write buffer is full
+    }
+
+    BufByteWriter writer{c->wbuf + c->wbuf_size};
+    writer.serialize(payload);
+    c->wbuf_size += total_size;
+
+    std::optional<const char*> modify_err;
+    if constexpr (T == TCP) {
+        modify_err = modify_client_interest(c, c->epoll_events | EPOLLOUT);
     }
     if constexpr (T == UDP) {
-        std::optional<const char*> modify_err = modify_listener_interest(listen_epoll_events | EPOLLOUT);
-        if (modify_err) {
-            return modify_err.value();
-        }
-        Wake();
+        modify_err = modify_listener_interest(listen_epoll_events | EPOLLOUT);
     }
+    if (modify_err) {
+        return modify_err.value();
+    }
+    Wake();
     return {};
 }

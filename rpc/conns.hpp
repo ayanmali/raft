@@ -32,30 +32,38 @@ constexpr SocketType UDP = SocketType::UDP;
 enum class RpcKind : uint8_t { AppendEntries, RequestVote, InstallSnapshot, ForwardLeader };
 
 constexpr size_t REQ_SIZE = std::max(
-  {
-      AppendEntriesReqPayload::size(),
-      RequestVoteReqPayload::size(),
-      InstallSnapshotReqPayload::size(),
-      ForwardLeaderMsg::size()
-  }
+    {
+
+        AppendEntriesReqPayload::size(),
+        RequestVoteReqPayload::size(),
+        InstallSnapshotReqPayload::size(),
+        ForwardLeaderMsg::size()
+    }
 );
-constexpr uint32_t RESP_SIZE = static_cast<uint32_t>(
-    std::max(
-        {
-            AppendEntriesRespPayload::size(),
-            RequestVoteRespPayload::size(),
-            InstallSnapshotRespPayload::size()
-        }
-    )
+constexpr size_t RESP_SIZE = std::max(
+    {
+        AppendEntriesRespPayload::size(),
+        RequestVoteRespPayload::size(),
+        InstallSnapshotRespPayload::size()
+    }
 );
+
+constexpr size_t MAX_INFLIGHT_REQ_BYTES = AppendEntriesReqPayload::size() + sizeof(uint32_t) + sizeof(RpcKind)
+    + RequestVoteReqPayload::size() + sizeof(uint32_t) + sizeof(RpcKind)
+    + InstallSnapshotReqPayload::size() + sizeof(uint32_t) + sizeof(RpcKind)
+    + ForwardLeaderMsg::size() + sizeof(uint32_t) + sizeof(RpcKind);
+
+constexpr size_t MAX_INFLIGHT_RESP_BYTES = AppendEntriesRespPayload::size() + sizeof(uint32_t) + sizeof(RpcKind)
+    + RequestVoteRespPayload::size() + sizeof(uint32_t) + sizeof(RpcKind)
+    + InstallSnapshotRespPayload::size() + sizeof(uint32_t) + sizeof(RpcKind);
 
 template <SocketType T>
 struct ClientConn;
 
 template <>
 struct ClientConn<TCP> {
-    std::byte rbuf[REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind)]{};
-    std::byte wbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)]{};
+    std::byte rbuf[REQ_SIZE + sizeof(uint32_t) + sizeof(RpcKind)]{};
+    std::byte wbuf[MAX_INFLIGHT_RESP_BYTES]{};
 
     uint64_t client_ip_addr = 0;
 
@@ -83,7 +91,7 @@ struct ClientConn<TCP> {
 
 template <>
 struct ClientConn<UDP> {
-    std::byte wbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)]{};
+    std::byte wbuf[MAX_INFLIGHT_RESP_BYTES]{};
 
     uint64_t client_ip_addr = 0;
 
@@ -299,9 +307,9 @@ template<>
 struct PeerConn<TCP> {
     // Single write buffer for all outbound data (requests are serialized
     // and appended). wbuf_offset tracks chunked-send progress.
-    std::byte wbuf[REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind)]{};
+    std::byte wbuf[MAX_INFLIGHT_REQ_BYTES]{};
 
-    std::byte rbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)]{};
+    std::byte rbuf[RESP_SIZE + sizeof(uint32_t) + sizeof(RpcKind)]{};
 
     IPAddrPort peer_ip_addr = 0;
 
@@ -330,8 +338,8 @@ struct PeerConn<TCP> {
 
 template<>
 struct PeerConn<UDP> {
-    std::byte wbuf[REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind)]{};
-    std::byte rbuf[RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind)]{};
+    std::byte wbuf[MAX_INFLIGHT_REQ_BYTES]{};
+    std::byte rbuf[RESP_SIZE + sizeof(uint32_t) + sizeof(RpcKind)]{};
 
     IPAddrPort peer_ip_addr = 0;
 
