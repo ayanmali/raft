@@ -300,8 +300,21 @@ inline std::optional<const char*> EventLoop<UDP>::OnPeerReadable(PeerConn<UDP>& 
     std::cout << "peer " << p.peer_id << " readable\n";
     #endif
 
-    ssize_t n = ::recv(p.fd, p.rbuf, sizeof(p.rbuf), 0);
+    struct msghdr msg = {0};
+    struct iovec iov[1];
+    iov[0].iov_base = p.rbuf;
+    iov[0].iov_len = sizeof(p.rbuf);
+    msg.msg_iov = iov;
+    msg.msg_iovlen = 1;
+
+    ssize_t n = ::recvmsg(p.fd, &msg, 0);
     if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) { return "failed to read peer reply: data not available\n"; }
+    if (n < sizeof(uint32_t)) {
+        return "received datagram too small to parse\n";
+    }
+    if (msg.msg_flags & MSG_TRUNC) {
+        return "truncated peer reply\n";
+    }
 
     uint32_t net_len;
     std::memcpy(&net_len, p.rbuf, sizeof(net_len));

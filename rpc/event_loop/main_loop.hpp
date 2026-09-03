@@ -72,13 +72,19 @@ inline std::optional<std::string> EventLoop<T>::Run() {
                                 if (nmsgs < 0) {
                                     if (errno == EINTR) continue;
                                     if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                                    return "unexpected error when trying to read client message (recvmmsg)\n";
+                                    continue;
                                 }
 
                                 for (int k = 0; k < nmsgs; ++k) {
                                     #ifdef DEBUG
                                     std::cout << "found client message (UDP)\n";
                                     #endif
+                                    if (msgs[k].msg_hdr.msg_flags & MSG_TRUNC) {
+                                        continue; // TODO: handle truncation
+                                    }
+                                    if (msgs[k].msg_len < sizeof(uint32_t)) {
+                                        continue; // datagram too small to parse
+                                    }
                                     std::byte* buf = bufs[k];
                                     struct sockaddr_in& raw_addr = addrs[k];
 
@@ -98,7 +104,7 @@ inline std::optional<std::string> EventLoop<T>::Run() {
                                     std::memcpy(&net_len, buf, sizeof(net_len));
                                     uint32_t msg_len = ntohl(net_len);
                                     if (msg_len > sizeof(bufs[k]) - sizeof(uint32_t)) {
-                                        return "failed to read client message: client sent oversized request frame\n";
+                                       continue;
                                     }
 
                                     auto request_raw = parse_datagram(buf, msgs[k].msg_len, key);
