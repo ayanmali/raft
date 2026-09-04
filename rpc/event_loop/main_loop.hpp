@@ -83,7 +83,7 @@ inline std::optional<std::string> EventLoop<T>::Run() {
                                         continue; // TODO: handle truncation
                                     }
                                     if (msgs[k].msg_len < sizeof(uint32_t)) {
-                                        continue; // datagram too small to parse
+                                        continue; // datagram too small to parse TODO: handle this
                                     }
                                     std::byte* buf = bufs[k];
                                     struct sockaddr_in& raw_addr = addrs[k];
@@ -91,13 +91,10 @@ inline std::optional<std::string> EventLoop<T>::Run() {
                                     uint64_t key = encode(raw_addr.sin_addr.s_addr, raw_addr.sin_port);
 
                                     if (!client_data.client_ip_to_conn.contains(key)) {
-                                        for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt) {
-                                            ClientConn<UDP>* c = client_slab.Acquire();
-                                            if (!c) continue;
-                                            c->client_ip_addr = key;
-                                            client_data.client_ip_to_conn[key] = c;
-                                            break;
-                                        }
+                                        ClientConn<UDP>* c = client_slab.Acquire();
+                                        if (!c) continue;
+                                        c->client_ip_addr = key;
+                                        client_data.client_ip_to_conn[key] = c;
                                     }
 
                                     uint32_t net_len;

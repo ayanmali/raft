@@ -71,7 +71,10 @@ inline std::optional<const char*> EventLoop<TCP>::Accept() {
         }
 
         ClientConn<TCP>* c = client_slab.Acquire();
-        if (!c) continue;
+        if (!c) {
+            ::close(fd);
+            return "failed to acquire client connection\n";
+        };
 
         // populate client ip address
         c->client_ip_addr = encode(peer.sin_addr.s_addr, peer.sin_port);

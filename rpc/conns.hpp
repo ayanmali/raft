@@ -67,42 +67,28 @@ struct ClientConn<TCP> {
 
     uint64_t client_ip_addr = 0;
 
-    ClientConn* next_free  = nullptr; // freelist link, valid only when free
-
     size_t wbuf_offset     =  0; // to track how much of the wbuf has been sent (for chunked sends)
     size_t wbuf_size       =  0; // tracks the number of serialized bytes in wbuf to send over the network
     size_t rbuf_offset     =  0;
+
+    ClientConn* next_free  = nullptr; // freelist link, valid only when free
+
     FD fd                  = -1;
-    //ClientID client_id     =  0;
-    // NodeID id;
-
-    // Reserved: when request handlers run on a worker pool, this counts
-    // outstanding tasks for the connection so we can defer reaping a
-    // closed conn until all completions land. With synchronous Raft
-    // // handlers (current state) this stays 0.
-    //int      pending_tasks = 0;
-
-    // bool     want_write    = false;
     uint32_t epoll_events  =  0;
     bool     closing       =  false;
-    // uint32_t next_seq      = 0;
 
 };
 
 template <>
 struct ClientConn<UDP> {
     std::byte wbuf[MAX_INFLIGHT_RESP_BYTES]{};
-
     uint64_t client_ip_addr = 0;
-
-    ClientConn* next_free   = nullptr; // freelist link, valid only when free
-
-    // size_t wbuf_offset      =  0; // to track how much of the wbuf has been sent (for chunked sends)
     size_t wbuf_size        =  0; // tracks the number of serialized bytes in wbuf to send over the network
+    ClientConn* next_free   = nullptr; // freelist link, valid only when free
 };
 
 /*
-Slab<T>: pre-allocated, fixed-capacity storage with an intrusive
+pre-allocated, fixed-capacity storage with an intrusive
 singly-linked freelist for O(1) acquire/release.
 
 Contract on T:
@@ -112,28 +98,15 @@ Contract on T:
     tail). While the slot is "in use" the field is unused; convention is
     to leave it as nullptr.
 
-Lifetime:
-  - The ctor placement-new's `cap` instances of T into one heap-allocated
-    byte buffer and links them all onto the freelist.
-  - Acquire() pops the freelist head; Release(t) pushes onto the freelist.
-  - Release() does NOT reset T's user-visible state; the caller is
-    responsible for that immediately before calling Release(). This keeps
-    Slab<T> agnostic to the per-T reset semantics (e.g. clearing
-    std::vector buffers vs zeroing scalar fields).
-  - The dtor walks every slot by buffer index calling ~T(), because the
-    freelist and "in use" sets are interleaved through the buffer and
-    cannot be enumerated from either chain alone.
-
-Not thread-safe. Single-owner.
 */
 template <typename T>
 struct Slab {
     static_assert(std::is_same_v<decltype(std::declval<T&>().next_free), T*>,
                   "Slab<T> requires a public member `T* next_free`");
 
-    explicit Slab(std::size_t cap) : cap_{cap} {
+    explicit Slab(size_t cap) : cap_{cap} {
         buffer_ = new char[sizeof(T) * cap_];
-        for (std::size_t i = 0; i < cap_; ++i) {
+        for (size_t i = 0; i < cap_; ++i) {
             auto* n = ::new (buffer_ + i * sizeof(T)) T();
             n->next_free = free_head_;
             free_head_   = n;
@@ -184,9 +157,9 @@ private:
         return reinterpret_cast<T*>(buffer_ + i * sizeof(T));
     }
 
-    char*       buffer_    = nullptr;
-    T*          free_head_ = nullptr;
-    size_t      cap_       = 0;
+    char* buffer_ = nullptr;
+    T*    free_head_ = nullptr;
+    size_t cap_ = 0;
 };
 
 template <SocketType T>
@@ -209,30 +182,20 @@ struct ClientConnSlab {
         c->rbuf_offset = 0;
         c->client_ip_addr = 0;
         c->fd = -1;
-        //c->client_id = 0;
-        // c->id = 0;
-        //c->pending_tasks = 0;
         c->closing = false;
-        // c->want_write = false;
         c->epoll_events = 0;
-        // c->next_seq = 0;
         slab.Release(c);
     }
 
     void Release(ClientConn<UDP>* c) {
         std::memset(c->wbuf, 0, sizeof(c->wbuf));
-        // c->wbuf_offset = 0;
         c->wbuf_size = 0;
         c->client_ip_addr = 0;
-        //std::memset(c->client_ip_addr, 0, sizeof(c->client_ip_addr));
         slab.Release(c);
     }
 };
 
 /*
-Per-peer outbound connection state. PeerConn lives in the EventLoop that
-owns this peer (peer_id % N); no cross-thread access.
-
 State machine:
   Disconnected -> Connecting -> Connected -> Disconnected (on EOF/error)
 
@@ -242,14 +205,6 @@ State machine:
                 as EPOLLOUT with SO_ERROR == 0.
   Connected:    EPOLLIN always armed; EPOLLOUT armed iff wbuf_offset <
                 wbuf.size().
-
-Buffering (mirrors ClientConn):
-  - wbuf: outbound bytes. Serialized requests are appended; chunked sends
-          advance wbuf_offset. The buffer is cleared after all bytes are
-          transmitted and EPOLLOUT is disarmed.
-  - rbuf: inbound reply bytes. Replies carry a 4-byte length prefix
-          followed by a 1-byte RpcKind and the payload, so the parser is
-          self-describing — no per-request tracking needed.
 */
 
 enum class TimerKind : uint8_t { Heartbeat=0, AE=1, RV=2, IS=3 };
@@ -305,8 +260,6 @@ struct PeerConn;
 
 template<>
 struct PeerConn<TCP> {
-    // Single write buffer for all outbound data (requests are serialized
-    // and appended). wbuf_offset tracks chunked-send progress.
     std::byte wbuf[MAX_INFLIGHT_REQ_BYTES]{};
 
     std::byte rbuf[RESP_SIZE + sizeof(uint32_t) + sizeof(RpcKind)]{};
