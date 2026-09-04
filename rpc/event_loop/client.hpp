@@ -73,7 +73,7 @@ inline std::optional<const char*> EventLoop<TCP>::Accept() {
         ClientConn<TCP>* c = client_slab.Acquire();
         if (!c) {
             ::close(fd);
-            return "failed to acquire client connection\n";
+            return {}; // TODO: handle the case where a connection cannot be acquired
         };
 
         // populate client ip address

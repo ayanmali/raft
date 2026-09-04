@@ -72,7 +72,7 @@ inline std::optional<std::string> EventLoop<T>::Run() {
                                 if (nmsgs < 0) {
                                     if (errno == EINTR) continue;
                                     if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                                    continue;
+                                    break; // TODO: handle this
                                 }
 
                                 for (int k = 0; k < nmsgs; ++k) {
