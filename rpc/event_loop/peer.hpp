@@ -405,22 +405,37 @@ inline std::optional<const char*> EventLoop<UDP>::OnPeerWritable(PeerConn<UDP>& 
     spec.it_value.tv_nsec = rpc_timeout_ns % NS_PER_SEC;
     spec.it_interval      = {0, 0};
 
-    uint8_t kind;
-    std::memcpy(&kind, p.wbuf + sizeof(uint32_t), sizeof(kind));
-    if (static_cast<RpcKind>(kind) != RpcKind::ForwardLeader) {
-        ::timerfd_settime(p.timer_fds.fds[kind + 1], 0, &spec, nullptr);
+    bool drained = true;
+    while (p.wbuf_size > 0) {
+        uint32_t msg_len;
+        std::memcpy(&msg_len, p.wbuf, sizeof(msg_len));
+        msg_len = ntohl(msg_len);
+        const size_t frame_size = msg_len + sizeof(msg_len);
+        uint8_t kind;
+        std::memcpy(&kind, p.wbuf + sizeof(msg_len), sizeof(kind));
+
+        if (static_cast<RpcKind>(kind) != RpcKind::ForwardLeader) {
+            ::timerfd_settime(p.timer_fds.fds[kind + 1], 0, &spec, nullptr);
+        }
+
+        ssize_t n = ::send(p.fd,
+            p.wbuf,
+            frame_size,
+            MSG_NOSIGNAL);
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            drained = false;
+            break; // TODO: handle case where socket write buffer full
+        }
+
+        p.wbuf_size -= frame_size;
+        if (p.wbuf_size > 0) {
+            std::memmove(p.wbuf, p.wbuf + frame_size, p.wbuf_size);
+        }
     }
-
-    ssize_t n = ::send(p.fd,
-        p.wbuf,
-        p.wbuf_size,
-        MSG_NOSIGNAL);
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return "failed to send reply to peer: socket write buffer full\n";
-
-    std::memset(p.wbuf, 0, p.wbuf_size);
-    p.wbuf_size = 0;
-    std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
-    if (modify_err) return modify_err;
+    if (drained) {
+        std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
+        if (modify_err) return modify_err;
+    }
     return {};
 }
 
