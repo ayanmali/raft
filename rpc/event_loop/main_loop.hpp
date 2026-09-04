@@ -279,7 +279,7 @@ inline std::optional<std::string> EventLoop<T>::Run() {
                     if (e & EPOLLIN) {
                         #ifdef DEBUG
                         const char* kind_name[] = {"heartbeat", "AE", "RV", "IS"};
-                        std::cout << kind_name[static_cast<uint8_t>(kind)] << " timer fired for peer " << p.peer_id << "\n";
+                        std::cout << kind_name[static_cast<uint8_t>(subtype)] << " timer fired for peer " << p.peer_id << "\n";
                         #endif
                         std::optional<const char*> timer_err;
                         switch (subtype) {
@@ -290,7 +290,7 @@ inline std::optional<std::string> EventLoop<T>::Run() {
                         }
                         if (timer_err) {
                             #ifdef DEBUG
-                            std::cout << "failed to handle " << kind_name[static_cast<uint8_t>(kind)]
+                            std::cout << "failed to handle " << kind_name[static_cast<uint8_t>(subtype)]
                                       << " timer for peer " << p.peer_id << ":\n" << timer_err.value() << "\n";
                             #endif
                             break;
