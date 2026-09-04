@@ -77,6 +77,10 @@ struct ClientConn<TCP> {
     uint32_t epoll_events  =  0;
     bool     closing       =  false;
 
+    ~ClientConn() {
+        if (fd != -1) ::close(fd);
+    }
+
 };
 
 template <>
@@ -238,21 +242,6 @@ struct TimerFDs {
         fds[static_cast<uint8_t>(TimerKind::IS)] = fd;
     }
 
-    ~TimerFDs() {
-        if (get_heartbeat() != -1) {
-            ::close(get_heartbeat());
-        }
-        if (get_ae_timeout() != -1) {
-            ::close(get_ae_timeout());
-        }
-        if (get_rv_timeout() != -1) {
-            ::close(get_rv_timeout());
-        }
-        if (get_is_timeout() != -1) {
-            ::close(get_is_timeout());
-        }
-    }
-
 };
 
 template <SocketType T>
@@ -285,7 +274,39 @@ struct PeerConn<TCP> {
         return fd != -1;
     }
     PeerConn(IPAddrPort ip_addr, NodeID peer_id) : peer_ip_addr{ip_addr}, peer_id{peer_id} {}
-    PeerConn() {};
+    PeerConn() = default;
+    ~PeerConn() {
+        if (fd != -1) ::close(fd);
+        for (FD tfd : timer_fds.fds) {
+            if (tfd != -1) {
+                ::close(tfd);
+            }
+        }
+    }
+
+    PeerConn(const PeerConn& other) = delete;
+    PeerConn& operator=(const PeerConn& other) = delete;
+
+    PeerConn(PeerConn&& other) noexcept {
+        other.fd = this->fd;
+        this->fd = -1;
+        for (int i = 0; i < sizeof(timer_fds.fds) / sizeof(FD); ++i) {
+            this->timer_fds.fds[i] = other.timer_fds.fds[i];
+            other.timer_fds.fds[i] = -1;
+        }
+    }
+
+    PeerConn& operator=(PeerConn&& other) noexcept {
+        if (this != &other) {
+            other.fd = this->fd;
+            this->fd = -1;
+            for (int i = 0; i < sizeof(timer_fds.fds) / sizeof(FD); ++i) {
+                this->timer_fds.fds[i] = other.timer_fds.fds[i];
+                other.timer_fds.fds[i] = -1;
+            }
+        }
+        return *this;
+    }
 
 };
 
@@ -313,6 +334,38 @@ struct PeerConn<UDP> {
         return fd != -1;
     }
     PeerConn(IPAddrPort ip_addr, NodeID peer_id) : peer_ip_addr{ip_addr}, peer_id{peer_id} {}
-    PeerConn() {};
+    PeerConn() = default;
+    ~PeerConn() {
+        if (fd != -1) ::close(fd);
+        for (FD tfd : timer_fds.fds) {
+            if (tfd != -1) {
+                ::close(tfd);
+            }
+        }
+    }
+
+    PeerConn(const PeerConn& other) = delete;
+    PeerConn& operator=(const PeerConn& other) = delete;
+
+    PeerConn(PeerConn&& other) noexcept {
+        other.fd = this->fd;
+        this->fd = -1;
+        for (int i = 0; i < sizeof(timer_fds.fds) / sizeof(FD); ++i) {
+            this->timer_fds.fds[i] = other.timer_fds.fds[i];
+            other.timer_fds.fds[i] = -1;
+        }
+    }
+
+    PeerConn& operator=(PeerConn&& other) noexcept {
+        if (this != &other) {
+            other.fd = this->fd;
+            this->fd = -1;
+            for (int i = 0; i < sizeof(timer_fds.fds) / sizeof(FD); ++i) {
+                this->timer_fds.fds[i] = other.timer_fds.fds[i];
+                other.timer_fds.fds[i] = -1;
+            }
+        }
+        return *this;
+    }
 
 };

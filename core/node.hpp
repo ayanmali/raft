@@ -170,7 +170,7 @@ inline std::optional<std::string> Node::CreateNode(Node* n, ELNodeInbox* el_inbo
     std::cout << "election timeout set to " << n->election_timeout_ << "\n";
     #endif
 
-    constexpr uint num_peers_init = BASE_CLUSTER_SIZE / EVENT_LOOP_THREADS;
+    constexpr uint num_peers_init = (BASE_CLUSTER_SIZE / EVENT_LOOP_THREADS) + 1;
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
         std::optional<std::string> create_el_err = EventLoop<SOCKET_TYPE>::CreateEventLoop(
             &n->loops_[i], el_inbox, i, num_peers_init, HEARTBEAT_INTERVAL_MS, RPC_TIMEOUT_MS
