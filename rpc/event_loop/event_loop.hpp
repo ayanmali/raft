@@ -30,7 +30,8 @@
 constexpr int MAX_ATTEMPTS = 10;
 
 // for processing incoming requests/replies
-using NodeInbox = MPSC<NodeMessage, NODE_INBOX_RING_CAP, EVENT_LOOP_THREADS>;
+using ELNodeInbox = MPSC<NodeMessage, NODE_INBOX_RING_CAP, EVENT_LOOP_THREADS>;
+using ClientNodeInbox = SPSCQueue<ClientMessage, NODE_INBOX_RING_CAP>;
 
 struct ReplyHandlerVisitor;
 struct RequestHandlerVisitor;
@@ -57,7 +58,7 @@ One event loop runs on one thread.
 template <SocketType T>
 struct EventLoop {
     public:
-    static std::optional<std::string> CreateEventLoop(EventLoop*, NodeInbox*, NodeID this_id, uint num_peers_init, long heartbeat_period_ms, long rpc_timeout_ms);
+    static std::optional<std::string> CreateEventLoop(EventLoop*, ELNodeInbox*, NodeID this_id, uint num_peers_init, long heartbeat_period_ms, long rpc_timeout_ms);
     EventLoop() = default;
     ~EventLoop();
     EventLoop(EventLoop&&) = delete;
@@ -80,7 +81,7 @@ struct EventLoop {
 
     ClientConnSlab<T> client_slab;
 
-    NodeInbox* node_inbox; // incoming messages; multi-producer (each event loop is a producer)
+    ELNodeInbox* node_inbox; // incoming messages; multi-producer (each event loop is a producer)
 
     long heartbeat_period_ms;
     long rpc_timeout_ms;
@@ -153,7 +154,7 @@ struct EventLoop {
 #include "./peer.hpp"
 
 template <SocketType T>
-inline std::optional<std::string> EventLoop<T>::CreateEventLoop(EventLoop* loop, NodeInbox* node_inbox, NodeID this_id, uint num_peers_init, long heartbeat_period_ms, long rpc_timeout_ms) {
+inline std::optional<std::string> EventLoop<T>::CreateEventLoop(EventLoop* loop, ELNodeInbox* node_inbox, NodeID this_id, uint num_peers_init, long heartbeat_period_ms, long rpc_timeout_ms) {
     loop->node_inbox = node_inbox;
     loop->this_id = this_id;
     loop->peer_id_to_conn.resize(num_peers_init);

@@ -42,7 +42,7 @@ Persistence:
 
 struct Node {
 public:
-    static std::optional<std::string> CreateNode(Node*, NodeInbox*, void(*)(FILE*, const LogEntry&));
+    static std::optional<std::string> CreateNode(Node*, ELNodeInbox*, ClientNodeInbox*, void(*)(FILE*, const LogEntry&));
     ~Node();
     Node()                       = default;
     Node(const Node&)            = delete;
@@ -120,7 +120,8 @@ public:
     std::chrono::steady_clock::time_point                           last_flush_;
     std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
     std::uniform_int_distribution<>                                 distrib_                 = std::uniform_int_distribution<>(MIN_ELECTION_TIMEOUT_MS, MAX_ELECTION_TIMEOUT_MS);
-    NodeInbox*                                                      inbox_;
+    ELNodeInbox*                                                    el_inbox_;
+    ClientNodeInbox*                                                client_inbox_;
     FILE*                                                           log_fp_                  = nullptr;
     FILE*                                                           snapshot_fp_             = nullptr;
     FILE*                                                           snapshot_tmp_fp_         = nullptr;
@@ -141,14 +142,15 @@ public:
 
 // Factory function
 // Node requires stable addresses (i.e. not movable)
-inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
+inline std::optional<std::string> Node::CreateNode(Node* n, ELNodeInbox* el_inbox, ClientNodeInbox* client_inbox,
     void(*apply_entry_to_sm)(FILE*, const LogEntry&)) {
     static_assert(EVENT_LOOP_THREADS > 0 && (EVENT_LOOP_THREADS & (EVENT_LOOP_THREADS - 1)) == 0,
         "Node: EVENT_LOOP_THREADS must be a power of 2 (MPSC inbox requires it)");
     static_assert(SNAPSHOT_CHUNK_SIZE >= MAX_CLUSTER_HEADER_SIZE,
         "Node: SNAPSHOT_CHUNK_SIZE must be at least as large as MAX_CLUSTER_HEADER_SIZE (determined by MAX_NODES)");
 
-    n->inbox_ = inbox;
+    n->el_inbox_ = el_inbox;
+    n->client_inbox_ = client_inbox;
     n->apply_entry = apply_entry_to_sm;
 
     // SIGPIPE would otherwise kill the process if a peer disappears
@@ -171,7 +173,7 @@ inline std::optional<std::string> Node::CreateNode(Node* n, NodeInbox* inbox,
     constexpr uint num_peers_init = BASE_CLUSTER_SIZE / EVENT_LOOP_THREADS;
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
         std::optional<std::string> create_el_err = EventLoop<SOCKET_TYPE>::CreateEventLoop(
-            &n->loops_[i], inbox, i, num_peers_init, HEARTBEAT_INTERVAL_MS, RPC_TIMEOUT_MS
+            &n->loops_[i], el_inbox, i, num_peers_init, HEARTBEAT_INTERVAL_MS, RPC_TIMEOUT_MS
         );
         if (create_el_err) {
             return (
@@ -270,7 +272,7 @@ inline Node::~Node() {
 inline void Node::Stop() {
     bool done = false;
     while (!done) {
-        done = inbox_->Push(0, StopNodeMsg{});
+        done = client_inbox_->PushOne(StopNodeMsg{});
     }
 }
 
@@ -304,7 +306,7 @@ inline void Node::append_commands(std::vector<std::byte*>& commands) {
     }
     bool done = false;
     while (!done) {
-        done = inbox_->Push(0, NodeMessage{AppendClientReq{std::move(entries)}});
+        done = client_inbox_->PushOne(AppendClientReq{std::move(entries)});
     }
 }
 
@@ -316,14 +318,14 @@ inline void Node::append_commands(std::byte (&commands)[MAX_ENTRIES][CMD_SIZE], 
     }
     bool done = false;
     while (!done) {
-        done = inbox_->Push(0, NodeMessage{AppendClientReq{std::move(entries)}});
+        done = client_inbox_->PushOne(AppendClientReq{std::move(entries)});
     }
 }
 
 inline void Node::append_commands(std::vector<LogEntry>&& commands) {
     bool done = false;
     while (!done) {
-        done = inbox_->Push(0, NodeMessage{AppendClientReq{std::move(commands)}});
+        done = client_inbox_->PushOne(AppendClientReq{std::move(commands)});
     }
 }
 
@@ -403,7 +405,7 @@ inline void Node::read_state(FILE* out) {
     #endif
     bool done = false;
     while (!done) {
-        done = inbox_->Push(0, ReadStateClientReq{out});
+        done = client_inbox_->PushOne(ReadStateClientReq{out});
     }
 }
 

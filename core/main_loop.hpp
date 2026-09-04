@@ -22,7 +22,7 @@ inline void Node::MainLoop() {
         }
         // check the reply inbox for new replies that have arrived
         bool leader_contact{false};
-        inbox_->DrainAll([this, &leader_contact](NodeMessage&& message) {
+        el_inbox_->DrainAll([this, &leader_contact](NodeMessage&& message) {
             #ifdef DEBUG
             std::cout << "draining node inbox...\n";
             #endif
@@ -678,7 +678,26 @@ inline void Node::MainLoop() {
                     }
                 }
 
-                else if constexpr (std::is_same_v<T, StopNodeMsg>) {
+                else {
+                    static_assert(false, "non-exhaustive visitor");
+                }
+                return {};
+            }, message);
+            #ifdef DEBUG
+            if (err) std::cout << "inbox handler error: " << err.value() << "\n";
+            #else
+            (void)err;
+            #endif
+        });
+
+        client_inbox_->DrainAll([this](ClientMessage&& message) {
+            #ifdef DEBUG
+            std::cout << "draining client inbox...\n";
+            #endif
+            std::optional<std::string> err = std::visit([this, &message](auto&& payload) -> std::optional<std::string> {
+                using T = std::decay_t<decltype(payload)>;
+
+                if constexpr (std::is_same_v<T, StopNodeMsg>) {
                     running_ = false;
                 }
 
@@ -700,17 +719,8 @@ inline void Node::MainLoop() {
                     // TODO: notify client that the state was reconstructed/run a callback
                 }
 
-                else {
-                    static_assert(false, "non-exhaustive visitor");
-                }
                 return {};
-            }, message);
-            #ifdef DEBUG
-            if (err) std::cout << "inbox handler error: " << err.value() << "\n";
-            #else
-            (void)err;
-            #endif
-        });
+        }, message); });
 
         // Periodic flush of log, snapshot, and state machine files
         auto flush_now = std::chrono::steady_clock::now();

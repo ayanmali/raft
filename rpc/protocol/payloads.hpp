@@ -214,5 +214,6 @@ struct AppendClientReq {
 };
 struct ReadStateClientReq { FILE* fp; };
 
-using NodeMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeout, DropPeerMsg, ForwardLeaderMsg, StopNodeMsg, AETimeout, RVTimeout, ISTimeout, AppendClientReq, ReadStateClientReq>;
+using NodeMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeout, DropPeerMsg, ForwardLeaderMsg, AETimeout, RVTimeout, ISTimeout>;
 using EventLoopMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisarmTimer, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, AddPeerMsg, ForwardLeaderMsg>;
+using ClientMessage = std::variant<StopNodeMsg, AppendClientReq, ReadStateClientReq>;
