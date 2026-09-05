@@ -404,6 +404,10 @@ inline void Node::MainLoop() {
                     std::cout << "\n";
                     #endif
 
+                    if (payload.server_id < 0 || payload.server_id >= node_ids_.bits()) {
+                        return {};
+                    }
+
                     if (payload.term > current_term_) { // this shouldn't happen
                         advance_to_term(payload.term);
                         // leader_id_ = payload.server_id;
@@ -427,13 +431,15 @@ inline void Node::MainLoop() {
                     //     ));
                     // }
 
-                    next_indexes_[payload.server_id] = payload.prev_log_idx;
-                    if (payload.prev_log_idx < 1) {
+                    const uint32_t last_log_idx = static_cast<uint32_t>(log_.size() - 1) + base_logical_idx_;
+                    if (payload.prev_log_idx < 1 || payload.prev_log_idx > last_log_idx) {
                         return (std::format(
                             "Failed to retry AE RPC: next_index {} for server id {} already at the snapshot boundary",
                             payload.prev_log_idx, payload.server_id
                         ));
                     }
+                    next_indexes_[payload.server_id] = payload.prev_log_idx;
+
                     auto& el = loops_[payload.server_id & (EVENT_LOOP_THREADS - 1)];
 
                     if (payload.prev_log_idx < base_logical_idx_) {
@@ -497,6 +503,9 @@ inline void Node::MainLoop() {
                     std::cout << "found IS reply from node " << payload.server_id << "\n";
                     std::cout << "payload.term = " << payload.term << "\n";
                     #endif
+                    if (payload.server_id < 0 || payload.server_id >= node_ids_.bits()) {
+                        return {};
+                    }
 
                     if (payload.term > current_term_) {
                         advance_to_term(payload.term);

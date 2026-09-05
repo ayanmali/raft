@@ -843,6 +843,9 @@ inline std::optional<std::string> Node::send_append_entries(int32_t next_idx, Ev
     std::cout << "base logical idx = " << base_logical_idx_ << "\n";
     std::cout << "log_.size() == " << log_.size() << "\n";
     #endif
+    if (next_idx <= 0) {
+        return {};
+    }
     // Only send entries when the log actually has some at/after
     // next_idx. log_.size()-1 >= next_idx is restated as
     // next_idx < log_.size() to avoid uint underflow on size 0.
