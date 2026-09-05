@@ -127,6 +127,8 @@ inline void Node::MainLoop() {
                         }
                     }
 
+                    flush_files();
+
                     if (payload.leader_commit > commit_index_) {
                         commit_index_ = std::min(payload.leader_commit, static_cast<uint32_t>(payload.prev_log_idx + payload.entries_len));
                     }
@@ -246,6 +248,7 @@ inline void Node::MainLoop() {
                             .vote_granted = 0}, el);
                         return {};
                     }
+                    flush_files();
 
                     const uint32_t last_log_idx = static_cast<uint32_t>(log_.size() - 1) + base_logical_idx_; // logical index
                     const uint32_t last_log_term = log_.empty() ? base_term_ : log_.back().term;
