@@ -562,15 +562,15 @@ inline uint32_t Node::compute_new_commit_idx() {
     const size_t majority = (node_ids_.num_in_cluster - 1) / 2;
 
     // every member's last-known match index; self is always last_log_idx
-    std::vector<int> matches{};
-    matches.reserve(match_indexes_.size() + 1);
+    std::array<int, MAX_NODES> matches{};
+    int idx = 0;
     for (int m : match_indexes_) {
         if (m < 0) continue;
-        matches.push_back(m);
+        matches[idx++] = m;
     }
-    matches.push_back(last_log_idx);
-    if (majority >= matches.size()) return commit_index_;
-    std::nth_element(matches.begin(), matches.begin() + majority, matches.end());
+    matches[idx++] = last_log_idx;
+    if (majority >= idx) return commit_index_;
+    std::nth_element(matches.begin(), matches.begin() + majority, matches.begin() + idx);
 
     #ifdef DEBUG
     std::cout << "Matches:\n";

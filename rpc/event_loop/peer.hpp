@@ -2,7 +2,7 @@
 #include "./event_loop.hpp"
 #include "../protocol/utils.hpp"
 #include <arpa/inet.h>
-#include <asm-generic/socket.h>
+#include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
 #include <sys/timerfd.h>

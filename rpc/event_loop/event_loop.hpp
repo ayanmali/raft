@@ -7,7 +7,7 @@
 #include "../protocol/payloads.hpp"
 #include "../protocol/peer.hpp"
 #include "../protocol/client.hpp"
-#include <asm-generic/socket.h>
+#include <sys/socket.h>
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
