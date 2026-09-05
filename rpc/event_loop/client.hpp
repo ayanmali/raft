@@ -134,12 +134,6 @@ inline std::optional<const char*> EventLoop<TCP>::OnClientWritable(ClientConn<TC
         std::cout << modify_err.value() << "\n";
         #endif
     }
-    // if (c.closing && c.pending_tasks == 0) ReapClient(c);
-    if (c->closing) {
-        client_data.client_fd_to_ip.erase(c->fd);
-        client_data.client_ip_to_conn.erase(c->client_ip_addr);
-        client_slab.Release(c);
-    }
     return modify_err;
 }
 
