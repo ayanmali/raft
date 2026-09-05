@@ -7,7 +7,7 @@
 #include <chrono>
 #endif
 
-inline void Node::MainLoop() {
+inline std::optional<std::string> Node::MainLoop() {
     #ifdef DEBUG
     std::cout << "starting node loop (main thread)\n";
     #endif
@@ -787,4 +787,5 @@ inline void Node::MainLoop() {
         }
         request_votes();
     }
+    return {};
 }

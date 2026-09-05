@@ -53,7 +53,7 @@ public:
     // Signals every loop to exit, joins all worker threads.
     void Stop();
 
-    void MainLoop();
+    std::optional<std::string> MainLoop();
 
     void append_commands(std::vector<std::byte*>&);
     void append_commands(std::byte (&)[MAX_ENTRIES][CMD_SIZE], size_t num_entries);
@@ -114,7 +114,7 @@ public:
     NodeBitset                                                      node_ids_                = NodeBitset(BASE_CLUSTER_SIZE);
 
     std::array<EventLoop<SOCKET_TYPE>, EVENT_LOOP_THREADS>          loops_{};
-    std::array<std::thread, EVENT_LOOP_THREADS>                     threads_;
+    std::array<std::jthread, EVENT_LOOP_THREADS>                    threads_;
 
     std::chrono::steady_clock::time_point                           last_leader_contact_;
     std::chrono::steady_clock::time_point                           last_flush_;
@@ -207,11 +207,11 @@ inline std::optional<std::string> Node::CreateNode(Node* n, ELNodeInbox* el_inbo
     }
 
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
-        n->threads_[i] = std::thread([n, i] {
+        n->threads_[i] = std::jthread([n, i] {
             std::optional<std::string> loop_err = n->loops_[i].Run();
-            // #ifdef DEBUG
-            // std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
-            // #endif
+            #ifdef DEBUG
+            std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
+            #endif
         });
     }
 

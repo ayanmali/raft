@@ -339,7 +339,7 @@ inline std::optional<std::string> EventLoop<T>::DrainInbox() {
 
     EventLoopMessage out;
     while (outbound_inbox.PopOne(&out)) {
-        std::optional<std::string> ok = std::visit([&out, this](auto&& payload) -> std::optional<std::string> {
+        std::optional<std::string> err = std::visit([&out, this](auto&& payload) -> std::optional<std::string> {
             using U = std::decay_t<decltype(payload)>;
 
             if constexpr (std::is_same_v<U, AppendEntriesReqPayload>
@@ -424,6 +424,7 @@ inline std::optional<std::string> EventLoop<T>::DrainInbox() {
             else static_assert(false, "non-exhaustive visitor!");
             return {};
         }, out);
+        if (err) return err;
     }
     return {};
 }
