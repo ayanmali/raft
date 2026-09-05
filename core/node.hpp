@@ -171,6 +171,7 @@ inline std::optional<std::string> Node::CreateNode(Node* n, ELNodeInbox* el_inbo
     #endif
 
     constexpr uint num_peers_init = (BASE_CLUSTER_SIZE / EVENT_LOOP_THREADS) + 1;
+
     for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
         std::optional<std::string> create_el_err = EventLoop<SOCKET_TYPE>::CreateEventLoop(
             &n->loops_[i], el_inbox, i, num_peers_init, HEARTBEAT_INTERVAL_MS, RPC_TIMEOUT_MS
@@ -180,21 +181,8 @@ inline std::optional<std::string> Node::CreateNode(Node* n, ELNodeInbox* el_inbo
                 std::format("error creating event loop {}:\n{}\n", i, create_el_err.value())
             );
         }
-
-        n->threads_[i] = std::thread([n, i] {
-            std::optional<std::string> loop_err = n->loops_[i].Run();
-            // #ifdef DEBUG
-            // std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
-            // #endif
-        });
     }
 
-
-    // init_peers is identical on every node in the cluster, so a peer's
-    // index in this array IS its globally consistent NodeID. Each node lists
-    // itself at index MY_ID using the placeholder "" in place of its own IP;
-    // we skip that slot (the loop counter still advances so peer indices stay
-    // aligned with their array positions).
     const char* init_cluster[BASE_CLUSTER_SIZE];
     setup_peers(init_cluster);
     //static_assert(static_cast<size_t>(MY_ID) < BASE_CLUSTER_SIZE, "This node's ID exceeds the cluster size");
@@ -216,6 +204,15 @@ inline std::optional<std::string> Node::CreateNode(Node* n, ELNodeInbox* el_inbo
             );
         }
         n->node_ids_.set_online_node(i);
+    }
+
+    for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
+        n->threads_[i] = std::thread([n, i] {
+            std::optional<std::string> loop_err = n->loops_[i].Run();
+            // #ifdef DEBUG
+            // std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
+            // #endif
+        });
     }
 
     const char* mode;

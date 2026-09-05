@@ -73,6 +73,7 @@ struct EventLoop {
 
     SPSCQueue<EventLoopMessage, EVENT_LOOP_INBOX_RING_CAP> outbound_inbox{};
 
+    NodeID this_id;
     std::atomic<bool> stopped{false};
 
     private:
@@ -81,12 +82,11 @@ struct EventLoop {
 
     ClientConnSlab<T> client_slab;
 
-    ELNodeInbox* node_inbox; // incoming messages; multi-producer (each event loop is a producer)
+    ELNodeInbox* node_inbox = nullptr; // incoming messages; multi-producer (each event loop is a producer)
 
     long heartbeat_period_ms;
     long rpc_timeout_ms;
 
-    size_t this_id;
     std::atomic<bool> wake_armed{false};
 
     FD epoll_fd = -1;

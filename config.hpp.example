@@ -23,7 +23,7 @@ static constexpr int EPOLL_BATCH = 64; // max # of fds processed per loop iterat
 static constexpr int UDP_RECV_BATCH = 32; // Max datagrams drained from the UDP listen socket per recvmmsg() call.
 
 static constexpr size_t NODE_INBOX_RING_CAP = 512;
-static constexpr size_t EVENT_LOOP_INBOX_RING_CAP = 1024; // per producer; must be power of 2
+static constexpr size_t EVENT_LOOP_INBOX_RING_CAP = 1024; // must be power of 2
 
 static constexpr int MIN_ELECTION_TIMEOUT_MS = 150;
 static constexpr int MAX_ELECTION_TIMEOUT_MS = 300;
