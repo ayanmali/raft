@@ -11,6 +11,7 @@ inline std::variant<NodeMessage, const char*> parse_ae_req(ByteReader& byte_read
     message.client_ip_addr = client_ip_addr;
 
     if (!byte_reader.read(message.entries_len)) return ("failed to parse AppendEntries entries_len field");
+    if (message.entries_len > MAX_ENTRIES) return ("message entries len field is too large");
     if (!byte_reader.read(message.entries, message.entries_len)) return ("failed to parse AppendEntries entries field");
     if (!byte_reader.read(message.term)) return ("failed to parse AppendEntries term field");
     if (!byte_reader.read(message.leader_id)) return ("failed to parse AppendEntries leader_id field");
@@ -40,6 +41,7 @@ inline std::variant<NodeMessage, const char*> parse_is_req(ByteReader& byte_read
     message.client_ip_addr = client_ip_addr;
 
     if (!byte_reader.read(message.data_len)) return ("failed to parse InstallSnapshot data_len field");
+    if (message.data_len > SNAPSHOT_CHUNK_SIZE) return ("message data len field is too large");
     if (!byte_reader.read(message.partial_state, sizeof(message.partial_state))) return ("failed to parse InstallSnapshot snapshot field");
     if (!byte_reader.read(message.last_included_idx)) return ("failed to parse InstallSnapshot last_included_idx field");
     if (!byte_reader.read(message.last_included_term)) return ("failed to parse InstallSnapshot last_included_term field");
@@ -57,6 +59,7 @@ inline std::variant<NodeMessage, const char*> parse_fl_req(ByteReader& byte_read
     message.client_ip_addr = client_ip_addr;
 
     if (!byte_reader.read(message.entries_len)) return ("failed to parse ForwardLeader entries_len field");
+    if (message.entries_len > MAX_ENTRIES) return ("message entries len field is too large");
     if (!byte_reader.read(message.entries, message.entries_len)) return ("failed to parse ForwardLeader entries field");
     if (!byte_reader.read(message.sender_id)) return ("failed to parse ForwardLeader sender ID field");
     if (!byte_reader.read(message.term)) return ("failed to parse ForwardLeader term field");
