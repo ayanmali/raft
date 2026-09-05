@@ -180,8 +180,8 @@ inline std::optional<std::string> EventLoop<UDP>::StartConnect(PeerConn<UDP>& p)
     int yes = 1;
     const auto send_size = REQ_SIZE + sizeof(REQ_SIZE) + sizeof(RpcKind);
     const auto rcv_size = RESP_SIZE + sizeof(RESP_SIZE) + sizeof(RpcKind);
-    ::setsockopt(listen_fd, SOL_SOCKET, SO_SNDBUF, &send_size, sizeof(send_size));
-    ::setsockopt(listen_fd, SOL_SOCKET, SO_RCVBUF, &rcv_size, sizeof(rcv_size));
+    ::setsockopt(p.fd, SOL_SOCKET, SO_SNDBUF, &send_size, sizeof(send_size));
+    ::setsockopt(p.fd, SOL_SOCKET, SO_RCVBUF, &rcv_size, sizeof(rcv_size));
 
     int rc = ::connect(p.fd, res->ai_addr, res->ai_addrlen);
 
