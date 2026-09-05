@@ -210,11 +210,7 @@ inline void Node::MainLoop() {
                 else if constexpr (std::is_same_v<T, RequestVoteReqPayload>) {
                     #ifdef DEBUG
                     std::cout << "found RV RPC from node " << payload.candidate_id << "\n";
-                    #endif
-                    auto& el = loops_[payload.candidate_id & (EVENT_LOOP_THREADS - 1)];
-                    add_peer_if_not_exists(payload.candidate_id, payload.client_ip_addr, el);
 
-                    #ifdef DEBUG
                     print_cluster();
 
                     std::cout << "Current state = " << static_cast<int>(state_) << "\n";
@@ -228,13 +224,15 @@ inline void Node::MainLoop() {
                         std::cout << v << ", ";
                     }
                     std::cout << "\n";
-
                     #endif
+                    auto& el = loops_[payload.candidate_id & (EVENT_LOOP_THREADS - 1)];
+                    add_peer_if_not_exists(payload.candidate_id, payload.client_ip_addr, el);
 
                     if (payload.term > current_term_) {
                         advance_to_term(payload.term);
-                        leader_id_ = payload.candidate_id;
-                        leader_contact = true;
+                        leader_id_ = -1;
+                        // leader_id_ = payload.candidate_id;
+                        // leader_contact = true;
                     }
 
                     if (payload.term < current_term_) {
@@ -403,11 +401,11 @@ inline void Node::MainLoop() {
                     std::cout << "\n";
                     #endif
 
-                    if (payload.term > current_term_) {
+                    if (payload.term > current_term_) { // this shouldn't happen
                         advance_to_term(payload.term);
-                        leader_id_ = payload.server_id;
-                        leader_contact = true;
-                        return {};
+                        // leader_id_ = payload.server_id;
+                        // leader_contact = true;
+                        // return {};
                     }
 
                     if (payload.success == 1) {
