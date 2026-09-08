@@ -19,7 +19,6 @@ Persistence:
 #include "../rpc/event_loop/event_loop.hpp"
 #include "../rpc/event_loop/main_loop.hpp"
 #include "../rpc/protocol/payloads.hpp"
-#include <chrono>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
@@ -79,17 +78,22 @@ public:
     void append_commands_local(std::vector<LogEntry>&&);
     void forward_request(const std::vector<LogEntry>&);
 
+    void advance_to_term(uint32_t);
     void demote();
     void become_leader();
-    void advance_to_term(uint32_t);
+
+    std::optional<const char*> register_fd(FD fd, uint32_t events);
+    std::optional<const char*> set_timer(FD fd, uint64_t secs, uint64_t nsecs);
+    void randomize_election_timeout();
+
+    std::optional<std::string> OnWake();
+    std::optional<std::string> OnElectionTimeout();
+    std::optional<std::string> OnHeartbeat();
+    std::optional<std::string> OnFlush();
 
     void add_peer_if_not_exists(NodeID, IPAddrPort, EventLoop<SOCKET_TYPE>&);
     uint32_t compute_new_commit_idx();
     void commit_entries_if_available();
-
-    size_t snapshot_header_bytes() const;
-    size_t sm_header_bytes() const;
-    size_t snapshot_config_and_data_offset_bytes() const;
 
     std::optional<std::string> compact();
 
@@ -97,9 +101,13 @@ public:
 
     std::optional<std::string> reconstruct_state(FILE* out, uint32_t up_to_idx);
 
+    /* Helpers */
+    size_t snapshot_header_bytes() const;
+    size_t sm_header_bytes() const;
+    size_t snapshot_config_and_data_offset_bytes() const;
+
     void write_current_term();
     void write_voted_for();
-    void flush_files();
 
     void iterate_node_ids(auto&& callback);
     void print_cluster();
@@ -116,10 +124,7 @@ public:
     std::array<EventLoop<SOCKET_TYPE>, EVENT_LOOP_THREADS>          loops_{};
     std::array<std::jthread, EVENT_LOOP_THREADS>                    threads_;
 
-    std::chrono::steady_clock::time_point                           last_leader_contact_;
-    std::chrono::steady_clock::time_point                           last_flush_;
-    std::chrono::milliseconds                                       election_timeout_;     // Election timeout, randomized at construction.
-    std::uniform_int_distribution<>                                 distrib_                 = std::uniform_int_distribution<>(MIN_ELECTION_TIMEOUT_MS, MAX_ELECTION_TIMEOUT_MS);
+    std::uniform_int_distribution<>                                 distrib_                 = std::uniform_int_distribution<>(MIN_ELECTION_TIMEOUT_NS, MAX_ELECTION_TIMEOUT_NS);
     ELNodeInbox*                                                    el_inbox_;
     ClientNodeInbox*                                                client_inbox_;
     FILE*                                                           log_fp_                  = nullptr;
@@ -127,8 +132,23 @@ public:
     FILE*                                                           snapshot_tmp_fp_         = nullptr;
     void(*apply_entry)(FILE*, const LogEntry&);
     void(*create_snapshot)(FILE*, FILE*);
-    int                                                             leader_id_               = -1;
-    int                                                             voted_for_               = -1;
+
+    uint64_t                                                        election_timeout_secs_;
+    uint64_t                                                        election_timeout_nsecs_;
+    uint64_t                                                        heartbeat_period_secs_;
+    uint64_t                                                        heartbeat_period_nsecs_;
+    uint64_t                                                        flush_period_secs_;
+    uint64_t                                                        flush_period_nsecs_;
+
+    NodeID                                                          leader_id_               = -1;
+    NodeID                                                          voted_for_               = -1;
+
+    FD                                                              epoll_fd_                = -1;
+    FD                                                              event_fd_                = -1;
+    FD                                                              election_timeout_fd_     = -1;
+    FD                                                              heartbeat_fd_            = -1;
+    FD                                                              flush_fd_                = -1;
+
     uint32_t                                                        base_logical_idx_        = 1; // logical indexes are 1-based
     uint32_t                                                        base_term_               = 0;
     uint32_t                                                        last_applied_idx_        = 0;
@@ -144,114 +164,141 @@ public:
 // Node requires stable addresses (i.e. not movable)
 inline std::optional<std::string> Node::CreateNode(Node* n, ELNodeInbox* el_inbox, ClientNodeInbox* client_inbox,
     void(*apply_entry_to_sm)(FILE*, const LogEntry&)) {
-    static_assert(EVENT_LOOP_THREADS > 0 && (EVENT_LOOP_THREADS & (EVENT_LOOP_THREADS - 1)) == 0,
-        "Node: EVENT_LOOP_THREADS must be a power of 2 (MPSC inbox requires it)");
-    static_assert(SNAPSHOT_CHUNK_SIZE >= MAX_CLUSTER_HEADER_SIZE,
-        "Node: SNAPSHOT_CHUNK_SIZE must be at least as large as MAX_CLUSTER_HEADER_SIZE (determined by MAX_NODES)");
+        static_assert(EVENT_LOOP_THREADS > 0 && (EVENT_LOOP_THREADS & (EVENT_LOOP_THREADS - 1)) == 0,
+            "Node: EVENT_LOOP_THREADS must be a power of 2 (MPSC inbox requires it)");
+        static_assert(SNAPSHOT_CHUNK_SIZE >= MAX_CLUSTER_HEADER_SIZE,
+            "Node: SNAPSHOT_CHUNK_SIZE must be at least as large as MAX_CLUSTER_HEADER_SIZE (determined by MAX_NODES)");
 
-    n->el_inbox_ = el_inbox;
-    n->client_inbox_ = client_inbox;
-    n->apply_entry = apply_entry_to_sm;
+        n->el_inbox_ = el_inbox;
+        n->client_inbox_ = client_inbox;
+        n->apply_entry = apply_entry_to_sm;
+        n->running_ = true;
 
-    // SIGPIPE would otherwise kill the process if a peer disappears
-    // mid-send. send/recv calls also pass MSG_NOSIGNAL belt-and-
-    // suspenders.
-    static const auto sigpipe_ignored = [] {
-        struct sigaction sa{};
-        sa.sa_handler = SIG_IGN;
-        sigemptyset(&sa.sa_mask);
-        ::sigaction(SIGPIPE, &sa, nullptr);
-        return true;
-    }();
-    (void)sigpipe_ignored;
+        // SIGPIPE would otherwise kill the process if a peer disappears
+        // mid-send. send/recv calls also pass MSG_NOSIGNAL belt-and-
+        // suspenders.
+        static const auto sigpipe_ignored = [] {
+            struct sigaction sa{};
+            sa.sa_handler = SIG_IGN;
+            sigemptyset(&sa.sa_mask);
+            ::sigaction(SIGPIPE, &sa, nullptr);
+            return true;
+        }();
+        (void)sigpipe_ignored;
 
-    n->election_timeout_ = std::chrono::milliseconds(n->distrib_(n->rand_gen_));
-    #ifdef DEBUG
-    std::cout << "election timeout set to " << n->election_timeout_ << "\n";
-    #endif
+        constexpr uint num_peers_init = (BASE_CLUSTER_SIZE / EVENT_LOOP_THREADS) + 1;
 
-    constexpr uint num_peers_init = (BASE_CLUSTER_SIZE / EVENT_LOOP_THREADS) + 1;
-
-    for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
-        std::optional<std::string> create_el_err = EventLoop<SOCKET_TYPE>::CreateEventLoop(
-            &n->loops_[i], el_inbox, i, num_peers_init, HEARTBEAT_INTERVAL_MS, RPC_TIMEOUT_MS
-        );
-        if (create_el_err) {
-            return (
-                std::format("error creating event loop {}:\n{}\n", i, create_el_err.value())
+        for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
+            std::optional<std::string> create_el_err = EventLoop<SOCKET_TYPE>::CreateEventLoop(
+                &n->loops_[i], el_inbox, i, num_peers_init, n->event_fd_
             );
+            if (create_el_err) {
+                return (
+                    std::format("error creating event loop {}:\n{}\n", i, create_el_err.value())
+                );
+            }
         }
-    }
 
-    const char* init_cluster[BASE_CLUSTER_SIZE];
-    setup_peers(init_cluster);
-    //static_assert(static_cast<size_t>(MY_ID) < BASE_CLUSTER_SIZE, "This node's ID exceeds the cluster size");
+        const char* init_cluster[BASE_CLUSTER_SIZE];
+        setup_peers(init_cluster);
 
-    for (int i = 0; i < BASE_CLUSTER_SIZE; ++i) {
-        n->node_ids_.set_cluster_node(i);
-        if (i == MY_ID) continue;
+        for (int i = 0; i < BASE_CLUSTER_SIZE; ++i) {
+            n->node_ids_.set_cluster_node(i);
+            if (i == MY_ID) continue;
 
-        auto result = encode(init_cluster[i], SERVER_PORT);
-        if (std::holds_alternative<const char*>(result)) {
-            return std::get<const char*>(result);
+            auto result = encode(init_cluster[i], SERVER_PORT);
+            if (std::holds_alternative<const char*>(result)) {
+                return std::get<const char*>(result);
+            }
+            IPAddrPort ip_addr = std::get<IPAddrPort>(result);
+            std::optional<std::string> add_peer_err = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
+                .AddPeer(i, ip_addr);
+            if (add_peer_err) {
+                return (
+                    std::format("error creating node:\n{}\n", add_peer_err.value())
+                );
+            }
+            n->node_ids_.set_online_node(i);
         }
-        IPAddrPort ip_addr = std::get<IPAddrPort>(result);
-        std::optional<std::string> add_peer_err = n->loops_[i & (EVENT_LOOP_THREADS - 1)]
-            .AddPeer(i, ip_addr);
-        if (add_peer_err) {
-            return (
-                std::format("error creating node:\n{}\n", add_peer_err.value())
-            );
+
+
+        for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
+            n->threads_[i] = std::jthread([n, i] {
+                std::optional<std::string> loop_err = n->loops_[i].Run();
+                #ifdef DEBUG
+                std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
+                #endif
+            });
         }
-        n->node_ids_.set_online_node(i);
-    }
 
-    for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
-        n->threads_[i] = std::jthread([n, i] {
-            std::optional<std::string> loop_err = n->loops_[i].Run();
-            #ifdef DEBUG
-            std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
-            #endif
-        });
-    }
+        const char* mode;
 
-    const char* mode;
+        mode = access(LOG_FILE_PATH, F_OK) == 0
+            ? "r+"
+            : "w+";
+        n->log_fp_ = ::fopen(LOG_FILE_PATH, mode);
+        if (n->log_fp_ == NULL) {
+            return (std::format(
+                "Error opening log file with path {}\n{}\n",
+                LOG_FILE_PATH, errno
+            ));
+        }
 
-    mode = access(LOG_FILE_PATH, F_OK) == 0
-        ? "r+"
-        : "w+";
-    n->log_fp_ = ::fopen(LOG_FILE_PATH, mode);
-    if (n->log_fp_ == NULL) {
-        return (std::format(
-            "Error opening log file with path {}\n{}\n",
-            LOG_FILE_PATH, errno
-        ));
-    }
+        #ifdef DEBUG
+        struct stat st;
+        if (stat(LOG_FILE_PATH, &st) == 0) {
+            std::cout << "log file size = " << st.st_size << "\n";
+        }
+        #endif
 
-    #ifdef DEBUG
-    struct stat st;
-    if (stat(LOG_FILE_PATH, &st) == 0) {
-        std::cout << "log file size = " << st.st_size << "\n";
-    }
-    #endif
+        std::optional<std::string> recover_err = n->recover();
+        if (recover_err) {
+            return (std::format(
+                "Failed to create node: {}\n",
+                recover_err.value()
+            ));
+        }
 
-    std::optional<std::string> recover_err = n->recover();
-    if (recover_err) {
-        return (std::format(
-            "Failed to create node: {}\n",
-            recover_err.value()
-        ));
-    }
+        n->next_indexes_[MY_ID] = -1;
+        n->match_indexes_[MY_ID] = -1;
+        n->chunks_sent_[MY_ID] = -1;
+        n->voters_.reserve(BASE_CLUSTER_SIZE);
 
-    n->running_ = true;
-    n->last_flush_ = std::chrono::steady_clock::now();
+        n->randomize_election_timeout();
+        n->heartbeat_period_secs_ = HEARTBEAT_INTERVAL_NS / NS_PER_SEC;
+        n->heartbeat_period_nsecs_ = HEARTBEAT_INTERVAL_NS % NS_PER_SEC;
+        n->flush_period_secs_ = FLUSH_INTERVAL_NS / NS_PER_SEC;
+        n->flush_period_nsecs_ = FLUSH_INTERVAL_NS % NS_PER_SEC;
 
-    n->next_indexes_[MY_ID] = -1;
-    n->match_indexes_[MY_ID] = -1;
-    n->chunks_sent_[MY_ID] = -1;
-    n->voters_.reserve(BASE_CLUSTER_SIZE);
-    n->last_leader_contact_ = std::chrono::steady_clock::now();
-    return {};
+        n->epoll_fd_ = ::epoll_create1(EPOLL_CLOEXEC);
+        n->event_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        n->election_timeout_fd_ = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+        n->heartbeat_fd_ = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+        n->flush_fd_ = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+        if (n->epoll_fd_ < 0 || n->event_fd_ < 0 || n->election_timeout_fd_ < 0 || n->heartbeat_fd_ < 0 || n->flush_fd_ < 0) {
+            return "failed to create Node - failed to create FDs\n";
+        }
+
+        uint8_t err{0};
+        int shift = -1;
+        auto res = n->register_fd(n->event_fd_, EPOLLIN | EPOLLET);
+        err |= bool(res) << ++shift;
+        res = n->register_fd(n->election_timeout_fd_, EPOLLIN | EPOLLET);
+        err |= (bool(res) << ++shift);
+        res = n->register_fd(n->heartbeat_fd_, EPOLLIN | EPOLLET);
+        err |= (bool(res) << ++shift);
+        res = n->register_fd(n->flush_fd_, EPOLLIN | EPOLLET);
+        err |= (bool(res) << ++shift);
+
+        if (err) {
+            return "Failed to create Node - failed to register FDs\n";
+        }
+
+        n->set_timer(n->election_timeout_fd_, n->election_timeout_secs_, n->election_timeout_nsecs_);
+        n->set_timer(n->heartbeat_fd_, n->heartbeat_period_secs_, n->heartbeat_period_nsecs_);
+        n->set_timer(n->flush_fd_, n->flush_period_secs_, n->flush_period_nsecs_);
+        return {};
 }
 
 inline Node::~Node() {
@@ -264,6 +311,11 @@ inline Node::~Node() {
     if (log_fp_ != nullptr) ::fclose(log_fp_);
     if (snapshot_fp_ != nullptr) ::fclose(snapshot_fp_);
     if (snapshot_tmp_fp_ != nullptr) ::fclose(snapshot_tmp_fp_);
+
+    ::close(event_fd_);
+    ::close(election_timeout_fd_);
+    ::close(heartbeat_fd_);
+    ::close(flush_fd_);
 }
 
 inline void Node::Stop() {
@@ -410,6 +462,32 @@ inline int Node::get_leader() {
     return leader_id_;
 }
 
+inline std::optional<const char*> Node::register_fd(FD fd, uint32_t events) {
+    epoll_event ev{};
+    ev.events  = events;
+    ev.data.fd = fd;
+
+    if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) < 0) {
+        return ("epoll_ctl ADD failed");
+    }
+    return {};
+}
+
+inline std::optional<const char*> Node::set_timer(FD fd, uint64_t secs, uint64_t nsecs) {
+    itimerspec spec{};
+    spec.it_value.tv_sec  = secs;
+    spec.it_value.tv_nsec = nsecs;
+    spec.it_interval      = spec.it_value;
+    ::timerfd_settime(fd, 0, &spec, nullptr);
+    return {};
+}
+
+inline void Node::randomize_election_timeout() {
+    const uint64_t election_timeout_ns = distrib_(rand_gen_);
+    election_timeout_secs_ = election_timeout_ns / NS_PER_SEC;
+    election_timeout_nsecs_ = election_timeout_ns % NS_PER_SEC;
+}
+
 inline void Node::advance_to_term(uint32_t term) {
     #ifdef DEBUG
     std::cout << "this node (id " << MY_ID << ") advanced to term " << term << "\n";
@@ -438,20 +516,6 @@ inline void Node::demote() {
         chunks_sent_[i] = 0;
     }
     installing_snapshot_.reset();
-
-    if (old != NodeState::Leader) return;
-    #ifdef DEBUG
-    std::cout << "disarming peer timers\n";
-    #endif
-
-    iterate_node_ids([&](size_t id){
-        auto& el = this->loops_[id & (EVENT_LOOP_THREADS - 1)];
-        el.outbound_inbox.PushOne(
-            EventLoopMessage(
-                DisarmTimer{ .dest_id = static_cast<NodeID>(id) }
-            )
-        );
-    });
 
     for (auto& loop : loops_) { loop.Wake(); }
 }
@@ -486,27 +550,6 @@ inline void Node::become_leader() {
     ::fseek(log_fp_, 0, SEEK_END);
     ::fwrite(&log_.back(), sizeof(LogEntry), 1, log_fp_);
 
-    // ++last_applied_idx_;
-    // last_applied_term_ = current_term_;
-
-    #ifdef DEBUG
-    std::cout << "Arming peer timers\n";
-    #endif
-
-    iterate_node_ids([&](size_t id){
-        auto& el = this->loops_[id & (EVENT_LOOP_THREADS - 1)];
-        // arm this peer's heartbeat timer so we know when to send the next heartbeat.
-        el.outbound_inbox.PushOne(
-            EventLoopMessage(
-                ArmTimer{ .dest_id = static_cast<NodeID>(id) }
-            )
-        );
-
-        #ifdef DEBUG
-        std::cout << "posted arm timer message to peer " << id << "\n";
-        #endif
-    });
-
     for (auto& loop : loops_) { loop.Wake(); }
 }
 
@@ -533,14 +576,6 @@ inline void Node::add_peer_if_not_exists(NodeID node_id, IPAddrPort ip_addr, Eve
             AddPeerMsg{ .ip_addr = ip_addr, .dest_id = node_id }
         )
     );
-
-    if (state_ == NodeState::Leader) {
-        el.outbound_inbox.PushOne(
-            EventLoopMessage(
-                ArmTimer{ .dest_id = node_id }
-            )
-        );
-    }
 
     el.Wake();
     #ifdef DEBUG
@@ -827,15 +862,6 @@ inline void Node::write_voted_for() {
     ::fwrite(&voted_for_, sizeof(voted_for_), 1, log_fp_);
 }
 
-inline void Node::flush_files() {
-    #ifdef DEBUG
-    std::cout << "flushing files...\n";
-    #endif
-    if (log_fp_) { ::fflush(log_fp_); ::fsync(fileno(log_fp_)); }
-    if (snapshot_fp_) { ::fflush(snapshot_fp_); ::fsync(fileno(snapshot_fp_)); }
-    last_flush_ = std::chrono::steady_clock::now();
-}
-
 inline std::optional<std::string> Node::send_append_entries(int32_t next_idx, EventLoop<SOCKET_TYPE>& el, NodeID dest_id) {
     #ifdef DEBUG
     std::cout << "checking for entries to send to node " << dest_id << "\n";
@@ -969,4 +995,4 @@ inline void Node::print_cluster() {
     std::cout << "\n";
 }
 
-#include "./main_loop.hpp"
+#include "./main_loop_v2.hpp"

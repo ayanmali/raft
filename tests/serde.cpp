@@ -1,8 +1,10 @@
+#include <format>
 #include <iostream>
 #include "../config.hpp"
 #include "../rpc/protocol/payloads.hpp"
 #include "../rpc/protocol/utils.hpp"
 #include "../rpc/protocol/peer.hpp"
+#include "../rpc/protocol/client.hpp"
 
 int main() {
     AppendEntriesReqPayload p(
@@ -17,10 +19,30 @@ int main() {
         std::memcpy(p.entries[i].data_, entries[i], CMD_SIZE);
         p.entries[i].term = 1;
     }
-    std::byte buf[133];
+    std::byte buf[sizeof(p)];
     BufByteWriter writer{buf};
     writer.serialize(p);
 
+    TimerFDs tfds{};
+
+    ByteReader reader{std::span<std::byte>(buf + sizeof(uint32_t) + sizeof(uint8_t), REQ_SIZE)};
+
+    std::variant<NodeMessage, const char*> res = parse_ae_req(reader, 0);
+    // uint32_t msg_len;
+    // std::memcpy(&msg_len, buf, sizeof(msg_len));
+    // msg_len = ntohl(msg_len);
+    // parse_rbuf(rbuf, msg_len, tfds);
+
+    if (!std::holds_alternative<NodeMessage>(res)) {
+        std::cout << std::format("Error: {}", std::get<const char*>(res)) << "\n";
+        return -1;
+    }
+
+    NodeMessage msg = std::get<NodeMessage>(res);
+    assert(std::holds_alternative<AppendEntriesReqPayload>(msg));
+    AppendEntriesReqPayload payload = std::get<AppendEntriesReqPayload>(msg);
+    assert(payload.entries_len == 3);
+    assert(payload.term == 1);
     std::cout << "Test passed\n";
     return 0;
 

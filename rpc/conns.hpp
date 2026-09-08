@@ -211,14 +211,11 @@ State machine:
                 wbuf.size().
 */
 
-enum class TimerKind : uint8_t { Heartbeat=0, AE=1, RV=2, IS=3 };
+enum class TimerKind : uint8_t { AE=0, RV=1, IS=2 };
 
 struct TimerFDs {
-    FD fds[4] = {-1, -1, -1, -1};
+    FD fds[3] = {-1, -1, -1};
 
-    int get_heartbeat() {
-        return fds[static_cast<uint8_t>(TimerKind::Heartbeat)];
-    }
     int get_ae_timeout() {
         return fds[static_cast<uint8_t>(TimerKind::AE)];
     }
@@ -229,9 +226,6 @@ struct TimerFDs {
         return fds[static_cast<uint8_t>(TimerKind::IS)];
     }
 
-    void set_heartbeat(FD fd) {
-        fds[static_cast<uint8_t>(TimerKind::Heartbeat)] = fd;
-    }
     void set_ae_timeout(FD fd) {
         fds[static_cast<uint8_t>(TimerKind::AE)] = fd;
     }

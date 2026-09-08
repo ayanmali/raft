@@ -20,7 +20,7 @@ inline std::optional<std::string> EventLoop<T>::Run() {
 
         // loop over all ready FDs
         #ifdef DEBUG
-        std::cout << "found " << n << " ready fds\n";
+        std::cout << "Networking thread - found " << n << " ready fds\n";
         #endif
 
         for (int i = 0; i < n; ++i) {
@@ -283,10 +283,9 @@ inline std::optional<std::string> EventLoop<T>::Run() {
                         #endif
                         std::optional<const char*> timer_err;
                         switch (subtype) {
-                            case TimerKind::Heartbeat: timer_err = OnPeerHeartbeatTimeout(p); break;
-                            case TimerKind::AE:        timer_err = OnPeerAERPCTimeout(p);     break;
-                            case TimerKind::RV:        timer_err = OnPeerRVRPCTimeout(p);     break;
-                            case TimerKind::IS:        timer_err = OnPeerISRPCTimeout(p);     break;
+                            case TimerKind::AE: timer_err = OnPeerAERPCTimeout(p);     break;
+                            case TimerKind::RV: timer_err = OnPeerRVRPCTimeout(p);     break;
+                            case TimerKind::IS: timer_err = OnPeerISRPCTimeout(p);     break;
                         }
                         if (timer_err) {
                             #ifdef DEBUG

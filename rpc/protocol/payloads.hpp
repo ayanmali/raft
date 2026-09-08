@@ -4,6 +4,7 @@ RPC request/response payload structs.
 */
 #include "../../config.hpp"
 #include <arpa/inet.h>
+#include <cstdio>
 #include <cstring>
 #include <netinet/in.h>
 #include <variant>
@@ -180,8 +181,8 @@ struct InstallSnapshotRespPayload {
     }
 };
 
-struct ArmTimer { NodeID dest_id; };
-struct DisarmTimer { NodeID dest_id; };
+// struct ArmTimer { NodeID dest_id; };
+// struct DisarmTimer { NodeID dest_id; };
 
 struct HeartbeatTimeout { NodeID source_id; };
 
@@ -215,5 +216,5 @@ struct AppendClientReq {
 struct ReadStateClientReq { FILE* fp; };
 
 using NodeMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, HeartbeatTimeout, DropPeerMsg, ForwardLeaderMsg, AETimeout, RVTimeout, ISTimeout>;
-using EventLoopMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, ArmTimer, DisarmTimer, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, AddPeerMsg, ForwardLeaderMsg>;
+using EventLoopMessage = std::variant<AppendEntriesReqPayload, RequestVoteReqPayload, InstallSnapshotReqPayload, AppendEntriesRespPayload, RequestVoteRespPayload, InstallSnapshotRespPayload, AddPeerMsg, ForwardLeaderMsg>;
 using ClientMessage = std::variant<StopNodeMsg, AppendClientReq, ReadStateClientReq>;

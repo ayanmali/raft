@@ -1,5 +1,4 @@
 #pragma once
-#include <chrono>
 #include <new>
 #define DEBUG
 
@@ -25,20 +24,31 @@ static constexpr int UDP_RECV_BATCH = 32; // Max datagrams drained from the UDP 
 static constexpr size_t NODE_INBOX_RING_CAP = 512;
 static constexpr size_t EVENT_LOOP_INBOX_RING_CAP = 1024; // must be power of 2
 
-static constexpr int MIN_ELECTION_TIMEOUT_MS = 150;
-static constexpr int MAX_ELECTION_TIMEOUT_MS = 300;
-
 static constexpr int BASE_CLUSTER_SIZE = 3;
 static constexpr size_t MAX_NODES = (BASE_CLUSTER_SIZE * 1.5) + 1; // the maximum number of nodes in the cluster that can be accomodated (used for writing cluster data to snapshot/state files)
 static constexpr size_t MAX_CLUSTER_HEADER_SIZE = sizeof(uint64_t) + (((MAX_NODES-1) / BITS_PER_UINT64_T) + 1) * sizeof(uint64_t);
 
 static constexpr int MY_ID = 0;
 
+/* Timers */
+static constexpr int MIN_ELECTION_TIMEOUT_MS = 150;
+static constexpr int MAX_ELECTION_TIMEOUT_MS = 300;
+
+static constexpr uint64_t MIN_ELECTION_TIMEOUT_NS = MIN_ELECTION_TIMEOUT_MS * 1000000;
+static constexpr uint64_t MAX_ELECTION_TIMEOUT_NS = MAX_ELECTION_TIMEOUT_MS * 1000000;
+
 // Heartbeat cadence (ms). Must be well under MIN_TIMEOUT_MS so followers see
 // liveness before they bother starting an election; 1/3 of MIN_TIMEOUT_MS
 // is a standard pick.
 static constexpr uint64_t HEARTBEAT_INTERVAL_MS{MIN_ELECTION_TIMEOUT_MS / 3};
 static constexpr uint64_t RPC_TIMEOUT_MS{MAX_ELECTION_TIMEOUT_MS * 3};
+
+static constexpr uint64_t HEARTBEAT_INTERVAL_NS = HEARTBEAT_INTERVAL_MS * 1000000;
+static constexpr uint64_t RPC_TIMEOUT_NS = RPC_TIMEOUT_MS * 1000000;
+
+static constexpr uint64_t FLUSH_INTERVAL_MS{1500};
+static constexpr uint64_t FLUSH_INTERVAL_NS = FLUSH_INTERVAL_MS * 1000000;
+/* ---- */
 
 static constexpr int CMD_SIZE = 4; // # of bytes that each command in the log occupies
 static constexpr size_t SNAPSHOT_CHUNK_SIZE = 16; // in practice this should be something like 4 KiB
@@ -68,8 +78,6 @@ static constexpr size_t MAX_SERVER_CONNS = 16;
 static constexpr size_t MAX_ENTRIES = 12; // maximum number of entries to append with any given AE RPC
 
 static constexpr size_t LOG_COMPACT_THRESHOLD = 4;
-
-static constexpr std::chrono::milliseconds FLUSH_INTERVAL{1500};
 
 static constexpr const char* LOG_FILE_PATH = "/root/raft/persistence/log";
 static constexpr const char* METADATA_FILE_PATH = "/root/raft/persistence/metadata";

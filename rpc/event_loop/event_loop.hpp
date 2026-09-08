@@ -9,7 +9,6 @@
 #include "../protocol/client.hpp"
 #include <sys/socket.h>
 #include <atomic>
-#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <format>
@@ -58,7 +57,7 @@ One event loop runs on one thread.
 template <SocketType T>
 struct EventLoop {
     public:
-    static std::optional<std::string> CreateEventLoop(EventLoop*, ELNodeInbox*, NodeID this_id, uint num_peers_init, long heartbeat_period_ms, long rpc_timeout_ms);
+    static std::optional<std::string> CreateEventLoop(EventLoop*, ELNodeInbox*, NodeID this_id, uint num_peers_init, FD node_event_fd);
     EventLoop() = default;
     ~EventLoop();
     EventLoop(EventLoop&&) = delete;
@@ -84,14 +83,18 @@ struct EventLoop {
 
     ELNodeInbox* node_inbox = nullptr; // incoming messages; multi-producer (each event loop is a producer)
 
-    long heartbeat_period_ms;
-    long rpc_timeout_ms;
+    uint64_t heartbeat_period_sec;
+    uint64_t heartbeat_period_nsec;
+    uint64_t rpc_timeout_sec;
+    uint64_t rpc_timeout_nsec;
 
     std::atomic<bool> wake_armed{false};
 
     FD epoll_fd = -1;
     FD listen_fd = -1;
     FD event_fd = -1;
+    FD node_event_fd = -1;
+
     uint32_t listen_epoll_events = 0; // current epoll mask for listen_fd (used by UDP replies)
 
     // ---- helpers ----
@@ -122,7 +125,6 @@ struct EventLoop {
     // outbound messaging
     std::optional<const char*> OnPeerWritable(PeerConn<T>& p);
     std::optional<const char*> OnPeerReadable(PeerConn<T>& p);
-    std::optional<const char*> OnPeerHeartbeatTimeout(PeerConn<T>& p);
     std::optional<const char*> OnPeerAERPCTimeout(PeerConn<T>& p);
     std::optional<const char*> OnPeerRVRPCTimeout(PeerConn<T>& p);
     std::optional<const char*> OnPeerISRPCTimeout(PeerConn<T>& p);
@@ -130,23 +132,25 @@ struct EventLoop {
     void DropPeer(PeerConn<T>& p);
 
     // wake / inbox
-    std::optional<std::string> arm_heartbeat_timer(NodeID peer_id);
-    std::optional<std::string> disarm_heartbeat_timer(NodeID peer_id);
     std::optional<std::string> DrainInbox();
     std::optional<std::string> OnEventFd();
     void wake_eventfd_unconditional();
+    void wake_node();
 
     bool post_node_inbox(NodeMessage&& msg) {
         #ifdef DEBUG
         std::cout << "Posting message to node inbox\n";
         #endif
+        bool ok{false};
         for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt) {
             if (node_inbox->Push(this_id,
                 NodeMessage(std::forward<NodeMessage>(msg)))) {
-                return true;
+                ok = true;
             }
         }
-        return false;
+        ok = false;
+        wake_node();
+        return ok;
     }
 };
 
@@ -154,12 +158,15 @@ struct EventLoop {
 #include "./peer.hpp"
 
 template <SocketType T>
-inline std::optional<std::string> EventLoop<T>::CreateEventLoop(EventLoop* loop, ELNodeInbox* node_inbox, NodeID this_id, uint num_peers_init, long heartbeat_period_ms, long rpc_timeout_ms) {
+inline std::optional<std::string> EventLoop<T>::CreateEventLoop(EventLoop* loop, ELNodeInbox* node_inbox, NodeID this_id, uint num_peers_init, FD node_event_fd) {
     loop->node_inbox = node_inbox;
     loop->this_id = this_id;
     loop->peer_id_to_conn.resize(num_peers_init);
-    loop->heartbeat_period_ms = heartbeat_period_ms;
-    loop->rpc_timeout_ms = rpc_timeout_ms;
+    loop->node_event_fd = node_event_fd;
+    loop->heartbeat_period_sec = HEARTBEAT_INTERVAL_NS / NS_PER_SEC;
+    loop->heartbeat_period_nsec = HEARTBEAT_INTERVAL_NS % NS_PER_SEC;
+    loop->rpc_timeout_sec = RPC_TIMEOUT_NS / NS_PER_SEC;
+    loop->rpc_timeout_nsec = RPC_TIMEOUT_NS % NS_PER_SEC;
 
     // Epoll fd
     loop->epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
@@ -199,6 +206,16 @@ template <SocketType T>
 inline void EventLoop<T>::Stop() {
     stopped.store(true, std::memory_order_release);
     wake_eventfd_unconditional();
+}
+
+template <SocketType T>
+inline void EventLoop<T>::wake_node() {
+    #ifdef DEBUG
+    std::cout << "waking node\n";
+    #endif
+    uint64_t one = 1;
+    ssize_t n = ::write(event_fd, &one, sizeof(one));
+    (void)n;
 }
 
 template <SocketType T>
@@ -373,31 +390,31 @@ inline std::optional<std::string> EventLoop<T>::DrainInbox() {
                 }
             }
 
-            else if constexpr (std::is_same_v<U, ArmTimer>) {
-                #ifdef DEBUG
-                std::cout << "found arm timer req\n";
-                #endif
-                std::optional<std::string> arm_err = arm_heartbeat_timer(payload.dest_id);
-                if (arm_err) {
-                    return (std::format(
-                        "Error while draining inbox: failed to arm timers for node {}:\n{}\n",
-                        payload.dest_id, arm_err.value()
-                    ));
-                }
-            }
+            // else if constexpr (std::is_same_v<U, ArmTimer>) {
+            //     #ifdef DEBUG
+            //     std::cout << "found arm timer req\n";
+            //     #endif
+            //     std::optional<std::string> arm_err = arm_heartbeat_timer(payload.dest_id);
+            //     if (arm_err) {
+            //         return (std::format(
+            //             "Error while draining inbox: failed to arm timers for node {}:\n{}\n",
+            //             payload.dest_id, arm_err.value()
+            //         ));
+            //     }
+            // }
 
-            else if constexpr (std::is_same_v<U, DisarmTimer>) {
-                #ifdef DEBUG
-                std::cout << "found disarm timer req\n";
-                #endif
-                std::optional<std::string> disarm_err = disarm_heartbeat_timer(payload.dest_id);
-                if (disarm_err) {
-                    return (std::format(
-                        "Error while draining inbox: failed to disarm timers for node {}:\n{}\n",
-                        payload.dest_id, disarm_err.value()
-                    ));
-                }
-            }
+            // else if constexpr (std::is_same_v<U, DisarmTimer>) {
+            //     #ifdef DEBUG
+            //     std::cout << "found disarm timer req\n";
+            //     #endif
+            //     std::optional<std::string> disarm_err = disarm_heartbeat_timer(payload.dest_id);
+            //     if (disarm_err) {
+            //         return (std::format(
+            //             "Error while draining inbox: failed to disarm timers for node {}:\n{}\n",
+            //             payload.dest_id, disarm_err.value()
+            //         ));
+            //     }
+            // }
 
             else if constexpr (std::is_same_v<U, AddPeerMsg>) {
                 #ifdef DEBUG

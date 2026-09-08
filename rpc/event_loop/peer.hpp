@@ -84,12 +84,11 @@ inline std::optional<std::string> EventLoop<TCP>::StartConnect(PeerConn<TCP>& p)
     p.epoll_events  = EPOLLOUT | EPOLLRDHUP | EPOLLET;
     p.state = PeerConn<TCP>::State::Connecting;
 
-    int heartbeat_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     int ae_timeout_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     int rv_timeout_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     int is_timeout_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
 
-    if (heartbeat_fd < 0 || ae_timeout_fd < 0 || rv_timeout_fd < 0 || is_timeout_fd < 0) {
+    if (ae_timeout_fd < 0 || rv_timeout_fd < 0 || is_timeout_fd < 0) {
         ::close(p.fd);
         p.fd = -1;
         p.state = PeerConn<TCP>::State::Disconnected;
@@ -100,7 +99,6 @@ inline std::optional<std::string> EventLoop<TCP>::StartConnect(PeerConn<TCP>& p)
         );
     }
 
-    p.timer_fds.set_heartbeat(heartbeat_fd);
     p.timer_fds.set_ae_timeout(ae_timeout_fd);
     p.timer_fds.set_rv_timeout(rv_timeout_fd);
     p.timer_fds.set_is_timeout(is_timeout_fd);
@@ -117,18 +115,15 @@ inline std::optional<std::string> EventLoop<TCP>::StartConnect(PeerConn<TCP>& p)
         );
     }
 
-    std::optional<const char*> timer_fd_err = register_fd(heartbeat_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::Heartbeat, p.peer_id);
     std::optional<const char*> ae_timeout_fd_err = register_fd(ae_timeout_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::AE, p.peer_id);
     std::optional<const char*> rv_timeout_fd_err = register_fd(rv_timeout_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::RV, p.peer_id);
     std::optional<const char*> is_timeout_fd_err = register_fd(is_timeout_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::IS, p.peer_id);
 
-    if (timer_fd_err || ae_timeout_fd_err || rv_timeout_fd_err || is_timeout_fd_err) {
-        ::close(p.timer_fds.get_heartbeat());
+    if (ae_timeout_fd_err || rv_timeout_fd_err || is_timeout_fd_err) {
         ::close(p.timer_fds.get_ae_timeout());
         ::close(p.timer_fds.get_rv_timeout());
         ::close(p.timer_fds.get_is_timeout());
 
-        p.timer_fds.set_heartbeat(-1);
         p.timer_fds.set_ae_timeout(-1);
         p.timer_fds.set_rv_timeout(-1);
         p.timer_fds.set_is_timeout(-1);
@@ -190,12 +185,11 @@ inline std::optional<std::string> EventLoop<UDP>::StartConnect(PeerConn<UDP>& p)
     p.epoll_events  = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
     p.state = PeerConn<UDP>::State::Connected;
 
-    int heartbeat_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     int ae_timeout_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     int rv_timeout_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     int is_timeout_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
 
-    if (heartbeat_fd < 0 || ae_timeout_fd < 0 || rv_timeout_fd < 0 || is_timeout_fd < 0) {
+    if (ae_timeout_fd < 0 || rv_timeout_fd < 0 || is_timeout_fd < 0) {
         ::close(p.fd);
         p.fd = -1;
         p.state = PeerConn<UDP>::State::Disconnected;
@@ -206,7 +200,6 @@ inline std::optional<std::string> EventLoop<UDP>::StartConnect(PeerConn<UDP>& p)
         );
     }
 
-    p.timer_fds.set_heartbeat(heartbeat_fd);
     p.timer_fds.set_ae_timeout(ae_timeout_fd);
     p.timer_fds.set_rv_timeout(rv_timeout_fd);
     p.timer_fds.set_is_timeout(is_timeout_fd);
@@ -223,18 +216,15 @@ inline std::optional<std::string> EventLoop<UDP>::StartConnect(PeerConn<UDP>& p)
         );
     }
 
-    std::optional<const char*> timer_fd_err = register_fd(heartbeat_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::Heartbeat, p.peer_id);
     std::optional<const char*> ae_timeout_fd_err = register_fd(ae_timeout_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::AE, p.peer_id);
     std::optional<const char*> rv_timeout_fd_err = register_fd(rv_timeout_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::RV, p.peer_id);
     std::optional<const char*> is_timeout_fd_err = register_fd(is_timeout_fd, EPOLLIN | EPOLLET, EpollContextKind::PeerTimer, TimerKind::IS, p.peer_id);
 
-    if (timer_fd_err || ae_timeout_fd_err || rv_timeout_fd_err || is_timeout_fd_err) {
-        ::close(p.timer_fds.get_heartbeat());
+    if (ae_timeout_fd_err || rv_timeout_fd_err || is_timeout_fd_err) {
         ::close(p.timer_fds.get_ae_timeout());
         ::close(p.timer_fds.get_rv_timeout());
         ::close(p.timer_fds.get_is_timeout());
 
-        p.timer_fds.set_heartbeat(-1);
         p.timer_fds.set_ae_timeout(-1);
         p.timer_fds.set_rv_timeout(-1);
         p.timer_fds.set_is_timeout(-1);
@@ -357,9 +347,8 @@ inline std::optional<const char*> EventLoop<TCP>::OnPeerWritable(PeerConn<TCP>& 
     }
 
     itimerspec spec{};
-    const long rpc_timeout_ns = rpc_timeout_ms * 1'000'000; // rpc_timeout is in ms
-    spec.it_value.tv_sec  = rpc_timeout_ns / NS_PER_SEC;
-    spec.it_value.tv_nsec = rpc_timeout_ns % NS_PER_SEC;
+    spec.it_value.tv_sec  = rpc_timeout_sec;
+    spec.it_value.tv_nsec = rpc_timeout_nsec;
     spec.it_interval      = {0, 0};
 
     while (p.wbuf_offset < p.wbuf_size) {
@@ -400,9 +389,8 @@ inline std::optional<const char*> EventLoop<UDP>::OnPeerWritable(PeerConn<UDP>& 
     #endif
 
     itimerspec spec{};
-    const long rpc_timeout_ns = rpc_timeout_ms * 1'000'000; // rpc_timeout is in ms
-    spec.it_value.tv_sec  = rpc_timeout_ns / NS_PER_SEC;
-    spec.it_value.tv_nsec = rpc_timeout_ns % NS_PER_SEC;
+    spec.it_value.tv_sec  = rpc_timeout_sec;
+    spec.it_value.tv_nsec = rpc_timeout_nsec;
     spec.it_interval      = {0, 0};
 
     bool drained = true;
@@ -436,23 +424,6 @@ inline std::optional<const char*> EventLoop<UDP>::OnPeerWritable(PeerConn<UDP>& 
         std::optional<const char*> modify_err = modify_peer_interest(p, p.epoll_events & ~EPOLLOUT);
         if (modify_err) return modify_err;
     }
-    return {};
-}
-
-template <SocketType T>
-inline std::optional<const char*> EventLoop<T>::OnPeerHeartbeatTimeout(PeerConn<T>& p) {
-    #ifdef DEBUG
-    std::cout << "heartbeat timer fired for peer " << p.peer_id << "\n";
-    #endif
-    if (p.timer_fds.get_heartbeat() == -1) return {};
-    uint64_t expirations = 0;
-    ssize_t n = ::read(p.timer_fds.get_heartbeat(), &expirations, sizeof(expirations));
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
-        return "error attempting to read peer timer fd\n";
-    }
-    if (n != sizeof(expirations) || expirations == 0) return {};
-
-    post_node_inbox(NodeMessage{HeartbeatTimeout{.source_id = p.peer_id}});
     return {};
 }
 
@@ -517,8 +488,8 @@ inline void EventLoop<T>::DropPeer(PeerConn<T>& p) {
         ::close(p.fd);
         p.fd = -1;
     }
-    if (p.timer_fds.get_heartbeat() >= 0) {
-        for (int i = 0; i < 4; ++i) {
+    if (p.timer_fds.get_ae_timeout() >= 0) {
+        for (int i = 0; i < sizeof(p.timer_fds.fds) / sizeof(FD); ++i) {
             FD tfd = p.timer_fds.fds[i];
             if (tfd >= 0) {
                 ::epoll_ctl(epoll_fd, EPOLL_CTL_DEL, tfd, nullptr);
@@ -759,65 +730,64 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(ForwardLeaderMsg& 
     return {};
 }
 
-template <SocketType T>
-inline std::optional<std::string> EventLoop<T>::arm_heartbeat_timer(NodeID peer_id) {
-    #ifdef DEBUG
-    std::cout << "arming heartbeat timer for peer " << peer_id << "\n";
-    #endif
+// template <SocketType T>
+// inline std::optional<std::string> EventLoop<T>::arm_heartbeat_timer(NodeID peer_id) {
+//     #ifdef DEBUG
+//     std::cout << "arming heartbeat timer for peer " << peer_id << "\n";
+//     #endif
 
-    if (peer_id < 0 || peer_id >= peer_id_to_conn.size()) {
-        return std::format(
-            "Failed to arm heartbeat timer: peer id {} not found in peer_conns\n",
-            peer_id);
-    }
-    PeerConn<T>& p = peer_id_to_conn[peer_id];
-    if (!p) {
-        return std::format(
-            "Failed to arm heartbeat timer: peer id {} not found in peer_conns\n",
-            peer_id);
-    }
+//     if (peer_id < 0 || peer_id >= peer_id_to_conn.size()) {
+//         return std::format(
+//             "Failed to arm heartbeat timer: peer id {} not found in peer_conns\n",
+//             peer_id);
+//     }
+//     PeerConn<T>& p = peer_id_to_conn[peer_id];
+//     if (!p) {
+//         return std::format(
+//             "Failed to arm heartbeat timer: peer id {} not found in peer_conns\n",
+//             peer_id);
+//     }
 
-    // Periodic timer: it_value == it_interval == period. The first
-    // expiration lands `period` from now; subsequent ones fire at the
-    // same cadence until disarmed.
-    constexpr long NS_PER_SEC = 1'000'000'000;
-    itimerspec spec{};
-    const long heartbeat_period_ns = heartbeat_period_ms * 1'000'000; // heartbeat_period is in ms
-    spec.it_value.tv_sec  = heartbeat_period_ns / NS_PER_SEC;
-    spec.it_value.tv_nsec = heartbeat_period_ns % NS_PER_SEC;
-    spec.it_interval      = spec.it_value;
-    ::timerfd_settime(p.timer_fds.get_heartbeat(), 0, &spec, nullptr);
-    return {};
-}
+//     // Periodic timer: it_value == it_interval == period. The first
+//     // expiration lands `period` from now; subsequent ones fire at the
+//     // same cadence until disarmed.
+//     constexpr long NS_PER_SEC = 1'000'000'000;
+//     itimerspec spec{};
+//     spec.it_value.tv_sec  = heartbeat_period_sec;
+//     spec.it_value.tv_nsec = heartbeat_period_nsec;
+//     spec.it_interval      = spec.it_value;
+//     ::timerfd_settime(p.timer_fds.get_heartbeat(), 0, &spec, nullptr);
+//     return {};
+// }
 
-template <SocketType T>
-inline std::optional<std::string> EventLoop<T>::disarm_heartbeat_timer(NodeID peer_id) {
-    #ifdef DEBUG
-    std::cout << "disarming heartbeat timer for node " << peer_id << "\n";
-    #endif
+// template <SocketType T>
+// inline std::optional<std::string> EventLoop<T>::disarm_heartbeat_timer(NodeID peer_id) {
+//     #ifdef DEBUG
+//     std::cout << "disarming heartbeat timer for node " << peer_id << "\n";
+//     #endif
 
-    if (peer_id < 0 || peer_id >= peer_id_to_conn.size()) {
-        return std::format(
-            "Failed to disarm heartbeat timer: peer id {} not found in peer_conns\n",
-            peer_id);
-    }
-    PeerConn<T>& p = peer_id_to_conn[peer_id];
-    if (!p) {
-        return std::format(
-            "Failed to disarm heartbeat timer: peer id {} not found in peer_conns\n",
-            peer_id);
-    }
+//     if (peer_id < 0 || peer_id >= peer_id_to_conn.size()) {
+//         return std::format(
+//             "Failed to disarm heartbeat timer: peer id {} not found in peer_conns\n",
+//             peer_id);
+//     }
+//     PeerConn<T>& p = peer_id_to_conn[peer_id];
+//     if (!p) {
+//         return std::format(
+//             "Failed to disarm heartbeat timer: peer id {} not found in peer_conns\n",
+//             peer_id);
+//     }
 
-    // Zero spec disarms
-    // Drain any already-counted expirations so that
-    // EPOLLET doesn't deliver a stale read after we return.
-    if (p.timer_fds.get_heartbeat() == -1) return {};
+//     // Zero spec disarms
+//     // Drain any already-counted expirations so that
+//     // EPOLLET doesn't deliver a stale read after we return.
+//     if (p.timer_fds.get_heartbeat() == -1) return {};
 
-    itimerspec zero{};
-    ::timerfd_settime(p.timer_fds.get_heartbeat(), 0, &zero, nullptr);
-    uint64_t dummy;
-    ssize_t n = ::read(p.timer_fds.get_heartbeat(), &dummy, sizeof(dummy));
-    (void)n;
+//     itimerspec zero{};
+//     ::timerfd_settime(p.timer_fds.get_heartbeat(), 0, &zero, nullptr);
+//     uint64_t dummy;
+//     ssize_t n = ::read(p.timer_fds.get_heartbeat(), &dummy, sizeof(dummy));
+//     (void)n;
 
-    return {};
-}
+//     return {};
+// }
