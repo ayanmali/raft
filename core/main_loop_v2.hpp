@@ -3,10 +3,8 @@
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
 
-inline std::optional<std::string> Node::OnWake() {
+inline std::optional<std::string> Node::OnWake(bool& leader_contact) {
     // drain the inbox, handle messages accordingly
-    bool leader_contact{false};
-
     auto el_handler = [&leader_contact, this](NodeMessage&& message) -> std::optional<std::string> {
         #ifdef DEBUG
         std::cout << "draining event loop messages...\n";
@@ -692,7 +690,7 @@ inline std::optional<std::string> Node::OnWake() {
 
     if (leader_contact) {
         // reset timer
-        //::timerfd;
+        reset_timer(election_timeout_fd_, election_timeout_secs_, election_timeout_nsecs_);
         demote();
     }
 
@@ -744,6 +742,7 @@ inline std::optional<std::string> Node::OnElectionTimeout() {
     state_ = NodeState::Candidate;
     // set timeout to a new random value
     randomize_election_timeout();
+    set_timer(election_timeout_fd_, election_timeout_secs_, election_timeout_nsecs_);
     #ifdef DEBUG
     std::cout << "set election timeout to " << election_timeout_secs_ << " seconds + " << election_timeout_nsecs_ << " ns\n";
     #endif
@@ -754,7 +753,6 @@ inline std::optional<std::string> Node::OnElectionTimeout() {
     write_voted_for();
     voters_.clear();
     voters_.insert(MY_ID);
-
 
     uint64_t expirations = 0;
     ssize_t n = ::read(election_timeout_fd_, &expirations, sizeof(expirations));
@@ -873,12 +871,13 @@ inline std::optional<std::string> Node::MainLoop() {
             #endif
         }
 
+        bool leader_contact{false};
         for (int i = 0; i < n; ++i) {
             const FD fd = evs[i].data.fd;
             const uint32_t e = evs[i].events;
 
             if (fd == event_fd_) {
-                auto err = OnWake();
+                auto err = OnWake(leader_contact);
                 #ifdef DEBUG
                 if (err) {
                     std::cout << "error in OnWake:\n" << err.value() << "\n";
@@ -887,21 +886,21 @@ inline std::optional<std::string> Node::MainLoop() {
                 continue;
             }
 
-            if (fd == election_timeout_fd_) {
-                auto err = OnElectionTimeout();
+            if (fd == heartbeat_fd_ && state_ == NodeState::Leader) {
+                auto err = OnHeartbeat();
                 #ifdef DEBUG
                 if (err) {
-                    std::cout << "error in OnElectionTimeout:\n" << err.value() << "\n";
+                    std::cout << "error in OnHeartbeat:\n" << err.value() << "\n";
                 }
                 #endif
                 continue;
             }
 
-            if (fd == heartbeat_fd_) {
-                auto err = OnHeartbeat();
+            if (fd == election_timeout_fd_ && !leader_contact) {
+                auto err = OnElectionTimeout();
                 #ifdef DEBUG
                 if (err) {
-                    std::cout << "error in OnHeartbeat:\n" << err.value() << "\n";
+                    std::cout << "error in OnElectionTimeout:\n" << err.value() << "\n";
                 }
                 #endif
                 continue;

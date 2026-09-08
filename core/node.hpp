@@ -79,14 +79,16 @@ public:
     void forward_request(const std::vector<LogEntry>&);
 
     void advance_to_term(uint32_t);
-    void demote();
+    std::optional<const char*> demote();
     void become_leader();
 
     std::optional<const char*> register_fd(FD fd, uint32_t events);
+    std::optional<const char*> set_timer_periodic(FD fd, uint64_t secs, uint64_t nsecs);
     std::optional<const char*> set_timer(FD fd, uint64_t secs, uint64_t nsecs);
+    std::optional<const char*> reset_timer(FD fd, uint64_t secs, uint64_t nsecs);
     void randomize_election_timeout();
 
-    std::optional<std::string> OnWake();
+    std::optional<std::string> OnWake(bool& leader_contact);
     std::optional<std::string> OnElectionTimeout();
     std::optional<std::string> OnHeartbeat();
     std::optional<std::string> OnFlush();
@@ -296,8 +298,7 @@ inline std::optional<std::string> Node::CreateNode(Node* n, ELNodeInbox* el_inbo
         }
 
         n->set_timer(n->election_timeout_fd_, n->election_timeout_secs_, n->election_timeout_nsecs_);
-        n->set_timer(n->heartbeat_fd_, n->heartbeat_period_secs_, n->heartbeat_period_nsecs_);
-        n->set_timer(n->flush_fd_, n->flush_period_secs_, n->flush_period_nsecs_);
+        n->set_timer_periodic(n->flush_fd_, n->flush_period_secs_, n->flush_period_nsecs_);
         return {};
 }
 
@@ -473,13 +474,33 @@ inline std::optional<const char*> Node::register_fd(FD fd, uint32_t events) {
     return {};
 }
 
-inline std::optional<const char*> Node::set_timer(FD fd, uint64_t secs, uint64_t nsecs) {
+inline std::optional<const char*> Node::set_timer_periodic(FD fd, uint64_t secs, uint64_t nsecs) {
     itimerspec spec{};
     spec.it_value.tv_sec  = secs;
     spec.it_value.tv_nsec = nsecs;
     spec.it_interval      = spec.it_value;
     ::timerfd_settime(fd, 0, &spec, nullptr);
     return {};
+}
+
+inline std::optional<const char*> Node::set_timer(FD fd, uint64_t secs, uint64_t nsecs) {
+    itimerspec spec{};
+    spec.it_value.tv_sec  = secs;
+    spec.it_value.tv_nsec = nsecs;
+    spec.it_interval      = {0, 0};
+    ::timerfd_settime(fd, 0, &spec, nullptr);
+    return {};
+}
+
+inline std::optional<const char*> Node::reset_timer(FD fd, uint64_t secs, uint64_t nsecs) {
+    uint64_t expirations = 0;
+    ssize_t n = ::read(fd, &expirations, sizeof(expirations));
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+        return "error attempting to read fd\n";
+    }
+    // if (n != sizeof(expirations) || expirations == 0) return {};
+
+    return set_timer(fd, secs, nsecs);
 }
 
 inline void Node::randomize_election_timeout() {
@@ -501,13 +522,13 @@ inline void Node::advance_to_term(uint32_t term) {
     demote();
 }
 
-inline void Node::demote() {
+inline std::optional<const char*> Node::demote() {
     #ifdef DEBUG
     std::cout << "this node (id " << MY_ID << ") was demoted\n";
     #endif
 
     NodeState old = state_;
-    if (old == NodeState::Follower) return;
+    if (old == NodeState::Follower) return {};
     state_ = NodeState::Follower;
     for (size_t i = 0; i < next_indexes_.size(); ++i) {
         if (next_indexes_[i] < 0) continue;
@@ -515,9 +536,12 @@ inline void Node::demote() {
         match_indexes_[i] = 0;
         chunks_sent_[i] = 0;
     }
+    if (old == NodeState::Candidate) return {};
     installing_snapshot_.reset();
 
-    for (auto& loop : loops_) { loop.Wake(); }
+    reset_timer(heartbeat_fd_, 0, 0);
+
+    return {};
 }
 
 inline void Node::become_leader() {
@@ -550,7 +574,7 @@ inline void Node::become_leader() {
     ::fseek(log_fp_, 0, SEEK_END);
     ::fwrite(&log_.back(), sizeof(LogEntry), 1, log_fp_);
 
-    for (auto& loop : loops_) { loop.Wake(); }
+    set_timer_periodic(heartbeat_fd_, heartbeat_period_secs_, heartbeat_period_nsecs_);
 }
 
 inline void Node::add_peer_if_not_exists(NodeID node_id, IPAddrPort ip_addr, EventLoop<SOCKET_TYPE>& el) {
