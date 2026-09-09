@@ -742,7 +742,8 @@ inline std::optional<std::string> Node::OnElectionTimeout() {
     state_ = NodeState::Candidate;
     // set timeout to a new random value
     randomize_election_timeout();
-    set_timer(election_timeout_fd_, election_timeout_secs_, election_timeout_nsecs_);
+    auto err = set_timer(election_timeout_fd_, election_timeout_secs_, election_timeout_nsecs_);
+    if (err) return err;
     #ifdef DEBUG
     std::cout << "set election timeout to " << election_timeout_secs_ << " seconds + " << election_timeout_nsecs_ << " ns\n";
     #endif
