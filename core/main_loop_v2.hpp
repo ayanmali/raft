@@ -776,52 +776,53 @@ inline std::optional<std::string> Node::OnElectionTimeout() {
 }
 
 inline std::optional<std::string> Node::OnHeartbeat() {
-    if (state_ != NodeState::Leader) return {}; // in case this node was demoted in the interim
-    #ifdef DEBUG
-    std::cout << "last_applied_idx_ = " << last_applied_idx_ << "\n";
-    std::cout << "base_logical_idx_ = " << base_logical_idx_ << "\n";
-    #endif
-    std::optional<std::string> err;
-    iterate_node_ids([&](size_t id) {
+    if (node_ids_.num_available != 0) {
         #ifdef DEBUG
-        std::cout << "sending heartbeat to node " << id << "...\n";
-        std::cout << "next index = " << next_indexes_[id] << "\n";
+        std::cout << "last_applied_idx_ = " << last_applied_idx_ << "\n";
+        std::cout << "base_logical_idx_ = " << base_logical_idx_ << "\n";
         #endif
-        auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
-        const int32_t next_idx = next_indexes_[id];
-        if (next_idx == 0) {
-            err = (std::format(
-                "Failed to process HeartbeatTimeout: next_index 0 for node id {} cannot derive prev_log_idx",
-                id
-            ));
-            return;
-        }
-
-        // if last log index >= this follower's nextIndex,
-        // then send AE RPC w/ log entries starting at nextIndex. Otherwise, send term w/ no entries
-
-        if (next_idx < base_logical_idx_) {
-            installing_snapshot_.set(id);
-
-            std::optional<std::string> send_is_err = send_install_snapshot(el, id);
-            if (send_is_err) {
+        std::optional<std::string> err;
+        iterate_node_ids([&](size_t id) {
+            #ifdef DEBUG
+            std::cout << "sending heartbeat to node " << id << "...\n";
+            std::cout << "next index = " << next_indexes_[id] << "\n";
+            #endif
+            auto& el = loops_[id & (EVENT_LOOP_THREADS - 1)];
+            const int32_t next_idx = next_indexes_[id];
+            if (next_idx == 0) {
                 err = (std::format(
-                    "error retrying IS RPC:\n{}\n",
-                    send_is_err.value()
+                    "Failed to process HeartbeatTimeout: next_index 0 for node id {} cannot derive prev_log_idx",
+                    id
+                ));
+                return;
+            }
+
+            // if last log index >= this follower's nextIndex,
+            // then send AE RPC w/ log entries starting at nextIndex. Otherwise, send term w/ no entries
+
+            if (next_idx < base_logical_idx_) {
+                installing_snapshot_.set(id);
+
+                std::optional<std::string> send_is_err = send_install_snapshot(el, id);
+                if (send_is_err) {
+                    err = (std::format(
+                        "error retrying IS RPC:\n{}\n",
+                        send_is_err.value()
+                    ));
+                }
+                return;
+            }
+            std::optional<std::string> send_ae_err = send_append_entries(next_idx, el, id);
+            if (send_ae_err) {
+                err = (std::format(
+                    "error retrying AE RPC:\n{}\n",
+                    send_ae_err.value()
                 ));
             }
-            return;
-        }
-        std::optional<std::string> send_ae_err = send_append_entries(next_idx, el, id);
-        if (send_ae_err) {
-            err = (std::format(
-                "error retrying AE RPC:\n{}\n",
-                send_ae_err.value()
-            ));
-        }
-    });
+        });
 
-    if (err) return err;
+        if (err) return err;
+    }
 
     for (int i = 0; i < MAX_TIMER_RETRIES; ++i) {
         uint64_t expirations = 0;
