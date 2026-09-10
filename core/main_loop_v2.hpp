@@ -740,13 +740,6 @@ inline std::optional<std::string> Node::OnElectionTimeout() {
     #endif
 
     state_ = NodeState::Candidate;
-    // set timeout to a new random value
-    randomize_election_timeout();
-    auto err = set_timer(election_timeout_fd_, election_timeout_secs_, election_timeout_nsecs_);
-    if (err) return err;
-    #ifdef DEBUG
-    std::cout << "set election timeout to " << election_timeout_secs_ << " seconds + " << election_timeout_nsecs_ << " ns\n";
-    #endif
 
     ++current_term_;
     voted_for_ = MY_ID;
@@ -755,18 +748,26 @@ inline std::optional<std::string> Node::OnElectionTimeout() {
     voters_.clear();
     voters_.insert(MY_ID);
 
-    uint64_t expirations = 0;
-    ssize_t n = ::read(election_timeout_fd_, &expirations, sizeof(expirations));
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
-        return "error attempting to read election timeout fd\n";
+    for (int i = 0; i < MAX_TIMER_RETRIES; ++i) {
+        uint64_t expirations = 0;
+        ssize_t n = ::read(election_timeout_fd_, &expirations, sizeof(expirations));
+        if (n == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return "error reading election timeout fd\n";
+            }
+            if (errno == EINTR) {
+                // retry
+                continue;
+            }
+            return "unexpected error on election timeout fd read\n"; // some other error
+        }
+        else if (n != sizeof(expirations)) {
+            // short read (not typical)
+            return {};
+        }
+        break;
     }
-    if (n != sizeof(expirations) || expirations == 0) return {};
-
-    // A node always votes for itself. If that single vote is already a
-    // majority (e.g. a single-node cluster with no peers), win the
-    // election immediately rather than waiting for RequestVote replies
-    // that will never come.
-    if (voters_.size() > (node_ids_.num_in_cluster / 2)) {
+    if (1 > (node_ids_.num_in_cluster / 2)) {
         become_leader();
         return {};
     }
@@ -820,14 +821,29 @@ inline std::optional<std::string> Node::OnHeartbeat() {
         }
     });
 
-    uint64_t expirations = 0;
-    ssize_t n = ::read(heartbeat_fd_, &expirations, sizeof(expirations));
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
-        return "error attempting to read heartbeat timer fd\n";
-    }
-    if (n != sizeof(expirations) || expirations == 0) return {};
+    if (err) return err;
 
-    return err;
+    for (int i = 0; i < MAX_TIMER_RETRIES; ++i) {
+        uint64_t expirations = 0;
+        ssize_t n = ::read(heartbeat_fd_, &expirations, sizeof(expirations));
+        if (n == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return "error attempting to read heartbeat fd\n";
+            }
+            if (errno == EINTR) {
+                // retry
+                continue;
+            }
+            return "unexpected error on heartbeat fd read\n"; // some other error
+        }
+        else if (n != sizeof(expirations)) {
+            // short read (not typical)
+            return {};
+        }
+        break;
+    }
+
+    return {};
 }
 
 inline std::optional<std::string> Node::OnFlush() {
@@ -837,12 +853,25 @@ inline std::optional<std::string> Node::OnFlush() {
     if (log_fp_) { ::fflush(log_fp_); ::fsync(fileno(log_fp_)); }
     if (snapshot_fp_) { ::fflush(snapshot_fp_); ::fsync(fileno(snapshot_fp_)); }
 
-    uint64_t expirations = 0;
-    ssize_t n = ::read(flush_fd_, &expirations, sizeof(expirations));
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
-        return "error attempting to read flush timer fd\n";
+    for (int i = 0; i < MAX_TIMER_RETRIES; ++i) {
+        uint64_t expirations = 0;
+        ssize_t n = ::read(flush_fd_, &expirations, sizeof(expirations));
+        if (n == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return "error attempting to read flush fd\n";
+            }
+            if (errno == EINTR) {
+                // retry
+                continue;
+            }
+            return "unexpected error on flush fd read\n"; // some other error
+        }
+        else if (n != sizeof(expirations)) {
+            // short read (not typical)
+            return {};
+        }
+        break;
     }
-    if (n != sizeof(expirations) || expirations == 0) return {};
 
     return {};
 }
@@ -878,16 +907,27 @@ inline std::optional<std::string> Node::MainLoop() {
             const uint32_t e = evs[i].events;
 
             if (fd == event_fd_) {
+                #ifdef DEBUG
+                std::cout << "event fd fired\n";
+                #endif
                 auto err = OnWake(leader_contact);
                 #ifdef DEBUG
                 if (err) {
                     std::cout << "error in OnWake:\n" << err.value() << "\n";
                 }
                 #endif
+
+                if (state_ == NodeState::Candidate && voters_.size() > (node_ids_.num_in_cluster / 2)) {
+                    become_leader();
+                    //return {};
+                }
                 continue;
             }
 
             if (fd == heartbeat_fd_ && state_ == NodeState::Leader) {
+                #ifdef DEBUG
+                std::cout << "heartbeat fd fired\n";
+                #endif
                 auto err = OnHeartbeat();
                 #ifdef DEBUG
                 if (err) {
@@ -897,7 +937,10 @@ inline std::optional<std::string> Node::MainLoop() {
                 continue;
             }
 
-            if (fd == election_timeout_fd_ && !leader_contact) {
+            if (fd == election_timeout_fd_ && state_ != NodeState::Leader && !leader_contact) {
+                #ifdef DEBUG
+                std::cout << "election timeout fd fired\n";
+                #endif
                 auto err = OnElectionTimeout();
                 #ifdef DEBUG
                 if (err) {
@@ -908,6 +951,9 @@ inline std::optional<std::string> Node::MainLoop() {
             }
 
             if (fd == flush_fd_) {
+                #ifdef DEBUG
+                std::cout << "flush fd fired\n";
+                #endif
                 auto err = OnFlush();
                 #ifdef DEBUG
                 if (err) {
@@ -921,12 +967,12 @@ inline std::optional<std::string> Node::MainLoop() {
         // only compact entries that have been applied
         if (log_.size() >= LOG_COMPACT_THRESHOLD
             && last_applied_idx_ >= base_logical_idx_) {
-            auto err = compact();
-            #ifdef DEBUG
-            if (err) {
-                std::cout << "Error during compaction: " << err.value() << "\n";
-            }
-            #endif
+                auto err = compact();
+                #ifdef DEBUG
+                if (err) {
+                    std::cout << "Error during compaction: " << err.value() << "\n";
+                }
+                #endif
         }
     }
     return {};

@@ -50,6 +50,8 @@ static constexpr uint64_t FLUSH_INTERVAL_MS{1500};
 static constexpr uint64_t FLUSH_INTERVAL_NS = FLUSH_INTERVAL_MS * 1000000;
 /* ---- */
 
+static constexpr int MAX_TIMER_RETRIES = 4;
+
 static constexpr int CMD_SIZE = 4; // # of bytes that each command in the log occupies
 static constexpr size_t SNAPSHOT_CHUNK_SIZE = 16; // in practice this should be something like 4 KiB
 
