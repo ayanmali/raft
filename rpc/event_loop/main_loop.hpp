@@ -278,7 +278,7 @@ inline std::optional<std::string> EventLoop<T>::Run() {
 
                     if (e & EPOLLIN) {
                         #ifdef DEBUG
-                        const char* kind_name[] = {"heartbeat", "AE", "RV", "IS"};
+                        const char* kind_name[] = {"AE", "RV", "IS"};
                         std::cout << kind_name[static_cast<uint8_t>(subtype)] << " timer fired for peer " << p.peer_id << "\n";
                         #endif
                         std::optional<const char*> timer_err;

@@ -352,17 +352,20 @@ inline std::optional<const char*> EventLoop<TCP>::OnPeerWritable(PeerConn<TCP>& 
     spec.it_interval      = {0, 0};
 
     while (p.wbuf_offset < p.wbuf_size) {
-        uint8_t kind;
-        std::memcpy(&kind, p.wbuf + p.wbuf_offset + sizeof(uint32_t), sizeof(kind));
-        if (static_cast<RpcKind>(kind) != RpcKind::ForwardLeader) {
-            ::timerfd_settime(p.timer_fds.fds[kind + 1], 0, &spec, nullptr);
-        }
-
         ssize_t n = ::send(p.fd,
             p.wbuf + p.wbuf_offset,
             p.wbuf_size - p.wbuf_offset,
             MSG_NOSIGNAL);
-        if (n > 0) { p.wbuf_offset += static_cast<size_t>(n); continue; }
+        if (n > 0) {
+            uint8_t kind;
+            std::memcpy(&kind, p.wbuf + p.wbuf_offset + sizeof(uint32_t), sizeof(kind));
+            if (static_cast<RpcKind>(kind) != RpcKind::ForwardLeader) {
+                ::timerfd_settime(p.timer_fds.fds[kind], 0, &spec, nullptr);
+            }
+
+            p.wbuf_offset += static_cast<size_t>(n);
+            continue;
+        }
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return {};
         DropPeer(p);
@@ -399,12 +402,6 @@ inline std::optional<const char*> EventLoop<UDP>::OnPeerWritable(PeerConn<UDP>& 
         std::memcpy(&msg_len, p.wbuf, sizeof(msg_len));
         msg_len = ntohl(msg_len);
         const size_t frame_size = msg_len + sizeof(msg_len);
-        uint8_t kind;
-        std::memcpy(&kind, p.wbuf + sizeof(msg_len), sizeof(kind));
-
-        if (static_cast<RpcKind>(kind) != RpcKind::ForwardLeader) {
-            ::timerfd_settime(p.timer_fds.fds[kind + 1], 0, &spec, nullptr);
-        }
 
         ssize_t n = ::send(p.fd,
             p.wbuf,
@@ -413,6 +410,12 @@ inline std::optional<const char*> EventLoop<UDP>::OnPeerWritable(PeerConn<UDP>& 
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             drained = false;
             break; // TODO: handle case where socket write buffer full
+        }
+        uint8_t kind;
+        std::memcpy(&kind, p.wbuf + sizeof(msg_len), sizeof(kind));
+
+        if (static_cast<RpcKind>(kind) != RpcKind::ForwardLeader) {
+            ::timerfd_settime(p.timer_fds.fds[kind], 0, &spec, nullptr);
         }
 
         p.wbuf_size -= frame_size;

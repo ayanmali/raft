@@ -146,9 +146,9 @@ struct EventLoop {
             if (node_inbox->Push(this_id,
                 NodeMessage(std::forward<NodeMessage>(msg)))) {
                 ok = true;
+                break;
             }
         }
-        ok = false;
         wake_node();
         return ok;
     }
