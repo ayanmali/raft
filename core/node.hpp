@@ -104,6 +104,7 @@ public:
     std::optional<std::string> reconstruct_state(FILE* out, uint32_t up_to_idx);
 
     /* Helpers */
+    void wake_self();
     size_t snapshot_header_bytes() const;
     size_t sm_header_bytes() const;
     size_t snapshot_config_and_data_offset_bytes() const;
@@ -228,7 +229,9 @@ inline std::optional<std::string> Node::CreateNode(Node* n, ELNodeInbox* el_inbo
             n->threads_[i] = std::jthread([n, i] {
                 std::optional<std::string> loop_err = n->loops_[i].Run();
                 #ifdef DEBUG
-                std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
+                if (loop_err) {
+                    std::cout << "event loop " << i << " crashed:\n" << loop_err.value() << "\n";
+                }
                 #endif
             });
         }
@@ -324,6 +327,7 @@ inline void Node::Stop() {
     while (!done) {
         done = client_inbox_->PushOne(StopNodeMsg{});
     }
+    wake_self();
 }
 
 // ---- outbound --------------------------------------------------------
@@ -358,6 +362,7 @@ inline void Node::append_commands(std::vector<std::byte*>& commands) {
     while (!done) {
         done = client_inbox_->PushOne(AppendClientReq{std::move(entries)});
     }
+    wake_self();
 }
 
 inline void Node::append_commands(std::byte (&commands)[MAX_ENTRIES][CMD_SIZE], size_t num_entries) {
@@ -370,6 +375,7 @@ inline void Node::append_commands(std::byte (&commands)[MAX_ENTRIES][CMD_SIZE], 
     while (!done) {
         done = client_inbox_->PushOne(AppendClientReq{std::move(entries)});
     }
+    wake_self();
 }
 
 inline void Node::append_commands(std::vector<LogEntry>&& commands) {
@@ -377,6 +383,7 @@ inline void Node::append_commands(std::vector<LogEntry>&& commands) {
     while (!done) {
         done = client_inbox_->PushOne(AppendClientReq{std::move(commands)});
     }
+    wake_self();
 }
 
 inline void Node::append_commands_local(std::vector<LogEntry>&& commands) {
@@ -457,6 +464,7 @@ inline void Node::read_state(FILE* out) {
     while (!done) {
         done = client_inbox_->PushOne(ReadStateClientReq{out});
     }
+    wake_self();
 }
 
 inline int Node::get_leader() {
@@ -945,6 +953,15 @@ inline std::optional<std::string> Node::send_append_entries(int32_t next_idx, Ev
     std::memcpy(p.entries, s.data(), sizeof(LogEntry) * s.size());
     send(std::move(p), el);
     return {};
+}
+
+inline void Node::wake_self() {
+    #ifdef DEBUG
+    std::cout << "Main thread - waking node\n";
+    #endif
+    uint64_t one = 1;
+    ssize_t n = ::write(event_fd_, &one, sizeof(one));
+    (void)n;
 }
 
 inline size_t Node::snapshot_header_bytes() const {

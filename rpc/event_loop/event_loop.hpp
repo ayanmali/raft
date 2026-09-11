@@ -390,32 +390,6 @@ inline std::optional<std::string> EventLoop<T>::DrainInbox() {
                 }
             }
 
-            // else if constexpr (std::is_same_v<U, ArmTimer>) {
-            //     #ifdef DEBUG
-            //     std::cout << "found arm timer req\n";
-            //     #endif
-            //     std::optional<std::string> arm_err = arm_heartbeat_timer(payload.dest_id);
-            //     if (arm_err) {
-            //         return (std::format(
-            //             "Error while draining inbox: failed to arm timers for node {}:\n{}\n",
-            //             payload.dest_id, arm_err.value()
-            //         ));
-            //     }
-            // }
-
-            // else if constexpr (std::is_same_v<U, DisarmTimer>) {
-            //     #ifdef DEBUG
-            //     std::cout << "found disarm timer req\n";
-            //     #endif
-            //     std::optional<std::string> disarm_err = disarm_heartbeat_timer(payload.dest_id);
-            //     if (disarm_err) {
-            //         return (std::format(
-            //             "Error while draining inbox: failed to disarm timers for node {}:\n{}\n",
-            //             payload.dest_id, disarm_err.value()
-            //         ));
-            //     }
-            // }
-
             else if constexpr (std::is_same_v<U, AddPeerMsg>) {
                 #ifdef DEBUG
                 std::cout << "found add peer msg\n";
