@@ -353,6 +353,9 @@ inline void Node::request_votes() {
 }
 
 inline void Node::append_commands(std::vector<std::byte*>& commands) {
+    #ifdef DEBUG
+    std::cout << "client request to append commands\n";
+    #endif
     std::vector<LogEntry> entries;
     entries.reserve(commands.size());
     for (std::byte* command : commands) {
