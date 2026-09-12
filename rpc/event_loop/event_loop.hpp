@@ -214,7 +214,7 @@ inline void EventLoop<T>::wake_node() {
     std::cout << "waking node\n";
     #endif
     uint64_t one = 1;
-    ssize_t n = ::write(event_fd, &one, sizeof(one));
+    ssize_t n = ::write(node_event_fd, &one, sizeof(one));
     (void)n;
 }
 

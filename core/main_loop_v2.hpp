@@ -738,7 +738,6 @@ inline std::optional<std::string> Node::OnElectionTimeout() {
     #ifdef DEBUG
     std::cout << "election timeout; starting election...\n";
     #endif
-    randomize_election_timeout();
     state_ = NodeState::Candidate;
 
     ++current_term_;
@@ -948,6 +947,8 @@ inline std::optional<std::string> Node::MainLoop() {
                     std::cout << "error in OnElectionTimeout:\n" << err.value() << "\n";
                 }
                 #endif
+                randomize_election_timeout();
+                set_timer(election_timeout_fd_, election_timeout_secs_, election_timeout_nsecs_);
                 continue;
             }
 

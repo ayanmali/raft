@@ -357,6 +357,8 @@ inline std::optional<const char*> EventLoop<TCP>::OnPeerWritable(PeerConn<TCP>& 
             p.wbuf_size - p.wbuf_offset,
             MSG_NOSIGNAL);
         if (n > 0) {
+            // TODO: if multiple buffered messages are sent in the same send() call,
+            // this only arms the timer for the first message. Fix this so that the timers for all messages are arned
             uint8_t kind;
             std::memcpy(&kind, p.wbuf + p.wbuf_offset + sizeof(uint32_t), sizeof(kind));
             if (static_cast<RpcKind>(kind) != RpcKind::ForwardLeader) {

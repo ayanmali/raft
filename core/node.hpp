@@ -177,6 +177,45 @@ inline std::optional<std::string> Node::CreateNode(Node* n, ELNodeInbox* el_inbo
         n->apply_entry = apply_entry_to_sm;
         n->running_ = true;
 
+        n->next_indexes_[MY_ID] = -1;
+        n->match_indexes_[MY_ID] = -1;
+        n->chunks_sent_[MY_ID] = -1;
+        n->voters_.reserve(BASE_CLUSTER_SIZE);
+
+        n->randomize_election_timeout();
+        n->heartbeat_period_secs_ = HEARTBEAT_INTERVAL_NS / NS_PER_SEC;
+        n->heartbeat_period_nsecs_ = HEARTBEAT_INTERVAL_NS % NS_PER_SEC;
+        n->flush_period_secs_ = FLUSH_INTERVAL_NS / NS_PER_SEC;
+        n->flush_period_nsecs_ = FLUSH_INTERVAL_NS % NS_PER_SEC;
+
+        n->epoll_fd_ = ::epoll_create1(EPOLL_CLOEXEC);
+        n->event_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        n->election_timeout_fd_ = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+        n->heartbeat_fd_ = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+        n->flush_fd_ = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+        if (n->epoll_fd_ < 0 || n->event_fd_ < 0 || n->election_timeout_fd_ < 0 || n->heartbeat_fd_ < 0 || n->flush_fd_ < 0) {
+            return "failed to create Node - failed to create FDs\n";
+        }
+
+        uint8_t err{0};
+        int shift = -1;
+        auto res = n->register_fd(n->event_fd_, EPOLLIN | EPOLLET);
+        err |= bool(res) << ++shift;
+        res = n->register_fd(n->election_timeout_fd_, EPOLLIN | EPOLLET);
+        err |= (bool(res) << ++shift);
+        res = n->register_fd(n->heartbeat_fd_, EPOLLIN | EPOLLET);
+        err |= (bool(res) << ++shift);
+        res = n->register_fd(n->flush_fd_, EPOLLIN | EPOLLET);
+        err |= (bool(res) << ++shift);
+
+        if (err) {
+            return "Failed to create Node - failed to register FDs\n";
+        }
+
+        n->set_timer(n->election_timeout_fd_, n->election_timeout_secs_, n->election_timeout_nsecs_);
+        n->set_timer_periodic(n->flush_fd_, n->flush_period_secs_, n->flush_period_nsecs_);
+
         // SIGPIPE would otherwise kill the process if a peer disappears
         // mid-send. send/recv calls also pass MSG_NOSIGNAL belt-and-
         // suspenders.
@@ -224,7 +263,6 @@ inline std::optional<std::string> Node::CreateNode(Node* n, ELNodeInbox* el_inbo
             n->node_ids_.set_online_node(i);
         }
 
-
         for (uint i = 0; i < EVENT_LOOP_THREADS; ++i) {
             n->threads_[i] = std::jthread([n, i] {
                 std::optional<std::string> loop_err = n->loops_[i].Run();
@@ -264,44 +302,6 @@ inline std::optional<std::string> Node::CreateNode(Node* n, ELNodeInbox* el_inbo
             ));
         }
 
-        n->next_indexes_[MY_ID] = -1;
-        n->match_indexes_[MY_ID] = -1;
-        n->chunks_sent_[MY_ID] = -1;
-        n->voters_.reserve(BASE_CLUSTER_SIZE);
-
-        n->randomize_election_timeout();
-        n->heartbeat_period_secs_ = HEARTBEAT_INTERVAL_NS / NS_PER_SEC;
-        n->heartbeat_period_nsecs_ = HEARTBEAT_INTERVAL_NS % NS_PER_SEC;
-        n->flush_period_secs_ = FLUSH_INTERVAL_NS / NS_PER_SEC;
-        n->flush_period_nsecs_ = FLUSH_INTERVAL_NS % NS_PER_SEC;
-
-        n->epoll_fd_ = ::epoll_create1(EPOLL_CLOEXEC);
-        n->event_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-        n->election_timeout_fd_ = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-        n->heartbeat_fd_ = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-        n->flush_fd_ = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-
-        if (n->epoll_fd_ < 0 || n->event_fd_ < 0 || n->election_timeout_fd_ < 0 || n->heartbeat_fd_ < 0 || n->flush_fd_ < 0) {
-            return "failed to create Node - failed to create FDs\n";
-        }
-
-        uint8_t err{0};
-        int shift = -1;
-        auto res = n->register_fd(n->event_fd_, EPOLLIN | EPOLLET);
-        err |= bool(res) << ++shift;
-        res = n->register_fd(n->election_timeout_fd_, EPOLLIN | EPOLLET);
-        err |= (bool(res) << ++shift);
-        res = n->register_fd(n->heartbeat_fd_, EPOLLIN | EPOLLET);
-        err |= (bool(res) << ++shift);
-        res = n->register_fd(n->flush_fd_, EPOLLIN | EPOLLET);
-        err |= (bool(res) << ++shift);
-
-        if (err) {
-            return "Failed to create Node - failed to register FDs\n";
-        }
-
-        n->set_timer(n->election_timeout_fd_, n->election_timeout_secs_, n->election_timeout_nsecs_);
-        n->set_timer_periodic(n->flush_fd_, n->flush_period_secs_, n->flush_period_nsecs_);
         return {};
 }
 
