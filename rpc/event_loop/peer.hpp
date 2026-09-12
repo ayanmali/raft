@@ -535,17 +535,10 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(AppendEntriesReqPa
     std::cout << "payload entries_len = " << payload.entries_len << "\n";
     #endif
 
-    if (payload.dest_id < 0 || payload.dest_id >= peer_id_to_conn.size()) {
-        return std::format(
-            "Failed to post AE RPC to inflight queue: peer id {} not found in peer_conns\n",
-            payload.dest_id);
+    if (payload.dest_id < 0 || payload.dest_id >= peer_id_to_conn.size() || !peer_id_to_conn[payload.dest_id]) {
+        return {};
     }
     PeerConn<T>& p = peer_id_to_conn[payload.dest_id];
-    if (!p) {
-        return std::format(
-            "Failed to post AE RPC to inflight queue: peer id {} not found in peer_conns\n",
-            payload.dest_id);
-    }
 
     if constexpr (T == TCP) {
         if (p.wbuf_offset > 0) {
@@ -586,17 +579,10 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(RequestVoteReqPayl
     std::cout << "Posting RV RPC to outbound queue for node " << payload.dest_id << "\n";
     #endif
 
-    if (payload.dest_id < 0 || payload.dest_id >= peer_id_to_conn.size()) {
-        return std::format(
-            "Failed to post RV RPC to inflight queue: peer id {} not found in peer_conns\n",
-            payload.dest_id);
+    if (payload.dest_id < 0 || payload.dest_id >= peer_id_to_conn.size() || !peer_id_to_conn[payload.dest_id]) {
+        return {};
     }
     PeerConn<T>& p = peer_id_to_conn[payload.dest_id];
-    if (!p) {
-        return std::format(
-            "Failed to post RV RPC to inflight queue: peer id {} not found in peer_conns\n",
-            payload.dest_id);
-    }
 
     if constexpr (T == TCP) {
         if (p.wbuf_offset > 0) {
@@ -637,17 +623,10 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(InstallSnapshotReq
     std::cout << "Posting IS RPC to outbound queue for node " << payload.dest_id << "\n";
     #endif
 
-    if (payload.dest_id < 0 || payload.dest_id >= peer_id_to_conn.size()) {
-        return std::format(
-            "Failed to post IS RPC to inflight queue: peer id {} not found in peer_conns\n",
-            payload.dest_id);
+    if (payload.dest_id < 0 || payload.dest_id >= peer_id_to_conn.size() || !peer_id_to_conn[payload.dest_id]) {
+        return {};
     }
     PeerConn<T>& p = peer_id_to_conn[payload.dest_id];
-    if (!p) {
-        return std::format(
-            "Failed to post IS RPC to inflight queue: peer id {} not found in peer_conns\n",
-            payload.dest_id);
-    }
 
     if constexpr (T == TCP) {
         if (p.wbuf_offset > 0) {
@@ -688,17 +667,10 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(ForwardLeaderMsg& 
     std::cout << "Posting FL RPC to outbound queue for node " << payload.dest_id << "\n";
     #endif
 
-    if (payload.dest_id < 0 || payload.dest_id >= peer_id_to_conn.size()) {
-        return std::format(
-            "Failed to post FL RPC to inflight queue: peer id {} not found in peer_conns\n",
-            payload.dest_id);
+    if (payload.dest_id < 0 || payload.dest_id >= peer_id_to_conn.size() || !peer_id_to_conn[payload.dest_id]) {
+        return {};
     }
     PeerConn<T>& p = peer_id_to_conn[payload.dest_id];
-    if (!p) {
-        return std::format(
-            "Failed to post FL RPC to inflight queue: peer id {} not found in peer_conns\n",
-            payload.dest_id);
-    }
 
     if constexpr (T == TCP) {
         if (p.wbuf_offset > 0) {
