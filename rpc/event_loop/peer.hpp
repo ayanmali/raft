@@ -526,6 +526,9 @@ inline void EventLoop<T>::DropPeer(PeerConn<T>& p) {
 /* called when draining the messages in the event loop's MPSC inbox. */
 template <SocketType T>
 inline std::optional<std::string> EventLoop<T>::post_inflight(AppendEntriesReqPayload& payload) {
+    if (payload.dest_id < 0 || payload.dest_id >= peer_id_to_conn.size() || !peer_id_to_conn[payload.dest_id]) {
+        return {};
+    }
     #ifdef DEBUG
     std::cout << "Posting AE RPC to outbound queue for node " << payload.dest_id << "\n";
     std::cout << "payload term = " << payload.term << "\n";
@@ -534,10 +537,6 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(AppendEntriesReqPa
     std::cout << "payload leader commit = " << payload.leader_commit << "\n";
     std::cout << "payload entries_len = " << payload.entries_len << "\n";
     #endif
-
-    if (payload.dest_id < 0 || payload.dest_id >= peer_id_to_conn.size() || !peer_id_to_conn[payload.dest_id]) {
-        return {};
-    }
     PeerConn<T>& p = peer_id_to_conn[payload.dest_id];
 
     if constexpr (T == TCP) {
@@ -575,13 +574,12 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(AppendEntriesReqPa
 
 template <SocketType T>
 inline std::optional<std::string> EventLoop<T>::post_inflight(RequestVoteReqPayload& payload) {
-    #ifdef DEBUG
-    std::cout << "Posting RV RPC to outbound queue for node " << payload.dest_id << "\n";
-    #endif
-
     if (payload.dest_id < 0 || payload.dest_id >= peer_id_to_conn.size() || !peer_id_to_conn[payload.dest_id]) {
         return {};
     }
+    #ifdef DEBUG
+    std::cout << "Posting RV RPC to outbound queue for node " << payload.dest_id << "\n";
+    #endif
     PeerConn<T>& p = peer_id_to_conn[payload.dest_id];
 
     if constexpr (T == TCP) {
@@ -619,13 +617,12 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(RequestVoteReqPayl
 
 template <SocketType T>
 inline std::optional<std::string> EventLoop<T>::post_inflight(InstallSnapshotReqPayload& payload) {
-    #ifdef DEBUG
-    std::cout << "Posting IS RPC to outbound queue for node " << payload.dest_id << "\n";
-    #endif
-
     if (payload.dest_id < 0 || payload.dest_id >= peer_id_to_conn.size() || !peer_id_to_conn[payload.dest_id]) {
         return {};
     }
+    #ifdef DEBUG
+    std::cout << "Posting IS RPC to outbound queue for node " << payload.dest_id << "\n";
+    #endif
     PeerConn<T>& p = peer_id_to_conn[payload.dest_id];
 
     if constexpr (T == TCP) {
@@ -663,13 +660,12 @@ inline std::optional<std::string> EventLoop<T>::post_inflight(InstallSnapshotReq
 
 template <SocketType T>
 inline std::optional<std::string> EventLoop<T>::post_inflight(ForwardLeaderMsg& payload) {
-    #ifdef DEBUG
-    std::cout << "Posting FL RPC to outbound queue for node " << payload.dest_id << "\n";
-    #endif
-
     if (payload.dest_id < 0 || payload.dest_id >= peer_id_to_conn.size() || !peer_id_to_conn[payload.dest_id]) {
         return {};
     }
+    #ifdef DEBUG
+    std::cout << "Posting FL RPC to outbound queue for node " << payload.dest_id << "\n";
+    #endif
     PeerConn<T>& p = peer_id_to_conn[payload.dest_id];
 
     if constexpr (T == TCP) {
